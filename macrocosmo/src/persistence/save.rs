@@ -51,6 +51,7 @@ use crate::galaxy::{
 use crate::knowledge::{DestroyedShipRegistry, KnowledgeStore, PendingFactQueue};
 use crate::notifications::NotificationQueue;
 use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, StationedAt};
+use crate::region::{EmpireLongTermState, Region, RegionMembership, RegionRegistry};
 use crate::scripting::game_rng::GameRng;
 use crate::ship::scout::ScoutReport;
 use crate::ship::{
@@ -118,7 +119,12 @@ use super::savebag::*;
 /// `known_factions` field on `SavedComponentBag` so per-empire faction
 /// discovery survives save/load. Postcard's positional encoding requires
 /// a version bump (14 → 15) and a fixture regeneration.
-pub const SAVE_VERSION: u32 = 15;
+/// #449 PR2e: persisted Region / RegionMembership / RegionRegistry /
+/// EmpireLongTermState / MidAgent / ShortAgent so per-region AI
+/// state survives save/load. Postcard's positional encoding
+/// requires the bump (15 → 16) and a fixture regeneration. v15
+/// saves are strictly rejected at load (matches existing policy).
+pub const SAVE_VERSION: u32 = 16;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -183,6 +189,11 @@ pub struct SavedResources {
     /// upgrade path.
     #[serde(default)]
     pub ai_command_outbox: Option<SavedAiCommandOutbox>,
+    /// #449 PR2e: empire→regions reverse index Resource. `#[serde(default)]`
+    /// so v16 saves without any spawned regions decode to `None` (empty
+    /// registry rebuilt on demand by `spawn_initial_region_for_faction`).
+    #[serde(default)]
+    pub region_registry: Option<SavedRegionRegistry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +285,15 @@ fn assign_save_ids(world: &mut World) {
             With<PortFacility>,
             With<DiplomaticEvent>,
             With<crate::player::Ruler>,
+            // #449 PR2e: Region / MidAgent / ShortAgent entities.
+            // (RegionMembership / EmpireLongTermState / ShortAgent are
+            // attached to entities already covered by the first OR
+            // bundle — StarSystem / Empire / Fleet — but bare Region
+            // and MidAgent entities have no other "anchor" type, so
+            // they need explicit With<> coverage here.)
+            With<Region>,
+            With<crate::ai::MidAgent>,
+            With<crate::ai::ShortAgent>,
         )>>();
         for e in q.iter(world) {
             to_assign.push(e);
@@ -319,6 +339,8 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
     // Round 9 PR #3: persist in-flight AI commands so light-speed delays
     // survive save/load round-trips.
     let ai_outbox = world.get_resource::<crate::ai::command_outbox::AiCommandOutbox>();
+    // #449 PR2e: persist the empire→regions reverse index.
+    let region_registry = world.get_resource::<RegionRegistry>();
 
     Ok(SavedResources {
         game_clock_elapsed: clock.map(|c| c.elapsed).unwrap_or(0),
@@ -375,6 +397,7 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
                 .collect()
         }),
         ai_command_outbox: ai_outbox.map(SavedAiCommandOutbox::from_live),
+        region_registry: region_registry.map(SavedRegionRegistry::from_live),
     })
 }
 
@@ -677,6 +700,24 @@ fn capture_entity_components(world: &World, entity: Entity) -> SavedComponentBag
     }
     if let Some(l) = e_ref.get::<LifetimeCost>() {
         bag.lifetime_cost = Some(SavedLifetimeCost::from_live(l));
+    }
+
+    // #449 PR2e: Region / RegionMembership / EmpireLongTermState /
+    // MidAgent / ShortAgent.
+    if let Some(r) = e_ref.get::<Region>() {
+        bag.region = Some(SavedRegion::from_live(r));
+    }
+    if let Some(rm) = e_ref.get::<RegionMembership>() {
+        bag.region_membership = Some(SavedRegionMembership::from_live(rm));
+    }
+    if let Some(s) = e_ref.get::<EmpireLongTermState>() {
+        bag.empire_long_term_state = Some(SavedEmpireLongTermState::from_live(s));
+    }
+    if let Some(ma) = e_ref.get::<crate::ai::MidAgent>() {
+        bag.mid_agent = Some(SavedMidAgent::from_live(ma));
+    }
+    if let Some(sa) = e_ref.get::<crate::ai::ShortAgent>() {
+        bag.short_agent = Some(SavedShortAgent::from_live(sa));
     }
 
     bag

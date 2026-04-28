@@ -499,6 +499,24 @@ fn apply_component_bag(
     if let Some(l) = &bag.lifetime_cost {
         ec.insert(l.clone().into_live());
     }
+
+    // #449 PR2e: Region / RegionMembership / EmpireLongTermState /
+    // MidAgent / ShortAgent.
+    if let Some(r) = &bag.region {
+        ec.insert(r.clone().into_live(map));
+    }
+    if let Some(rm) = &bag.region_membership {
+        ec.insert(rm.clone().into_live(map));
+    }
+    if let Some(s) = &bag.empire_long_term_state {
+        ec.insert(s.clone().into_live());
+    }
+    if let Some(ma) = &bag.mid_agent {
+        ec.insert(ma.clone().into_live(map));
+    }
+    if let Some(sa) = &bag.short_agent {
+        ec.insert(sa.clone().into_live(map));
+    }
 }
 
 /// Apply Phase-B resource-level payloads that reference entities, after the
@@ -531,6 +549,11 @@ fn apply_deferred_resources(world: &mut World, save: &GameSave, map: &EntityMap)
     // this point; we overwrite it with the loaded entries.
     if let Some(outbox) = &save.resources.ai_command_outbox {
         world.insert_resource(outbox.clone().into_live());
+    }
+    // #449 PR2e: empire→regions reverse index. Both keys (Empire) and
+    // values (Region entities) are remapped through `EntityMap`.
+    if let Some(rr) = &save.resources.region_registry {
+        world.insert_resource(rr.clone().into_live(map));
     }
 }
 

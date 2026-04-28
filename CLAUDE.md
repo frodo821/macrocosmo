@@ -144,7 +144,7 @@ tests/                   # 382 tests (275 unit + 107 integration, 11 test files)
 - **Always add regression tests with bug fixes**
 
 ### Save-file Fixtures (#247)
-- `tests/fixtures/*.bin` — committed postcard-encoded saves that pin the on-disk wire format (currently `minimal_game.bin`, 732 B)
+- `tests/fixtures/*.bin` — committed postcard-encoded saves that pin the on-disk wire format (currently `minimal_game.bin`, 829 B)
 - `common::fixture::load_fixture(path)` — decode a fixture into a fresh `bevy::App` for assertions
 - `load_minimal_game_fixture_smoke` in `tests/fixtures_smoke.rs` is the format-stability guard — it fails if `SAVE_VERSION` bumps or `SavedComponentBag` gains a non-backwards-compatible field
 - **To regenerate the fixture** after an intentional format bump, run the `#[ignore]` test:

@@ -3613,6 +3613,213 @@ impl SavedKnownFactions {
     }
 }
 
+// ---------------------------------------------------------------------------
+// #449 PR2e — Region / MidAgent / ShortAgent / EmpireLongTermState
+// ---------------------------------------------------------------------------
+
+/// #449 PR2e: Wire format for [`Region`](crate::region::Region).
+/// Entity references (`empire`, `member_systems`, `capital_system`,
+/// optional `mid_agent`) are encoded as save-id bits and remapped on
+/// load via [`EntityMap`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedRegion {
+    pub empire_bits: u64,
+    pub member_systems_bits: Vec<u64>,
+    pub capital_system_bits: u64,
+    pub mid_agent_bits: Option<u64>,
+}
+
+impl SavedRegion {
+    pub fn from_live(v: &crate::region::Region) -> Self {
+        Self {
+            empire_bits: v.empire.to_bits(),
+            member_systems_bits: v.member_systems.iter().map(|e| e.to_bits()).collect(),
+            capital_system_bits: v.capital_system.to_bits(),
+            mid_agent_bits: v.mid_agent.map(|e| e.to_bits()),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::region::Region {
+        crate::region::Region {
+            empire: remap_entity(self.empire_bits, map),
+            member_systems: self
+                .member_systems_bits
+                .into_iter()
+                .map(|b| remap_entity(b, map))
+                .collect(),
+            capital_system: remap_entity(self.capital_system_bits, map),
+            mid_agent: self.mid_agent_bits.map(|b| remap_entity(b, map)),
+        }
+    }
+}
+
+/// #449 PR2e: Wire format for [`RegionMembership`](crate::region::RegionMembership).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedRegionMembership {
+    pub region_bits: u64,
+}
+
+impl SavedRegionMembership {
+    pub fn from_live(v: &crate::region::RegionMembership) -> Self {
+        Self {
+            region_bits: v.region.to_bits(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::region::RegionMembership {
+        crate::region::RegionMembership {
+            region: remap_entity(self.region_bits, map),
+        }
+    }
+}
+
+/// #449 PR2e: Wire format for the [`RegionRegistry`](crate::region::RegionRegistry)
+/// resource. Stores the empire→regions index as a `Vec<(u64, Vec<u64>)>` so
+/// postcard can encode it (the live form is a `bevy::platform` `HashMap`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedRegionRegistry {
+    pub by_empire: Vec<(u64, Vec<u64>)>,
+}
+
+impl SavedRegionRegistry {
+    pub fn from_live(v: &crate::region::RegionRegistry) -> Self {
+        Self {
+            by_empire: v
+                .by_empire
+                .iter()
+                .map(|(empire, regions)| {
+                    (
+                        empire.to_bits(),
+                        regions.iter().map(|e| e.to_bits()).collect(),
+                    )
+                })
+                .collect(),
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::region::RegionRegistry {
+        let mut out = crate::region::RegionRegistry::default();
+        for (empire_bits, region_bits) in self.by_empire {
+            let empire = remap_entity(empire_bits, map);
+            let regions: Vec<Entity> = region_bits
+                .into_iter()
+                .map(|b| remap_entity(b, map))
+                .collect();
+            out.by_empire.insert(empire, regions);
+        }
+        out
+    }
+}
+
+/// #449 PR2e: Wire format for
+/// [`EmpireLongTermState`](crate::region::EmpireLongTermState). The inner
+/// engine-agnostic [`macrocosmo_ai::LongTermState`] is `serde`-derived
+/// already (PR1), so persistence flows through serde directly with no
+/// entity references to remap.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedEmpireLongTermState {
+    pub inner: macrocosmo_ai::LongTermState,
+}
+
+impl SavedEmpireLongTermState {
+    pub fn from_live(v: &crate::region::EmpireLongTermState) -> Self {
+        Self {
+            inner: v.inner.clone(),
+        }
+    }
+    pub fn into_live(self) -> crate::region::EmpireLongTermState {
+        crate::region::EmpireLongTermState { inner: self.inner }
+    }
+}
+
+/// #449 PR2e: Wire format for [`MidAgent`](crate::ai::MidAgent). The
+/// engine-agnostic [`macrocosmo_ai::MidTermState`] is `serde`-derived
+/// (PR1) so the inner state passes through unchanged; only the
+/// `region: Entity` back-reference needs remap.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedMidAgent {
+    pub region_bits: u64,
+    pub state: macrocosmo_ai::MidTermState,
+    pub auto_managed: bool,
+}
+
+impl SavedMidAgent {
+    pub fn from_live(v: &crate::ai::MidAgent) -> Self {
+        Self {
+            region_bits: v.region.to_bits(),
+            state: v.state.clone(),
+            auto_managed: v.auto_managed,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::ai::MidAgent {
+        crate::ai::MidAgent {
+            region: remap_entity(self.region_bits, map),
+            state: self.state,
+            auto_managed: self.auto_managed,
+        }
+    }
+}
+
+/// #449 PR2e: Wire format for [`ShortScope`](crate::ai::ShortScope). The
+/// inner `Entity` (Fleet for `Fleet`, StarSystem for `ColonizedSystem`)
+/// is encoded as save-id bits and remapped on load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SavedShortScope {
+    Fleet { fleet_bits: u64 },
+    ColonizedSystem { system_bits: u64 },
+}
+
+impl SavedShortScope {
+    pub fn from_live(v: crate::ai::ShortScope) -> Self {
+        match v {
+            crate::ai::ShortScope::Fleet(e) => Self::Fleet {
+                fleet_bits: e.to_bits(),
+            },
+            crate::ai::ShortScope::ColonizedSystem(e) => Self::ColonizedSystem {
+                system_bits: e.to_bits(),
+            },
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::ai::ShortScope {
+        match self {
+            Self::Fleet { fleet_bits } => {
+                crate::ai::ShortScope::Fleet(remap_entity(fleet_bits, map))
+            }
+            Self::ColonizedSystem { system_bits } => {
+                crate::ai::ShortScope::ColonizedSystem(remap_entity(system_bits, map))
+            }
+        }
+    }
+}
+
+/// #449 PR2e: Wire format for [`ShortAgent`](crate::ai::ShortAgent). The
+/// engine-agnostic [`macrocosmo_ai::PlanState`] is `serde`-derived (PR1)
+/// so the inner queue passes through unchanged; the `managed_by` Mid back-
+/// reference and the `scope` payload entity get remapped on load.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedShortAgent {
+    pub managed_by_bits: u64,
+    pub scope: SavedShortScope,
+    pub state: macrocosmo_ai::PlanState,
+    pub auto_managed: bool,
+}
+
+impl SavedShortAgent {
+    pub fn from_live(v: &crate::ai::ShortAgent) -> Self {
+        Self {
+            managed_by_bits: v.managed_by.to_bits(),
+            scope: SavedShortScope::from_live(v.scope),
+            state: v.state.clone(),
+            auto_managed: v.auto_managed,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> crate::ai::ShortAgent {
+        crate::ai::ShortAgent {
+            managed_by: remap_entity(self.managed_by_bits, map),
+            scope: self.scope.into_live(map),
+            state: self.state,
+            auto_managed: self.auto_managed,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedCommsParams {
     pub empire_relay_range: ModifiedValue,
@@ -4946,6 +5153,24 @@ pub struct SavedComponentBag {
     /// of the resumed game).
     #[serde(default)]
     pub pending_assignment: Option<SavedPendingAssignment>,
+    // #449 PR2e — Region / MidAgent / ShortAgent / EmpireLongTermState.
+    // All `#[serde(default)]` so v16 saves written without these
+    // components round-trip cleanly (e.g. test fixtures with bare worlds).
+    /// #449 PR2e: Region Component on Region entities.
+    #[serde(default)]
+    pub region: Option<SavedRegion>,
+    /// #449 PR2e: RegionMembership Component on StarSystem entities.
+    #[serde(default)]
+    pub region_membership: Option<SavedRegionMembership>,
+    /// #449 PR2e: EmpireLongTermState Component on Empire entities.
+    #[serde(default)]
+    pub empire_long_term_state: Option<SavedEmpireLongTermState>,
+    /// #449 PR2e: MidAgent Component on MidAgent entities.
+    #[serde(default)]
+    pub mid_agent: Option<SavedMidAgent>,
+    /// #449 PR2e: ShortAgent Component on Fleet / colonized-system entities.
+    #[serde(default)]
+    pub short_agent: Option<SavedShortAgent>,
 }
 
 impl RemapEntities for SavedComponentBag {
