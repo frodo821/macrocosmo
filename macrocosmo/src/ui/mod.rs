@@ -982,6 +982,11 @@ fn draw_outline_and_tooltips_system(
         empire_entity,
         obs.observer_mode.enabled,
         home_system_entity,
+        // #487: Pass the viewing empire's KnowledgeStore so the outline
+        // tree's ship-state queries flow through the projection table.
+        // `None` in observer mode (= ground truth) matches the existing
+        // tooltip data path on line above.
+        knowledge,
     );
 
     draw_map_tooltips(
