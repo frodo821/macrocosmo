@@ -55,7 +55,7 @@ use crate::galaxy::{
 use crate::knowledge::facts::CombatVictor;
 use crate::knowledge::{
     KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact,
-    ShipSnapshot, ShipSnapshotState, SystemKnowledge, SystemSnapshot,
+    ShipProjection, ShipSnapshot, ShipSnapshotState, SystemKnowledge, SystemSnapshot,
 };
 use crate::modifier::{ModifiedValue, ScopedModifiers};
 use crate::notifications::{Notification, NotificationPriority, NotificationQueue};
@@ -3143,10 +3143,57 @@ impl SavedShipSnapshot {
     }
 }
 
+/// #474: Persistence shim for [`ShipProjection`]. Mirrors `SavedShipSnapshot`'s
+/// shape — `Entity` fields round-trip via `to_bits()` + `EntityMap`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedShipProjection {
+    pub entity_bits: u64,
+    pub dispatched_at: i64,
+    pub expected_arrival_at: Option<i64>,
+    pub expected_return_at: Option<i64>,
+    pub projected_state: SavedShipSnapshotState,
+    pub projected_system_bits: Option<u64>,
+    pub intended_state: Option<SavedShipSnapshotState>,
+    pub intended_system_bits: Option<u64>,
+    pub intended_takes_effect_at: Option<i64>,
+}
+impl SavedShipProjection {
+    pub fn from_live(v: &ShipProjection) -> Self {
+        Self {
+            entity_bits: v.entity.to_bits(),
+            dispatched_at: v.dispatched_at,
+            expected_arrival_at: v.expected_arrival_at,
+            expected_return_at: v.expected_return_at,
+            projected_state: (&v.projected_state).into(),
+            projected_system_bits: v.projected_system.map(|e| e.to_bits()),
+            intended_state: v.intended_state.as_ref().map(SavedShipSnapshotState::from),
+            intended_system_bits: v.intended_system.map(|e| e.to_bits()),
+            intended_takes_effect_at: v.intended_takes_effect_at,
+        }
+    }
+    pub fn into_live(self, map: &EntityMap) -> ShipProjection {
+        ShipProjection {
+            entity: remap_entity(self.entity_bits, map),
+            dispatched_at: self.dispatched_at,
+            expected_arrival_at: self.expected_arrival_at,
+            expected_return_at: self.expected_return_at,
+            projected_state: self.projected_state.into(),
+            projected_system: self.projected_system_bits.map(|b| remap_entity(b, map)),
+            intended_state: self.intended_state.map(Into::into),
+            intended_system: self.intended_system_bits.map(|b| remap_entity(b, map)),
+            intended_takes_effect_at: self.intended_takes_effect_at,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedKnowledgeStore {
     pub entries: Vec<SavedSystemKnowledge>,
     pub ship_snapshots: Vec<SavedShipSnapshot>,
+    /// #474: Per-empire ship trajectory projections. `#[serde(default)]` so
+    /// pre-#474 saves (which lack this field) round-trip to an empty Vec.
+    #[serde(default)]
+    pub projections: Vec<SavedShipProjection>,
 }
 
 impl SavedKnowledgeStore {
@@ -3160,6 +3207,10 @@ impl SavedKnowledgeStore {
                 .iter_ships()
                 .map(|(_, s)| SavedShipSnapshot::from_live(s))
                 .collect(),
+            projections: v
+                .iter_projections()
+                .map(|(_, p)| SavedShipProjection::from_live(p))
+                .collect(),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> KnowledgeStore {
@@ -3169,6 +3220,9 @@ impl SavedKnowledgeStore {
         }
         for ship in self.ship_snapshots {
             store.update_ship(ship.into_live(map));
+        }
+        for projection in self.projections {
+            store.update_projection(projection.into_live(map));
         }
         store
     }

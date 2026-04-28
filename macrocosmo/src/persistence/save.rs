@@ -130,7 +130,13 @@ use super::savebag::*;
 /// enum tag encoding makes this a breaking change. v16 saves
 /// containing the old variant tag would deserialize incorrectly, so
 /// SAVE_VERSION bumps 16 → 17 and a fixture regeneration follows.
-pub const SAVE_VERSION: u32 = 17;
+/// #474: added `SavedKnowledgeStore::projections` (per-empire ship
+/// trajectory projections, epic #473). The new field uses
+/// `#[serde(default)]` so a future structural read of v17 bytes would
+/// see an empty Vec, but postcard's positional encoding still requires
+/// a version bump (17 → 18) and a fixture regeneration. v17 saves are
+/// strictly rejected at load (matches existing policy).
+pub const SAVE_VERSION: u32 = 18;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.

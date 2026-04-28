@@ -417,16 +417,18 @@ fn two_region_empire_round_trips_cross_region_refs() {
 
 /// #449 PR2e bumped SAVE_VERSION 15 → 16 for Region / MidAgent / ShortAgent
 /// fields. #472 then bumped 16 → 17 to cover the
-/// `SavedGameEventKind::ShipMissing` retirement (postcard's positional enum
-/// tag encoding makes that a hard wire-format break). The strict-reject
-/// policy in `load.rs` continues to refuse decoding any prior version so
-/// the fixture-regen workflow stays the only path forward.
+/// `SavedGameEventKind::ShipMissing` retirement. #474 bumps 17 → 18 to add
+/// `SavedKnowledgeStore::projections` (per-empire ship trajectory
+/// projections, epic #473) — postcard's positional encoding requires the
+/// version bump even though the new field is `#[serde(default)]`. The
+/// strict-reject policy in `load.rs` continues to refuse decoding any prior
+/// version so the fixture-regen workflow stays the only path forward.
 #[test]
 fn save_version_strictly_rejects_previous_version() {
     assert_eq!(
-        SAVE_VERSION, 17,
-        "#472 bumps SAVE_VERSION 16 → 17 (ShipMissing variant retired); \
-         postcard's positional enum tag encoding makes that a hard wire-format break"
+        SAVE_VERSION, 18,
+        "#474 bumps SAVE_VERSION 17 → 18 (SavedKnowledgeStore::projections \
+         added for epic #473)"
     );
 
     // Hand-craft a minimal byte stream that begins with a v15 version

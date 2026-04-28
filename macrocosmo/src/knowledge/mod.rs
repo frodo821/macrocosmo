@@ -494,12 +494,63 @@ pub enum ShipSnapshotState {
     },
 }
 
+/// #474: Per-empire trajectory projection for an own-empire ship (epic #473).
+///
+/// Computed at command-dispatch time from local info only — never references
+/// the ship's realtime ECS state. Updated only via `KnowledgeFact` arrival
+/// reconciliation (sub-issue #476).
+///
+/// Holds two coupled trajectories:
+/// - **Projected**: the empire's light-speed-coherent best estimate of where
+///   and what the ship is now. Updates via reconciliation as new
+///   `KnowledgeFact`s arrive.
+/// - **Intended**: the empire's own commanded outcome. Doesn't bind on
+///   light-speed (the dispatcher's intent is locally known) but only realises
+///   after `intended_takes_effect_at` when the command actually reaches the
+///   ship.
+#[derive(Clone, Debug, bevy::reflect::Reflect)]
+pub struct ShipProjection {
+    /// Owning ship entity (stable id).
+    pub entity: Entity,
+    /// Tick at which the dispatcher emitted the command that produced this
+    /// projection. For steady-state projections (no in-flight command) this
+    /// is the tick the projection was last reconciled.
+    pub dispatched_at: i64,
+    /// Earliest tick at which the dispatcher could observe the ship's
+    /// arrival at the intended target (≈ `dispatched_at + light_delay × 2`,
+    /// exact formula filled in by the dispatch sites in #475).
+    pub expected_arrival_at: Option<i64>,
+    /// Tick at which the dispatcher could observe the ship's return to
+    /// origin, when the mission has a return leg.
+    pub expected_return_at: Option<i64>,
+    /// Projected ship state — what the empire knows / believes is the ship's
+    /// current state given the most recent reconciled observation. Defaults
+    /// to the ship's last known state at dispatch time.
+    pub projected_state: ShipSnapshotState,
+    /// System the projected ship is associated with (the system it was last
+    /// observed in, or `None` for deep-space transits / loitering).
+    pub projected_system: Option<Entity>,
+    /// Intended ship state — populated from the issued command at dispatch.
+    /// `None` when no in-flight command exists (steady state).
+    pub intended_state: Option<ShipSnapshotState>,
+    /// Intended target system — `None` when no in-flight command exists.
+    pub intended_system: Option<Entity>,
+    /// Tick at which the issued command is expected to take effect at the
+    /// ship (= `dispatched_at + light_delay_to_ship`). UI uses this to fade
+    /// the intended layer into the projected layer once the command has
+    /// (locally-believed) reached the ship.
+    pub intended_takes_effect_at: Option<i64>,
+}
+
 #[derive(Resource, Component, Default, Reflect)]
 #[reflect(Component, Resource)]
 pub struct KnowledgeStore {
     entries: HashMap<Entity, SystemKnowledge>,
     /// #175: Ship snapshots keyed by ship entity. Updated via light-speed propagation.
     ship_snapshots: HashMap<Entity, ShipSnapshot>,
+    /// #474: Per-empire ship trajectory projections for own-empire ships.
+    /// See [`ShipProjection`] docs.
+    projections: HashMap<Entity, ShipProjection>,
 }
 
 impl KnowledgeStore {
@@ -569,6 +620,31 @@ impl KnowledgeStore {
     /// #175: Iterate over all ship snapshots.
     pub fn iter_ships(&self) -> impl Iterator<Item = (&Entity, &ShipSnapshot)> {
         self.ship_snapshots.iter()
+    }
+
+    /// #474: Get a ship trajectory projection by entity.
+    pub fn get_projection(&self, ship: Entity) -> Option<&ShipProjection> {
+        self.projections.get(&ship)
+    }
+
+    /// #474: Insert/replace a ship trajectory projection.
+    ///
+    /// Unlike [`update_ship`](Self::update_ship), this does not apply
+    /// `observed_at`-based dominance — projections are dispatcher-side
+    /// authoritative writes. Reconciliation against incoming
+    /// `KnowledgeFact`s (#476) handles the "newer info wins" logic.
+    pub fn update_projection(&mut self, projection: ShipProjection) {
+        self.projections.insert(projection.entity, projection);
+    }
+
+    /// #474: Iterate over all ship projections.
+    pub fn iter_projections(&self) -> impl Iterator<Item = (&Entity, &ShipProjection)> {
+        self.projections.iter()
+    }
+
+    /// #474: Remove a ship trajectory projection. Returns the removed entry.
+    pub fn clear_projection(&mut self, ship: Entity) -> Option<ShipProjection> {
+        self.projections.remove(&ship)
     }
 }
 
