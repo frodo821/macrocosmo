@@ -15,6 +15,27 @@ use crate::time_system::GameClock;
 use crate::ui::UiElementRegistry;
 use crate::visualization::{SelectedShip, SelectedShips};
 
+/// #482: Map a [`QueuedCommand`] to the equivalent [`crate::ship::ShipCommand`]
+/// for the player-dispatch projection writer (`write_player_dispatch_projection`
+/// in `ui/mod.rs`). Only spatial commands are mapped — spatial-less variants
+/// return `None` and their dispatch is intentionally skipped by the
+/// projection path (`SetROE`, etc.).
+pub fn queued_command_to_ship_command(qc: &QueuedCommand) -> Option<crate::ship::ShipCommand> {
+    match qc {
+        QueuedCommand::MoveTo { system } => Some(crate::ship::ShipCommand::MoveTo {
+            destination: *system,
+        }),
+        QueuedCommand::Survey { system } => {
+            Some(crate::ship::ShipCommand::Survey { target: *system })
+        }
+        QueuedCommand::Colonize { .. } => Some(crate::ship::ShipCommand::Colonize),
+        // Other variants (Fortify, Blockade, etc.) — not spatial-less, but
+        // not currently emitted by the context menu path. If a future menu
+        // entry adds one, extend this match.
+        _ => None,
+    }
+}
+
 /// #389: Pre-computed harbour info for context menu display.
 pub struct HarbourInfo {
     pub entity: Entity,
@@ -84,6 +105,20 @@ pub fn apply_local_ship_command(
 pub struct ContextMenuActions {
     /// Dock ship at harbour. Payload: (ship, harbour).
     pub dock_at: Option<(Entity, Entity)>,
+    /// #482: Zero-delay player dispatches that need a `ShipProjection`
+    /// write at the dispatch tick. Filled by [`draw_context_menu`] for
+    /// each branch that pushes a `QueuedCommand` directly to the ship's
+    /// `CommandQueue` (or applies the state in place) without going
+    /// through the `PendingShipCommand` pipeline. The caller drains
+    /// these and runs the same `write_player_dispatch_projection`
+    /// closure that `pending_ship_commands` uses, preserving the
+    /// "dispatch-time projection write" invariant from epic #473 / #475.
+    ///
+    /// Each entry is `(ship, command)` — `ship` is the dispatch target,
+    /// `command` is the equivalent `ShipCommand` for projection-mapping
+    /// purposes (`MoveTo`, `Survey`, `Colonize`). Spatial-less commands
+    /// are not pushed here.
+    pub zero_delay_dispatches: Vec<(Entity, crate::ship::ShipCommand)>,
 }
 
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.
@@ -125,7 +160,10 @@ pub fn draw_context_menu(
     // #389: Whether the selected ship is already docked at a harbour.
     ship_is_docked_at_harbour: bool,
 ) -> ContextMenuActions {
-    let mut ctx_actions = ContextMenuActions { dock_at: None };
+    let mut ctx_actions = ContextMenuActions {
+        dock_at: None,
+        zero_delay_dispatches: Vec::new(),
+    };
     if !context_menu.open {
         return ctx_actions;
     }
@@ -362,6 +400,23 @@ pub fn draw_context_menu(
             context_menu.target_system = None;
             context_menu.execute_default = false;
             if let Some(new_state) = command {
+                // #482: zero-delay dispatch — record an equivalent
+                // `ShipCommand` for the projection-write path so the
+                // own-ship Galaxy Map render branch (#477) can locate
+                // this ship even though it's bypassing the
+                // `PendingShipCommand` pipeline that #475 hooked.
+                let equiv = match &new_state {
+                    ShipState::Surveying { target_system, .. } => {
+                        Some(crate::ship::ShipCommand::Survey {
+                            target: *target_system,
+                        })
+                    }
+                    ShipState::Settling { .. } => Some(crate::ship::ShipCommand::Colonize),
+                    _ => None,
+                };
+                if let Some(eq) = equiv {
+                    ctx_actions.zero_delay_dispatches.push((ship_entity, eq));
+                }
                 apply_local_ship_command(ship_entity, new_state, command_delay, ships_query);
             }
             if let Some(ship_cmd) = delayed_command {
@@ -421,6 +476,13 @@ pub fn draw_context_menu(
             selected_ship.0 = None;
         }
         if let Some(qc) = queued_command {
+            // #482: zero-delay queued command (= shift+click in the
+            // cross-system / non-docked branches with `command_delay
+            // == 0`). Record an equivalent `ShipCommand` for the
+            // projection write before pushing to the queue.
+            if let Some(eq) = queued_command_to_ship_command(&qc) {
+                ctx_actions.zero_delay_dispatches.push((ship_entity, eq));
+            }
             if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
                 queue.commands.push(qc);
                 selected_ship.0 = None;
@@ -650,6 +712,20 @@ pub fn draw_context_menu(
     // `apply_local_ship_command` via `debug_assert_eq!(command_delay, 0)`
     // — see #462.
     if let Some(new_state) = command {
+        // #482: zero-delay dispatch (same-system survey / colonize) —
+        // record an equivalent `ShipCommand` for the projection-write
+        // path before applying. Mirrors the early-return shift+click
+        // branch above.
+        let equiv = match &new_state {
+            ShipState::Surveying { target_system, .. } => Some(crate::ship::ShipCommand::Survey {
+                target: *target_system,
+            }),
+            ShipState::Settling { .. } => Some(crate::ship::ShipCommand::Colonize),
+            _ => None,
+        };
+        if let Some(eq) = equiv {
+            ctx_actions.zero_delay_dispatches.push((ship_entity, eq));
+        }
         if apply_local_ship_command(ship_entity, new_state, command_delay, ships_query) {
             selected_ship.0 = None;
         }
@@ -672,16 +748,29 @@ pub fn draw_context_menu(
     // Apply queued command (non-docked ships)
     // #407: Apply MoveTo to all selected ships when multi-selected.
     if let Some(ref qc) = queued_command {
+        // #482: queued commands enter the ship's local `CommandQueue`
+        // immediately (no light-delay), so the projection write must
+        // also fire at the dispatch tick. Map back to a `ShipCommand`
+        // for the existing player-dispatch projection helper.
+        let equiv = queued_command_to_ship_command(qc);
         if matches!(qc, QueuedCommand::MoveTo { .. }) && selected_ships.len() > 1 {
             for &other_ship in selected_ships.iter() {
                 if let Ok(mut queue) = command_queues.get_mut(other_ship) {
                     queue.commands.push(qc.clone());
+                    if let Some(ref eq) = equiv {
+                        ctx_actions
+                            .zero_delay_dispatches
+                            .push((other_ship, eq.clone()));
+                    }
                 }
             }
             selected_ship.0 = None;
             selected_ships.clear();
         } else if let Ok(mut queue) = command_queues.get_mut(ship_entity) {
             queue.commands.push(qc.clone());
+            if let Some(eq) = equiv {
+                ctx_actions.zero_delay_dispatches.push((ship_entity, eq));
+            }
             selected_ship.0 = None;
         }
     }

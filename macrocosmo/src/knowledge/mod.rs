@@ -43,7 +43,7 @@ use crate::components::Position;
 use crate::galaxy::StarSystem;
 use crate::physics;
 use crate::player::{AboardShip, Empire, EmpireRuler, EmpireViewerSystem, Ruler, StationedAt};
-use crate::ship::{Ship, ShipState};
+use crate::ship::{Owner, Ship, ShipState};
 use crate::time_system::GameClock;
 
 #[allow(unused_imports)]
@@ -383,6 +383,24 @@ impl Plugin for KnowledgePlugin {
             .add_systems(
                 Update,
                 flush_ship_projection_writes.after(crate::time_system::advance_game_time),
+            )
+            // #481: Seed steady-state projections for newly-spawned
+            // own-empire ships so the Galaxy Map's #477 projection-only
+            // render branch can locate them before the first dispatch
+            // site writes a real intended trajectory. Runs ungated by
+            // `GameState` so initial-fleet ships spawned during
+            // `OnEnter(NewGame)` get seeded on the first `Update` after
+            // the state transition (the `Added<Ship>` filter clears at
+            // that point). Order before the dispatch-write flush so a
+            // same-tick command dispatch's projection wins over the
+            // bare seed (the seed's idempotency guard means this is
+            // belt-and-suspenders, but the explicit ordering documents
+            // the intent).
+            .add_systems(
+                Update,
+                seed_own_ship_projections
+                    .before(flush_ship_projection_writes)
+                    .after(crate::time_system::advance_game_time),
             )
             // #476: Reconcile ShipProjection entries against arriving
             // KnowledgeFacts. Runs after snapshot-update systems so the
@@ -860,6 +878,82 @@ pub fn flush_ship_projection_writes(
         if let Ok(mut store) = empires.get_mut(entry.empire) {
             store.update_projection(entry.projection);
         }
+    }
+}
+
+/// #481: Seed a steady-state [`ShipProjection`] for every newly-spawned
+/// own-empire ship that does not yet have one in the owner empire's
+/// [`KnowledgeStore`].
+///
+/// Background: the Galaxy Map's own-ship render branch (#477) iterates
+/// [`KnowledgeStore::projections`] exclusively. Without a spawn-time
+/// seed, ships that never received a command (initial fleet, freshly
+/// shipyard-built, idle stations) are invisible to their owner's map
+/// until the first dispatch site (#475) writes a projection.
+///
+/// The seeded projection is the conservative "ship is parked at its
+/// home port until proven otherwise" — `projected_state =
+/// ShipSnapshotState::InSystem`, `projected_system = home_port`, no
+/// intended trajectory. Once the dispatcher emits a command, the
+/// per-site projection write (#475) overwrites this entry with the
+/// real intended trajectory. The reconciler (#476) overwrites it on
+/// every observed `KnowledgeFact`.
+///
+/// Idempotency: only writes if `get_projection(ship).is_none()`, so
+/// repeated runs (or `Added<Ship>` re-firing edge cases) don't clobber
+/// an existing entry. Skips `Owner::Neutral` ships (hostile / pirate
+/// factions never seed any empire's projection store).
+///
+/// Defensive skip: if the ship's `home_port` is not a valid
+/// `StarSystem` (test scenarios that hand-spawn detached ships), the
+/// seed is omitted silently. The first real dispatch will populate
+/// the projection with full per-command data.
+pub fn seed_own_ship_projections(
+    new_ships: Query<(Entity, &Ship), Added<Ship>>,
+    star_systems: Query<(), With<StarSystem>>,
+    mut empires: Query<&mut KnowledgeStore, With<Empire>>,
+    clock: Res<GameClock>,
+) {
+    if new_ships.is_empty() {
+        return;
+    }
+    for (ship_entity, ship) in &new_ships {
+        let owner_empire = match ship.owner {
+            Owner::Empire(e) => e,
+            Owner::Neutral => continue,
+        };
+        // Skip ships whose home_port doesn't reference a real
+        // StarSystem (test scaffolding edge case). The conservative
+        // fallback of "InSystem at home_port" only makes sense if
+        // home_port actually points to a system the renderer can
+        // resolve to a screen position.
+        if star_systems.get(ship.home_port).is_err() {
+            continue;
+        }
+        let Ok(mut store) = empires.get_mut(owner_empire) else {
+            // Owner empire missing or has no KnowledgeStore — drop the
+            // chance to seed; first command dispatch will repair the
+            // gap if/when the empire is wired up later.
+            continue;
+        };
+        if store.get_projection(ship_entity).is_some() {
+            // Idempotency guard: a dispatch site or save-load may have
+            // already populated this projection. Don't overwrite —
+            // that would erase any intended_* trajectory currently in
+            // flight.
+            continue;
+        }
+        store.update_projection(ShipProjection {
+            entity: ship_entity,
+            dispatched_at: clock.elapsed,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(ship.home_port),
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
     }
 }
 

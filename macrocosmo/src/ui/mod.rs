@@ -1719,6 +1719,16 @@ fn draw_main_panels_system(
         crate::ship::harbour::dock(&mut commands, ship_entity, harbour_entity);
     }
     let dispatch_clock = clock.elapsed;
+    // #482: zero-delay context-menu dispatches bypass the
+    // `PendingShipCommand` pipeline (`command_delay == 0` →
+    // `apply_local_ship_command` or direct `CommandQueue.push`). Run
+    // the same projection write here so the own-ship Galaxy Map render
+    // branch (#477) sees this ship's intended trajectory immediately.
+    for (ship, ship_cmd) in ctx_menu_actions.zero_delay_dispatches {
+        commands.queue(move |world: &mut World| {
+            write_player_dispatch_projection(world, ship, &ship_cmd, dispatch_clock);
+        });
+    }
     for pending_cmd in pending_ship_commands {
         // #475: dispatch-time `ShipProjection` write (epic #473). Must
         // run at the spawn (= dispatch) tick, not when
@@ -1745,7 +1755,7 @@ fn draw_main_panels_system(
 /// `dispatch_clock` must be captured at the egui-system's `clock.elapsed`
 /// (the actual dispatch tick) — *not* the world's current clock when the
 /// `commands.queue` closure runs, which may be a frame later.
-fn write_player_dispatch_projection(
+pub fn write_player_dispatch_projection(
     world: &mut World,
     ship: Entity,
     cmd: &crate::ship::ShipCommand,
