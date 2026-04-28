@@ -30,6 +30,7 @@ use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap, SystemVisibilit
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::command_events::SurveyRequested;
 use macrocosmo::ship::{Owner, Ship};
+use macrocosmo::time_system::GameClock;
 
 use common::{advance_time, spawn_test_ruler, spawn_test_ship, spawn_test_system, test_app};
 
@@ -145,7 +146,7 @@ fn survey_command_outbox_holds_until_light_delay_elapses() {
 
     let frontier_distance_ly = 5.0;
     let mut app = test_app();
-    let (empire, home, _frontier) = setup_one_target(&mut app, frontier_distance_ly);
+    let (empire, home, frontier) = setup_one_target(&mut app, frontier_distance_ly);
     spawn_test_ruler(app.world_mut(), empire, home);
 
     // Required by Bevy's message reader bookkeeping in headless tests.
@@ -184,20 +185,61 @@ fn survey_command_outbox_holds_until_light_delay_elapses() {
     // command and `drain_ai_commands` produces a SurveyRequested
     // event. Add a small slack so the dispatch + process schedule
     // boundary doesn't trip the assertion at the exact threshold.
+    // Step the clock 1 hexady at a time and accumulate
+    // `SurveyRequested` events as they fire. `iter_current_update_messages`
+    // only sees the most recent Update window's writes (Bevy 0.18
+    // double-buffer rotation), so a single check at the end of the
+    // loop misses any event that fired mid-loop. Accumulating tick by
+    // tick is the only deterministic observation strategy here.
+    //
+    // Also tracks outbox state across the threshold so a real
+    // over-gating regression (= command stuck in outbox) and a test
+    // observation miss (= count == 0 because event already drained)
+    // can be distinguished in failure messages.
     let light_delay = light_delay_hexadies(frontier_distance_ly);
+    let mut survey_event_total = 0usize;
+    let mut released_at: Option<i64> = None;
     for _ in 0..(light_delay + 5) {
         advance_time(&mut app, 1);
+        survey_event_total += survey_requested_count(&mut app);
+        if released_at.is_none() && !outbox_holds_survey_for(&app, frontier) {
+            released_at = Some(app.world().resource::<GameClock>().elapsed);
+        }
     }
 
-    // The outbox must have eventually released the command, so a
-    // non-zero number of events fired in the most recent Update.
-    let total_in_last_update = survey_requested_count(&mut app);
     assert!(
-        total_in_last_update > 0,
-        "no SurveyRequested fired in the final Update even after \
-         waiting {} hexadies past light delay — outbox is over-gating",
-        light_delay + 5
+        survey_event_total > 0,
+        "no SurveyRequested fired across {} post-threshold ticks (outbox \
+         released_at={:?}) — outbox is over-gating",
+        light_delay + 5,
+        released_at,
     );
+    assert!(
+        released_at.is_some(),
+        "outbox never released the survey_system command across {} \
+         post-threshold ticks — direct over-gating regression",
+        light_delay + 5,
+    );
+}
+
+/// True iff `AiCommandOutbox` currently holds a `survey_system`
+/// command targeted at `target_system`. Used to distinguish
+/// "outbox over-gates" from "test observation missed the event"
+/// in the post-threshold accumulator loop.
+fn outbox_holds_survey_for(app: &App, target_system: Entity) -> bool {
+    let outbox = app.world().resource::<macrocosmo::ai::command_outbox::AiCommandOutbox>();
+    let kind = macrocosmo::ai::schema::ids::command::survey_system();
+    outbox.entries.iter().any(|entry| {
+        if entry.command.kind != kind {
+            return false;
+        }
+        match entry.command.params.get("target_system") {
+            Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
+                target_system.to_bits() == sys_id.0
+            }
+            _ => false,
+        }
+    })
 }
 
 /// Sanity counterpart: when origin == destination (Ruler at the
