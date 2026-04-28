@@ -247,6 +247,7 @@ pub fn process_surveys(
                                 system: target_system,
                                 system_name: system_name.clone(),
                                 detail: desc,
+                                ship: ship_entity,
                             };
                             fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                         }
@@ -429,6 +430,7 @@ pub fn process_surveys(
                             system: target_system,
                             system_name: system_name.clone(),
                             detail: desc,
+                            ship: ship_entity,
                         };
                         fact_sys.record_for(fact, &vantages, origin_pos, clock.elapsed);
                     }
@@ -601,6 +603,7 @@ pub fn deliver_survey_results(
                 system: target,
                 system_name: survey_data.system_name.clone(),
                 detail: desc,
+                ship: ship_entity,
             };
             fact_sys.record_for(fact, &vantages, hp, clock.elapsed);
         }

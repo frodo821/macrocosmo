@@ -219,6 +219,13 @@ pub enum KnowledgeFact {
         system: Entity,
         system_name: String,
         detail: String,
+        /// #476: The ship that completed the survey. Used by the
+        /// `ShipProjection` reconciler to update the dispatcher's
+        /// projection of `ship` once the survey-complete fact arrives.
+        /// Defaults to `Entity::PLACEHOLDER` for facts loaded from
+        /// pre-#476 saves where the field is not on the wire — those
+        /// facts are correspondingly skipped by the reconciler.
+        ship: Entity,
     },
     /// An anomaly was discovered during a survey.
     AnomalyDiscovered {
@@ -263,6 +270,11 @@ pub enum KnowledgeFact {
         system: Option<Entity>,
         name: String,
         detail: String,
+        /// #476: The ship that just arrived. Used by the `ShipProjection`
+        /// reconciler to update the dispatcher's projection. Defaults to
+        /// `Entity::PLACEHOLDER` for facts loaded from pre-#476 saves —
+        /// those facts are skipped by the reconciler.
+        ship: Entity,
     },
     /// #463: An Infrastructure Core was conquered (hull dropped to 1.0). The
     /// `conquered_by` faction is the attacker; `original_owner` is the
@@ -293,6 +305,12 @@ pub enum KnowledgeFact {
         /// stays useful to subscribers even after the fact has propagated.
         destroyed_at: i64,
         detail: String,
+        /// #476: The destroyed ship entity. Used by the `ShipProjection`
+        /// reconciler to mark the dispatcher's projection terminal
+        /// (state=Destroyed, retain projection per epic #473 Q3).
+        /// Defaults to `Entity::PLACEHOLDER` for facts loaded from
+        /// pre-#476 saves — those facts are skipped by the reconciler.
+        ship: Entity,
     },
     /// #472: A ship has not returned by expected time and is presumed
     /// missing — an empire-side epistemic state with no omniscient audit
@@ -305,6 +323,12 @@ pub enum KnowledgeFact {
         system: Option<Entity>,
         ship_name: String,
         detail: String,
+        /// #476: The presumed-missing ship entity. Used by the
+        /// `ShipProjection` reconciler to mark the dispatcher's
+        /// projection state=Missing. Defaults to `Entity::PLACEHOLDER`
+        /// for facts loaded from pre-#476 saves — those facts are
+        /// skipped by the reconciler.
+        ship: Entity,
     },
     /// #351 (K-2): Lua-defined knowledge kind. The payload is captured as a
     /// [`PayloadSnapshot`](super::payload::PayloadSnapshot) so the fact
@@ -527,6 +551,7 @@ impl KnowledgeFact {
                 system,
                 system_name,
                 detail,
+                ship,
                 ..
             } => {
                 fields.insert("system".into(), PayloadValue::Entity(system.to_bits()));
@@ -535,6 +560,7 @@ impl KnowledgeFact {
                     PayloadValue::String(system_name.clone()),
                 );
                 fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+                fields.insert("ship".into(), PayloadValue::Entity(ship.to_bits()));
             }
             KnowledgeFact::AnomalyDiscovered {
                 system,
@@ -595,6 +621,7 @@ impl KnowledgeFact {
                 system,
                 name,
                 detail,
+                ship,
                 ..
             } => {
                 if let Some(s) = system {
@@ -602,6 +629,7 @@ impl KnowledgeFact {
                 }
                 fields.insert("name".into(), PayloadValue::String(name.clone()));
                 fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+                fields.insert("ship".into(), PayloadValue::Entity(ship.to_bits()));
             }
             KnowledgeFact::CoreConquered {
                 system,
@@ -626,6 +654,7 @@ impl KnowledgeFact {
                 ship_name,
                 destroyed_at,
                 detail,
+                ship,
                 ..
             } => {
                 if let Some(s) = system {
@@ -637,11 +666,13 @@ impl KnowledgeFact {
                     PayloadValue::Number(*destroyed_at as f64),
                 );
                 fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+                fields.insert("ship".into(), PayloadValue::Entity(ship.to_bits()));
             }
             KnowledgeFact::ShipMissing {
                 system,
                 ship_name,
                 detail,
+                ship,
                 ..
             } => {
                 if let Some(s) = system {
@@ -649,6 +680,7 @@ impl KnowledgeFact {
                 }
                 fields.insert("ship_name".into(), PayloadValue::String(ship_name.clone()));
                 fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+                fields.insert("ship".into(), PayloadValue::Entity(ship.to_bits()));
             }
             KnowledgeFact::Scripted { .. } => return None,
         }
@@ -1386,6 +1418,7 @@ mod tests {
                 system: Entity::PLACEHOLDER,
                 system_name: "A".into(),
                 detail: "A".into(),
+                ship: Entity::PLACEHOLDER,
             },
             observed_at: 0,
             arrives_at: 100,
@@ -1399,6 +1432,7 @@ mod tests {
                 system: Entity::PLACEHOLDER,
                 system_name: "B".into(),
                 detail: "B".into(),
+                ship: Entity::PLACEHOLDER,
             },
             observed_at: 0,
             arrives_at: 200,
@@ -1544,6 +1578,7 @@ mod tests {
                 system: Entity::PLACEHOLDER,
                 system_name: "A".into(),
                 detail: "A".into(),
+                ship: Entity::PLACEHOLDER,
             },
             observed_at: 0,
             arrives_at: 100,
@@ -1628,6 +1663,7 @@ mod tests {
                 system: Entity::PLACEHOLDER,
                 system_name: "".into(),
                 detail: "".into(),
+                ship: Entity::PLACEHOLDER,
             },
             KnowledgeFact::AnomalyDiscovered {
                 event_id: None,
@@ -1666,6 +1702,7 @@ mod tests {
                 system: None,
                 name: "".into(),
                 detail: "".into(),
+                ship: Entity::PLACEHOLDER,
             },
             KnowledgeFact::CoreConquered {
                 event_id: None,
@@ -1680,12 +1717,14 @@ mod tests {
                 ship_name: "".into(),
                 destroyed_at: 0,
                 detail: "".into(),
+                ship: Entity::PLACEHOLDER,
             },
             KnowledgeFact::ShipMissing {
                 event_id: None,
                 system: Some(Entity::PLACEHOLDER),
                 ship_name: "".into(),
                 detail: "".into(),
+                ship: Entity::PLACEHOLDER,
             },
         ];
 
@@ -1846,6 +1885,7 @@ mod tests {
                     system: Entity::from_bits(1),
                     system_name: "".into(),
                     detail: "".into(),
+                    ship: Entity::from_bits(7),
                 },
             ),
             (
@@ -1902,6 +1942,7 @@ mod tests {
                     system: Some(Entity::from_bits(1)),
                     name: "".into(),
                     detail: "".into(),
+                    ship: Entity::from_bits(7),
                 },
             ),
             (
@@ -1922,6 +1963,7 @@ mod tests {
                     ship_name: "".into(),
                     destroyed_at: 0,
                     detail: "".into(),
+                    ship: Entity::from_bits(7),
                 },
             ),
             (
@@ -1931,6 +1973,7 @@ mod tests {
                     system: Some(Entity::from_bits(1)),
                     ship_name: "".into(),
                     detail: "".into(),
+                    ship: Entity::from_bits(7),
                 },
             ),
         ];
@@ -2009,6 +2052,7 @@ mod tests {
             system: Entity::PLACEHOLDER,
             system_name: "Vega".into(),
             detail: "Vega surveyed".into(),
+            ship: Entity::PLACEHOLDER,
         }
     }
 

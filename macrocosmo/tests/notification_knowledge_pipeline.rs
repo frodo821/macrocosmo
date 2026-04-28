@@ -217,6 +217,7 @@ fn test_survey_result_via_knowledge_store() {
         system: sys,
         system_name: "Tau Ceti".into(),
         detail: "Tau Ceti surveyed".into(),
+        ship: bevy::prelude::Entity::PLACEHOLDER,
     };
     let origin = [5.0, 0.0, 0.0];
     let plan = compute_fact_arrival(0, origin, [0.0; 3], &[], &CommsParams::default());
@@ -521,6 +522,7 @@ fn test_survey_complete_fact_delayed_when_remote() {
                 system: sys,
                 system_name: "Remote".into(),
                 detail: "Surveyed".into(),
+                ship: bevy::prelude::Entity::PLACEHOLDER,
             },
             observed_at: 0,
             arrives_at: plan.arrives_at,
@@ -567,6 +569,7 @@ fn test_survey_hostile_dual_write_no_double_banner() {
                 system: Entity::PLACEHOLDER,
                 system_name: "".into(),
                 detail: "".into(),
+                ship: Entity::PLACEHOLDER,
             },
             observed_at: 0,
             arrives_at: 0,
@@ -644,6 +647,7 @@ fn test_ship_arrived_low_priority_silent() {
                 system: Some(sys),
                 name: "Corvette".into(),
                 detail: "Arrived".into(),
+                ship: Entity::PLACEHOLDER,
             },
             observed_at: 0,
             arrives_at: 0,
@@ -663,6 +667,7 @@ fn test_ship_arrived_low_priority_silent() {
         system: None,
         name: "".into(),
         detail: "".into(),
+        ship: Entity::PLACEHOLDER,
     };
     assert_eq!(fact.priority(), NotificationPriority::Low);
 }

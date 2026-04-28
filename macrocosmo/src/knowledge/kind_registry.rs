@@ -394,6 +394,9 @@ pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, 
                 ("system", PayloadFieldType::Entity),
                 ("system_name", PayloadFieldType::String),
                 ("detail", PayloadFieldType::String),
+                // #476: ship that completed the survey, used by the
+                // ShipProjection reconciler.
+                ("ship", PayloadFieldType::Entity),
             ],
         ),
         (
@@ -448,6 +451,9 @@ pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, 
                 ("system", PayloadFieldType::Entity),
                 ("name", PayloadFieldType::String),
                 ("detail", PayloadFieldType::String),
+                // #476: ship entity that arrived, for ShipProjection
+                // reconciliation.
+                ("ship", PayloadFieldType::Entity),
             ],
         ),
         (
@@ -469,6 +475,9 @@ pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, 
                 ("ship_name", PayloadFieldType::String),
                 ("destroyed_at", PayloadFieldType::Number),
                 ("detail", PayloadFieldType::String),
+                // #476: destroyed ship entity, for ShipProjection
+                // reconciler terminal-state marking.
+                ("ship", PayloadFieldType::Entity),
             ],
         ),
         (
@@ -480,6 +489,9 @@ pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, 
                 ("system", PayloadFieldType::Entity),
                 ("ship_name", PayloadFieldType::String),
                 ("detail", PayloadFieldType::String),
+                // #476: missing ship entity, for ShipProjection reconciler
+                // amber-state marking.
+                ("ship", PayloadFieldType::Entity),
             ],
         ),
     ]

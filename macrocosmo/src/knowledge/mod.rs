@@ -383,6 +383,25 @@ impl Plugin for KnowledgePlugin {
             .add_systems(
                 Update,
                 flush_ship_projection_writes.after(crate::time_system::advance_game_time),
+            )
+            // #476: Reconcile ShipProjection entries against arriving
+            // KnowledgeFacts. Runs after snapshot-update systems so the
+            // store's ShipSnapshot data is coherent for any caller that
+            // reads both, and before `dispatch_knowledge_observed` so
+            // we can peek at the queue before it drains. Without
+            // `.before(dispatch_knowledge_observed)` ordering would
+            // racefully drop the facts in the same Update where they
+            // arrive (the dispatcher drains them; we need to read
+            // them first).
+            .add_systems(
+                Update,
+                reconcile_ship_projections
+                    .after(propagate_knowledge)
+                    .after(update_destroyed_ship_knowledge)
+                    .after(flush_ship_projection_writes)
+                    .after(crate::time_system::advance_game_time)
+                    .before(crate::scripting::knowledge_dispatch::dispatch_knowledge_observed)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             );
     }
 }
@@ -656,6 +675,14 @@ impl KnowledgeStore {
         self.projections.iter()
     }
 
+    /// #476: Mutable accessor for in-place projection edits, used by
+    /// [`reconcile_ship_projections`]. Returns `None` if no projection
+    /// exists for `ship`. Prefer [`update_projection`](Self::update_projection)
+    /// for unconditional inserts/replaces.
+    pub fn projection_mut(&mut self, ship: Entity) -> Option<&mut ShipProjection> {
+        self.projections.get_mut(&ship)
+    }
+
     /// #474: Remove a ship trajectory projection. Returns the removed entry.
     pub fn clear_projection(&mut self, ship: Entity) -> Option<ShipProjection> {
         self.projections.remove(&ship)
@@ -833,6 +860,266 @@ pub fn flush_ship_projection_writes(
         if let Ok(mut store) = empires.get_mut(entry.empire) {
             store.update_projection(entry.projection);
         }
+    }
+}
+
+/// #476: Reconcile per-empire `ShipProjection`s against arriving
+/// [`KnowledgeFact`]s (epic #473 sub-issue C).
+///
+/// For every empire that holds a [`ShipProjection`] for ship S, this
+/// system inspects the global [`PendingFactQueue`] for facts that bear a
+/// `ship: Entity` field (`ShipArrived`, `SurveyComplete`, `ShipDestroyed`,
+/// `ShipMissing`). For each (empire, fact) pair we re-derive the
+/// per-empire arrival tick from the empire's vantage and the fact's
+/// origin position via [`compute_fact_arrival`]. When the recomputed
+/// `arrives_at <= clock.elapsed`, the projection is updated according to
+/// the fact kind:
+///
+/// * `ShipArrived` — projected_state = `InSystem`, projected_system =
+///   the fact's system. If the projection's `intended_system` matches the
+///   arrival, intended_* fields are cleared (command achieved).
+/// * `SurveyComplete` — projected_state = `InSystem`, projected_system =
+///   the surveyed system. If the projection's `intended_state` was
+///   `Surveying` and the system matches, intended_* are cleared.
+/// * `ShipDestroyed` — projected_state = `Destroyed`, projected_system =
+///   fact.system. The projection is **retained** (situational memory per
+///   epic #473 Q3), but `expected_arrival_at` / `expected_return_at` /
+///   intended_* are all cleared since the mission is over.
+/// * `ShipMissing` — projected_state = `Missing`, projected_system =
+///   fact.system; UI's amber rendering picks this up. Same retain-rule.
+///
+/// **Ordering**: registered `.after(propagate_knowledge)` and
+/// `.after(update_destroyed_ship_knowledge)` so reconciliation observes
+/// the updated `ShipSnapshot` from the same tick. Registered
+/// `.before(scripting::knowledge_dispatch::dispatch_knowledge_observed)`
+/// so we can peek at facts without consuming them; the dispatcher drains
+/// later in the same tick.
+///
+/// **Idempotency**: applying the same fact twice is a no-op. The
+/// projection's `dispatched_at` is bumped to `max(dispatched_at,
+/// fact.observed_at)` on apply, but this is purely a freshness marker;
+/// it does not block reapplication. The reconciler itself just *sets*
+/// the terminal-style fields (no observed_at dominance — the queue's
+/// per-empire arrival check is the gating semantics).
+///
+/// **Per-empire isolation**: Today's [`PendingFactQueue`] is a global
+/// Resource — facts are pushed once per vantage in [`FactSysParam::record_for`]
+/// but the queue does not tag entries with their target empire. The
+/// reconciler therefore *recomputes* per-empire arrival via the
+/// faction's own viewer position (collected through
+/// [`FactionVantageQueries`]), so an empire whose light-delay has not
+/// yet elapsed sees no projection update — even if a closer empire has
+/// already had the same fact arrive. This matches the per-empire
+/// isolation acceptance criterion.
+///
+/// **Facts loaded from disk**: facts deserialised through
+/// `SavedKnowledgeFact::into_live` carry `ship: Entity::PLACEHOLDER`
+/// (the saved variant predates #476 and stays wire-compatible — see
+/// `persistence/savebag.rs`). The reconciler treats `PLACEHOLDER` as
+/// "no projection match" and skips them.
+pub fn reconcile_ship_projections(
+    clock: Res<GameClock>,
+    queue: Res<facts::PendingFactQueue>,
+    mut empire_q: Query<(Entity, &mut KnowledgeStore), With<Empire>>,
+    empire_comms: Query<&crate::empire::CommsParams, With<Empire>>,
+    relay_network: Res<facts::RelayNetwork>,
+    vantage_q: FactionVantageQueries,
+) {
+    if queue.facts.is_empty() {
+        return;
+    }
+    let vantages = vantage_q.collect();
+    if vantages.is_empty() {
+        return;
+    }
+    let now = clock.elapsed;
+    let comms = empire_comms.iter().next().cloned().unwrap_or_default();
+    let relays = &relay_network.relays;
+
+    // Iterate empires once; for each empire, scan the queue for facts
+    // about ships the empire has projections for. Per-empire arrival is
+    // recomputed from the empire's own vantage so empires whose light
+    // delay has not elapsed are skipped.
+    for (empire_entity, mut store) in empire_q.iter_mut() {
+        // Find this empire's vantage; without one we can't gauge arrival.
+        let Some(vantage) = vantages.iter().find(|v| v.faction == empire_entity) else {
+            continue;
+        };
+
+        for pf in &queue.facts {
+            // Pull the (ship, fact-kind data) tuple. Variants without
+            // `ship: Entity` (CombatOutcome, ColonyEstablished, ...) are
+            // skipped — they don't bear ship-trajectory signals.
+            let Some(reconcile) = ProjectionReconcile::from_fact(&pf.fact) else {
+                continue;
+            };
+
+            // Pre-#476 / on-disk facts have ship = PLACEHOLDER. They
+            // can't key any projection, so skip cleanly.
+            if reconcile.ship == Entity::PLACEHOLDER {
+                continue;
+            }
+
+            // Skip if this empire has no projection for the ship.
+            if store.get_projection(reconcile.ship).is_none() {
+                continue;
+            }
+
+            // Per-empire arrival recomputation. The queue's stored
+            // `arrives_at` is a single empire's value (whichever vantage
+            // pushed first); we recompute from this empire's viewer
+            // position so isolation holds.
+            let plan = facts::compute_fact_arrival(
+                pf.observed_at,
+                pf.origin_pos,
+                vantage.ref_pos,
+                relays,
+                &comms,
+            );
+            if plan.arrives_at > now {
+                continue;
+            }
+
+            // Apply reconciliation. Borrow once and mutate in-place so we
+            // don't fight the borrow checker over `store`.
+            let Some(projection) = store.projection_mut(reconcile.ship) else {
+                // Removed under our feet (shouldn't happen — store is
+                // exclusive within this iteration), but handle defensively.
+                continue;
+            };
+            apply_reconciliation(projection, reconcile, pf.observed_at);
+        }
+    }
+}
+
+/// #476: Internal carrier struct describing a fact's reconciliation
+/// signal. Decouples the matcher from [`apply_reconciliation`] so the
+/// rules table is concise and unit-testable.
+#[derive(Clone, Copy, Debug)]
+struct ProjectionReconcile {
+    ship: Entity,
+    kind: ProjectionReconcileKind,
+    /// The system carried by the fact, if any. `None` for deep-space
+    /// arrivals.
+    system: Option<Entity>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ProjectionReconcileKind {
+    Arrived,
+    SurveyComplete,
+    Destroyed,
+    Missing,
+}
+
+impl ProjectionReconcile {
+    fn from_fact(fact: &facts::KnowledgeFact) -> Option<Self> {
+        match fact {
+            facts::KnowledgeFact::ShipArrived { ship, system, .. } => Some(Self {
+                ship: *ship,
+                kind: ProjectionReconcileKind::Arrived,
+                system: *system,
+            }),
+            facts::KnowledgeFact::SurveyComplete { ship, system, .. } => Some(Self {
+                ship: *ship,
+                kind: ProjectionReconcileKind::SurveyComplete,
+                system: Some(*system),
+            }),
+            facts::KnowledgeFact::ShipDestroyed { ship, system, .. } => Some(Self {
+                ship: *ship,
+                kind: ProjectionReconcileKind::Destroyed,
+                system: *system,
+            }),
+            facts::KnowledgeFact::ShipMissing { ship, system, .. } => Some(Self {
+                ship: *ship,
+                kind: ProjectionReconcileKind::Missing,
+                system: *system,
+            }),
+            // CombatOutcome / ColonyEstablished / HostileDetected etc.
+            // do not carry a ship-trajectory signal.
+            _ => None,
+        }
+    }
+}
+
+/// #476: Mutate the projection for a ship in response to a reconciliation
+/// signal derived from an arrived [`KnowledgeFact`].
+fn apply_reconciliation(
+    projection: &mut ShipProjection,
+    reconcile: ProjectionReconcile,
+    fact_observed_at: i64,
+) {
+    match reconcile.kind {
+        ProjectionReconcileKind::Arrived => {
+            projection.projected_state = ShipSnapshotState::InSystem;
+            projection.projected_system = reconcile.system;
+            // If the dispatcher's intended target matches the observed
+            // arrival, the command has visibly delivered — clear the
+            // intended layer so the UI no longer renders a "pending"
+            // overlay. Mismatched arrivals leave intended_* in place
+            // (the command may still be in flight to a different system).
+            if reconcile.system.is_some() && projection.intended_system == reconcile.system {
+                projection.intended_state = None;
+                projection.intended_system = None;
+                projection.intended_takes_effect_at = None;
+                projection.expected_arrival_at = None;
+                projection.expected_return_at = None;
+            }
+        }
+        ProjectionReconcileKind::SurveyComplete => {
+            // Survey completion means the ship is at the surveyed system
+            // at the moment of completion. Mid-flight back home is not
+            // observable from this fact alone (the carrier-back path is
+            // a separate ShipArrived fact at the home system).
+            projection.projected_state = ShipSnapshotState::InSystem;
+            projection.projected_system = reconcile.system;
+            // Surveying intent has been satisfied for the matching
+            // target; clear it so the UI stops dashed-rendering the
+            // outbound leg.
+            if matches!(
+                projection.intended_state,
+                Some(ShipSnapshotState::Surveying)
+            ) && projection.intended_system == reconcile.system
+            {
+                projection.intended_state = None;
+                projection.intended_system = None;
+                projection.intended_takes_effect_at = None;
+                projection.expected_arrival_at = None;
+                // expected_return_at intentionally left so the UI can
+                // still render a "carrier returning" hint until the
+                // home-system ShipArrived fact lands.
+            }
+        }
+        ProjectionReconcileKind::Destroyed => {
+            // Terminal marker. Retain projection (situational memory,
+            // epic #473 Q3) but clear in-flight expectations.
+            projection.projected_state = ShipSnapshotState::Destroyed;
+            projection.projected_system = reconcile.system;
+            projection.intended_state = None;
+            projection.intended_system = None;
+            projection.intended_takes_effect_at = None;
+            projection.expected_arrival_at = None;
+            projection.expected_return_at = None;
+        }
+        ProjectionReconcileKind::Missing => {
+            // UI amber state. Same retain-rule as Destroyed; a later
+            // ShipDestroyed fact will supersede this when the
+            // destruction light arrives.
+            projection.projected_state = ShipSnapshotState::Missing;
+            projection.projected_system = reconcile.system;
+            projection.intended_state = None;
+            projection.intended_system = None;
+            projection.intended_takes_effect_at = None;
+            projection.expected_arrival_at = None;
+            projection.expected_return_at = None;
+        }
+    }
+    // Bump dispatched_at to the fact's observation tick so future
+    // reconciliations against older facts (e.g. deferred-load races) are
+    // gated cleanly. Doc note in `ShipProjection.dispatched_at` covers
+    // the "tick the projection was last reconciled" semantics.
+    if fact_observed_at > projection.dispatched_at {
+        projection.dispatched_at = fact_observed_at;
     }
 }
 
@@ -1632,6 +1919,7 @@ pub fn update_destroyed_ship_knowledge(
                             system: record.last_known_system,
                             ship_name: record.name.clone(),
                             detail: format!("{} has not returned — presumed missing", record.name),
+                            ship: record.entity,
                         };
                         fact_sys.record_for(
                             fact,

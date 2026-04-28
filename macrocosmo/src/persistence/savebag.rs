@@ -3379,11 +3379,18 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
+            // #476: The live `ship: Entity` field is dropped on serialize
+            // (the saved variant predates #476 and stays wire-compatible).
+            // On deserialize it is rehydrated to `Entity::PLACEHOLDER`,
+            // which the projection reconciler treats as "no projection
+            // match" — facts loaded from disk therefore do not retroactively
+            // reconcile projections.
             KnowledgeFact::SurveyComplete {
                 event_id,
                 system,
                 system_name,
                 detail,
+                ship: _,
             } => Self::SurveyComplete {
                 system_bits: system.to_bits(),
                 system_name: system_name.clone(),
@@ -3449,11 +3456,13 @@ impl SavedKnowledgeFact {
                 reason: reason.clone(),
                 event_id: event_id.map(|e| e.0),
             },
+            // #476: see SurveyComplete ship-field note above.
             KnowledgeFact::ShipArrived {
                 event_id,
                 system,
                 name,
                 detail,
+                ship: _,
             } => Self::ShipArrived {
                 system_bits: system.map(|e| e.to_bits()),
                 name: name.clone(),
@@ -3473,12 +3482,14 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
+            // #476: see SurveyComplete ship-field note above.
             KnowledgeFact::ShipDestroyed {
                 event_id,
                 system,
                 ship_name,
                 destroyed_at,
                 detail,
+                ship: _,
             } => Self::ShipDestroyed {
                 system_bits: system.map(|e| e.to_bits()),
                 ship_name: ship_name.clone(),
@@ -3486,11 +3497,13 @@ impl SavedKnowledgeFact {
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
+            // #476: see SurveyComplete ship-field note above.
             KnowledgeFact::ShipMissing {
                 event_id,
                 system,
                 ship_name,
                 detail,
+                ship: _,
             } => Self::ShipMissing {
                 system_bits: system.map(|e| e.to_bits()),
                 ship_name: ship_name.clone(),
@@ -3541,6 +3554,9 @@ impl SavedKnowledgeFact {
                 system: remap_entity(system_bits, map),
                 system_name,
                 detail,
+                // #476: ship not on the wire — projection reconciler
+                // skips PLACEHOLDER-keyed facts loaded from disk.
+                ship: bevy::prelude::Entity::PLACEHOLDER,
             },
             Self::AnomalyDiscovered {
                 system_bits,
@@ -3611,6 +3627,8 @@ impl SavedKnowledgeFact {
                 system: system_bits.map(|b| remap_entity(b, map)),
                 name,
                 detail,
+                // #476: ship not on the wire — see SurveyComplete note above.
+                ship: bevy::prelude::Entity::PLACEHOLDER,
             },
             Self::CoreConquered {
                 system_bits,
@@ -3637,6 +3655,8 @@ impl SavedKnowledgeFact {
                 ship_name,
                 destroyed_at,
                 detail,
+                // #476: ship not on the wire — see SurveyComplete note above.
+                ship: bevy::prelude::Entity::PLACEHOLDER,
             },
             Self::ShipMissing {
                 system_bits,
@@ -3648,6 +3668,8 @@ impl SavedKnowledgeFact {
                 system: system_bits.map(|b| remap_entity(b, map)),
                 ship_name,
                 detail,
+                // #476: ship not on the wire — see SurveyComplete note above.
+                ship: bevy::prelude::Entity::PLACEHOLDER,
             },
         }
     }

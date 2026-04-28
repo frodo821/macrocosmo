@@ -82,6 +82,7 @@ pub fn start_sublight_travel_with_bonus(
 pub fn sublight_movement_system(
     clock: Res<GameClock>,
     mut query: Query<(
+        Entity,
         &mut ShipState,
         &mut Position,
         &Ship,
@@ -95,7 +96,7 @@ pub fn sublight_movement_system(
     vantage_q: FactionVantageQueries,
 ) {
     let vantages = vantage_q.collect();
-    for (mut state, mut pos, ship, mut last_docked) in query.iter_mut() {
+    for (ship_entity, mut state, mut pos, ship, mut last_docked) in query.iter_mut() {
         let (origin, destination, target_system, departed_at, arrival_at) = match *state {
             ShipState::SubLight {
                 origin,
@@ -114,6 +115,7 @@ pub fn sublight_movement_system(
             pos.z = destination[2];
             write_ship_arrived_dual(
                 target_system,
+                ship_entity,
                 ship,
                 destination,
                 clock.elapsed,
@@ -154,6 +156,7 @@ pub fn sublight_movement_system(
             pos.z = destination[2];
             write_ship_arrived_dual(
                 target_system,
+                ship_entity,
                 ship,
                 destination,
                 clock.elapsed,
@@ -339,6 +342,7 @@ impl PortParams {
 pub fn process_ftl_travel(
     clock: Res<GameClock>,
     mut ships: Query<(
+        Entity,
         &Ship,
         &mut ShipState,
         &mut Position,
@@ -353,7 +357,7 @@ pub fn process_ftl_travel(
 ) {
     let vantages = vantage_q.collect();
 
-    for (ship, mut state, mut ship_pos, last_docked) in ships.iter_mut() {
+    for (ship_entity, ship, mut state, mut ship_pos, last_docked) in ships.iter_mut() {
         let (destination_system, arrival_at) = match *state {
             ShipState::InFTL {
                 destination_system,
@@ -398,6 +402,7 @@ pub fn process_ftl_travel(
                     system: Some(destination_system),
                     name: ship.name.clone(),
                     detail: desc,
+                    ship: ship_entity,
                 };
                 fact_sys.record_for(fact, &vantages, dest_pos.as_array(), clock.elapsed);
                 info!("Ship {} arrived at {} via FTL", ship.name, star.name);
@@ -416,6 +421,7 @@ pub fn process_ftl_travel(
 #[allow(clippy::too_many_arguments)]
 fn write_ship_arrived_dual(
     target_system: Option<Entity>,
+    ship_entity: Entity,
     ship: &Ship,
     destination: [f64; 3],
     now: i64,
@@ -454,6 +460,7 @@ fn write_ship_arrived_dual(
         system: related,
         name: ship.name.clone(),
         detail: desc,
+        ship: ship_entity,
     };
     fact_sys.record_for(fact, vantages, origin_pos, now);
 }

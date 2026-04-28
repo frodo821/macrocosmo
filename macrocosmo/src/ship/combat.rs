@@ -492,6 +492,7 @@ pub fn resolve_combat(
                         ship_name: name.clone(),
                         destroyed_at: clock.elapsed,
                         detail: desc.clone(),
+                        ship: *entity,
                     };
                     fact_sys.record_for(fact, &vantages, pos, clock.elapsed);
                 }
@@ -846,6 +847,7 @@ pub fn resolve_combat(
                             ship_name: name.clone(),
                             destroyed_at: clock.elapsed,
                             detail: desc.clone(),
+                            ship: *entity,
                         };
                         fact_sys.record_for(fact, &vantages, pos, clock.elapsed);
                     }
@@ -930,6 +932,7 @@ pub fn resolve_combat(
                             ship_name: name.clone(),
                             destroyed_at: clock.elapsed,
                             detail: desc.clone(),
+                            ship: *entity,
                         };
                         fact_sys.record_for(fact, &vantages, pos, clock.elapsed);
                     }
