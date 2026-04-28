@@ -12,11 +12,14 @@
 //!    hostile fleets (`Owner::Neutral` or no `RegionMembership`) are
 //!    skipped.
 //! 2. [`spawn_short_agent_for_new_colonies`] — `Added<Colony>` driven;
-//!    grows the empire's primary `Region.member_systems` (and inserts
+//!    grows the resolved `Region.member_systems` (and inserts
 //!    `RegionMembership`) when a colony establishes in a previously-
 //!    unowned system, then spawns one
 //!    `ShortAgent { scope: ColonizedSystem(_) }` for that system if none
-//!    exists yet.
+//!    exists yet. The resolved Region is selected via the 3-tier
+//!    `resolve_mid_agent_for_system_world` fallback (#471) — for
+//!    multi-region empires this routes per-system ShortAgents to the
+//!    per-region MidAgent.
 //! 3. [`run_short_agents`] — drives every `ShortAgent` whose
 //!    `auto_managed = true` through `CampaignReactiveShort::tick`,
 //!    using the agent's own `PlanState` as persistent storage. Emitted
@@ -71,18 +74,91 @@ fn fleet_empire(
     None
 }
 
-/// Resolve `(home_system, mid_agent)` for a fleet whose flagship is in
-/// `system`. Returns `None` if no `RegionMembership` exists or the
-/// region's `mid_agent` slot is unset.
-fn region_for_system(
+/// Resolve the MidAgent that should manage a `(empire, system)` pair
+/// using a 3-tier fallback (#471):
+///
+/// 1. **Fast path** — the system has a `RegionMembership` pointing at a
+///    Region owned by `empire`. Production saves with exclusive
+///    `Sovereignty` always land here.
+/// 2. **Shared-galaxy fallback** — scan `RegionRegistry.by_empire[empire]`
+///    for a Region whose `member_systems` contains `system`. Used by
+///    test setups where two empires overlap on the same StarSystem
+///    (the single-slot `RegionMembership` only tracks one of them, so
+///    the second empire's lookup falls through Tier 1).
+/// 3. **Primary-region fallback** — `system` is not yet a member of any
+///    region for this empire (e.g. brand-new colony in unowned
+///    territory before the colony hook grows the region). Use the
+///    empire's primary region.
+///
+/// Returns `None` if the empire has no Region at all, or the resolved
+/// Region's `mid_agent` slot is unset.
+fn resolve_mid_agent_for_system(
+    empire: Entity,
     system: Entity,
     memberships: &Query<&RegionMembership>,
     regions: &Query<&Region>,
+    region_registry: Option<&RegionRegistry>,
+) -> Option<Entity> {
+    // Tier 1: fast path via reverse index.
+    if let Ok(rm) = memberships.get(system)
+        && let Ok(region) = regions.get(rm.region)
+        && region.empire == empire
+        && let Some(mid) = region.mid_agent
+    {
+        return Some(mid);
+    }
+
+    // Tier 2: scan this empire's regions for one that owns `system`.
+    let registry = region_registry?;
+    let empire_regions = registry.by_empire.get(&empire)?;
+    for &region_entity in empire_regions {
+        if let Ok(region) = regions.get(region_entity)
+            && region.member_systems.contains(&system)
+            && let Some(mid) = region.mid_agent
+        {
+            return Some(mid);
+        }
+    }
+
+    // Tier 3: primary-region fallback.
+    let &primary = empire_regions.first()?;
+    regions.get(primary).ok().and_then(|r| r.mid_agent)
+}
+
+/// `&mut World` variant of [`resolve_mid_agent_for_system`] for the
+/// colony hook (which already runs as an exclusive system to grow
+/// `Region.member_systems`). Returns `(region_entity, mid_agent)` since
+/// the caller needs to mutate the resolved Region directly.
+fn resolve_mid_agent_for_system_world(
+    world: &World,
+    empire: Entity,
+    system: Entity,
 ) -> Option<(Entity, Entity)> {
-    let region_entity = memberships.get(system).ok()?.region;
-    let region = regions.get(region_entity).ok()?;
-    let mid = region.mid_agent?;
-    Some((region_entity, mid))
+    // Tier 1: fast path via reverse index.
+    if let Some(rm) = world.get::<RegionMembership>(system)
+        && let Some(region) = world.get::<Region>(rm.region)
+        && region.empire == empire
+        && let Some(mid) = region.mid_agent
+    {
+        return Some((rm.region, mid));
+    }
+
+    // Tier 2: scan this empire's regions for one that owns `system`.
+    let registry = world.get_resource::<RegionRegistry>()?;
+    let empire_regions = registry.by_empire.get(&empire)?;
+    for &region_entity in empire_regions {
+        if let Some(region) = world.get::<Region>(region_entity)
+            && region.member_systems.contains(&system)
+            && let Some(mid) = region.mid_agent
+        {
+            return Some((region_entity, mid));
+        }
+    }
+
+    // Tier 3: primary-region fallback.
+    let &primary = empire_regions.first()?;
+    let mid = world.get::<Region>(primary).and_then(|r| r.mid_agent)?;
+    Some((primary, mid))
 }
 
 /// Spawn-or-backfill system — install one `ShortAgent { scope:
@@ -142,22 +218,21 @@ pub fn spawn_short_agent_for_new_fleets(
             // re-flag case.
             continue;
         };
-        // Resolve the agent's MidAgent through the **owner empire**
-        // first, falling back to system-side `RegionMembership` only
-        // when the empire has no Region of its own. The owner-first
-        // path is load-bearing in shared-galaxy test setups where two
-        // empires sit on the same `StarSystem`: a system's
-        // `RegionMembership` only tracks one region, so without this
-        // lookup the second empire's fleet would attach to the first
-        // empire's MidAgent and `run_short_agents` would route it
-        // through the wrong `EmpireShortInputs` slot.
-        let mid_agent = region_registry
-            .as_ref()
-            .and_then(|reg| reg.by_empire.get(&empire))
-            .and_then(|v| v.first().copied())
-            .and_then(|region_entity| regions.get(region_entity).ok())
-            .and_then(|r| r.mid_agent)
-            .or_else(|| region_for_system(system, &memberships, &regions).map(|(_, mid)| mid));
+        // #471: resolve the MidAgent that owns the flagship's *current*
+        // region, with a 3-tier fallback (system-membership → empire
+        // region scan → empire primary). This routes per-region
+        // ShortAgents to the per-region Mid for multi-region empires,
+        // while still degrading gracefully in shared-galaxy test
+        // setups where two empires overlap on the same StarSystem (the
+        // single-slot `RegionMembership` only tracks one region — Tier
+        // 2's empire-scoped scan covers the second empire).
+        let mid_agent = resolve_mid_agent_for_system(
+            empire,
+            system,
+            &memberships,
+            &regions,
+            region_registry.as_deref(),
+        );
         let Some(mid_agent) = mid_agent else {
             // Empire's region not yet wired (early frame, or test with
             // no spawn-time region setup). The post-frame backfill
@@ -185,8 +260,9 @@ pub fn spawn_short_agent_for_new_fleets(
 }
 
 /// Spawn-or-backfill colony hook — when a colony establishes in a
-/// system the empire does not yet hold, grow the empire's primary
-/// `Region` and install a `ColonizedSystem` `ShortAgent`.
+/// system the empire does not yet hold, grow the empire's *resolved*
+/// `Region` (via the 3-tier `resolve_mid_agent_for_system_world`
+/// fallback, #471) and install a `ColonizedSystem` `ShortAgent`.
 ///
 /// Filters by "no ColonizedSystem ShortAgent for this system yet"
 /// (rather than `Added<Colony>`) for the same reason
@@ -234,24 +310,20 @@ pub fn spawn_short_agent_for_new_colonies(world: &mut World) {
             continue;
         }
 
-        // Region resolution: prefer the **owner empire**'s primary
-        // Region (via `RegionRegistry`) over `system.RegionMembership`.
-        // The owner-first lookup matters in shared-galaxy test setups
-        // where two empires overlap on the same StarSystem — the
-        // single-slot `RegionMembership` only tracks one of them, and
-        // the second empire's colony would otherwise be silently
-        // skipped here. Production saves never overlap (Sovereignty
-        // is exclusive) so the lookup short-circuits identically.
-        let owner_region: Option<Entity> = world
-            .get_resource::<RegionRegistry>()
-            .and_then(|r| r.by_empire.get(&owner).and_then(|v| v.first().copied()));
-        let region_entity = match owner_region {
-            Some(r) => r,
-            None => continue,
-        };
-        let Some(mid_agent) = world.get::<Region>(region_entity).and_then(|r| r.mid_agent) else {
-            // Region exists but its MidAgent slot is unset — defer to
-            // the next backfill pass.
+        // #471: resolve the colony's home region using the same 3-tier
+        // fallback as the fleet hook. For multi-region empires, this
+        // routes the ColonizedSystem ShortAgent to the per-region Mid
+        // — Tier 1 (system's own RegionMembership) catches re-colonized
+        // systems already owned by some region of this empire; Tier 2
+        // catches systems already in the empire's `member_systems`
+        // (Region.member_systems but RegionMembership pointing
+        // elsewhere); Tier 3 falls back to the empire's primary region
+        // for brand-new colonies in unowned territory.
+        let Some((region_entity, mid_agent)) =
+            resolve_mid_agent_for_system_world(world, owner, system)
+        else {
+            // Empire has no region with a Mid yet — defer to the next
+            // backfill pass.
             continue;
         };
         // Grow the owner's Region to include this system if it is not
@@ -303,13 +375,71 @@ pub fn spawn_short_agent_for_new_colonies(world: &mut World) {
         // back-reference; we do not insert the component on the
         // StarSystem itself so multi-colony systems can hold a single
         // shared agent independently of system component storage.
-        let _ = region_entity;
         world.spawn(ShortAgent {
             managed_by: mid_agent,
             scope: ShortScope::ColonizedSystem(system),
             state: macrocosmo_ai::PlanState::default(),
             auto_managed,
         });
+    }
+}
+
+/// Per-tick rehoming for Fleet-scope ShortAgents (#471).
+///
+/// When a Fleet moves between regions of the same empire (e.g. a
+/// courier flies from region A's home to region B's home), its
+/// `ShortAgent.managed_by` must follow so the per-region MidAgent owns
+/// the fleet's tactics. ColonizedSystem agents don't move, so this
+/// system only walks Fleet-scope agents.
+///
+/// Mid-transit fleets (no `ShipState::InSystem` on any member) keep
+/// their current `managed_by` until they land — there's no meaningful
+/// region for them while they're between systems.
+pub fn rehome_fleet_short_agents(
+    mut fleets: Query<(&Fleet, &FleetMembers, &mut ShortAgent)>,
+    ships: Query<&crate::ship::Ship>,
+    ship_states: Query<&crate::ship::ShipState>,
+    memberships: Query<&RegionMembership>,
+    regions: Query<&Region>,
+    region_registry: Option<Res<RegionRegistry>>,
+) {
+    for (fleet, members, mut agent) in fleets.iter_mut() {
+        // Only Fleet-scope agents — ColonizedSystem agents are tied to
+        // a specific StarSystem entity which never moves.
+        if !matches!(agent.scope, ShortScope::Fleet(_)) {
+            continue;
+        }
+        let Some(empire) = fleet_empire(members, fleet.flagship, &ships) else {
+            continue;
+        };
+        // Resolve the flagship's *current* system. Probe flagship first,
+        // then walk members so multi-ship fleets with a despawned
+        // flagship still rehome correctly.
+        let mut system: Option<Entity> = None;
+        let candidates = fleet.flagship.into_iter().chain(members.iter().copied());
+        for ship_entity in candidates {
+            if let Ok(crate::ship::ShipState::InSystem { system: s }) = ship_states.get(ship_entity)
+            {
+                system = Some(*s);
+                break;
+            }
+        }
+        let Some(system) = system else {
+            // Mid-transit — defer until landing.
+            continue;
+        };
+        let Some(target_mid) = resolve_mid_agent_for_system(
+            empire,
+            system,
+            &memberships,
+            &regions,
+            region_registry.as_deref(),
+        ) else {
+            continue;
+        };
+        if agent.managed_by != target_mid {
+            agent.managed_by = target_mid;
+        }
     }
 }
 

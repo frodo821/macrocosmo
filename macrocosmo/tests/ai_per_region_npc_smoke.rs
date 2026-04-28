@@ -472,18 +472,15 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
     }
 
     // ----- ShortAgents: every Fleet (2) and ColonizedSystem (2) entry
-    // exists, all routed through the empire's primary Region's
-    // MidAgent. Today the spawn hooks
-    // (`spawn_short_agent_for_new_fleets` / `..._colonies`) resolve the
-    // managing Mid via `RegionRegistry.by_empire[empire].first()` —
-    // load-bearing for shared-galaxy test setups (see runtime docs).
-    // That means *every* ShortAgent for this empire is `managed_by =
-    // mid_a` even though the empire owns two regions. The Mid layer's
-    // independent emission (asserted above via `count_outbox_for` on
-    // both targets) is the source of truth for region isolation; the
-    // ShortAgent assertion below pins the spawn-hook contract so any
-    // future cutover to per-system region resolution will surface as a
-    // test failure here.
+    // exists, each routed to the MidAgent of the region whose
+    // `member_systems` contains its location (#471). After
+    // `spawn_short_agent_for_new_fleets` /
+    // `spawn_short_agent_for_new_colonies` resolve the managing Mid
+    // through the 3-tier `resolve_mid_agent_for_system` fallback,
+    // region-A ShortAgents (Fleet whose flagship lives in `home_a`,
+    // ColonizedSystem(`home_a`)) point at `mid_a`, and region-B
+    // ShortAgents point at `mid_b`. Cross-region leakage at the Short
+    // layer would surface as the wrong `managed_by` here.
     let short_agents: Vec<ShortAgent> = app
         .world_mut()
         .query::<&ShortAgent>()
@@ -534,21 +531,38 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
         colonized_systems,
     );
 
-    // Spawn-hook contract: every ShortAgent for this empire routes via
-    // the empire's primary Region (Mid A). Mid B is correctly populated
-    // by `npc_decision_tick` (asserted above through
-    // `count_outbox_for(target_b)`), but does not yet manage any
-    // ShortAgent — see runtime comment at
-    // `short_agent_runtime::spawn_short_agent_for_new_fleets`.
+    // Per-region routing contract (#471): each Fleet ShortAgent's
+    // `managed_by` matches its flagship's region's MidAgent, and each
+    // ColonizedSystem ShortAgent's `managed_by` matches the home
+    // region's MidAgent.
+    let fleet_a = app
+        .world()
+        .get::<Ship>(layout.colony_ship_a)
+        .and_then(|s| s.fleet)
+        .expect("region-A colony ship must belong to a fleet");
+    let fleet_b = app
+        .world()
+        .get::<Ship>(layout.colony_ship_b)
+        .and_then(|s| s.fleet)
+        .expect("region-B colony ship must belong to a fleet");
     for sa in &short_agents {
+        let expected_mid = match sa.scope {
+            ShortScope::Fleet(f) if f == fleet_a => layout.mid_a,
+            ShortScope::Fleet(f) if f == fleet_b => layout.mid_b,
+            ShortScope::ColonizedSystem(s) if s == layout.home_a => layout.mid_a,
+            ShortScope::ColonizedSystem(s) if s == layout.home_b => layout.mid_b,
+            _ => panic!(
+                "unexpected ShortAgent scope {:?} (not bound to either region)",
+                sa.scope
+            ),
+        };
         assert_eq!(
-            sa.managed_by, layout.mid_a,
-            "ShortAgent.managed_by must be the empire's primary-Region \
-             MidAgent (mid_a); got {:?} for scope {:?}",
-            sa.managed_by, sa.scope,
+            sa.managed_by, expected_mid,
+            "ShortAgent.managed_by must match its region's MidAgent \
+             (#471); got {:?}, expected {:?} for scope {:?}",
+            sa.managed_by, expected_mid, sa.scope,
         );
     }
-    let _ = layout.mid_b; // referenced for future per-system routing.
 
     // ----- Sanity: AiCommandOutbox carries entries from BOTH regions
     // in the same world (= multi-Mid is actually live).

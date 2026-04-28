@@ -202,7 +202,15 @@ impl Plugin for AiPlugin {
                 (
                     super::short_agent_runtime::spawn_short_agent_for_new_fleets,
                     super::short_agent_runtime::spawn_short_agent_for_new_colonies,
+                    // #471: rehome Fleet ShortAgents whose flagship has
+                    // crossed a region boundary. Runs after the spawn
+                    // hooks (so freshly-spawned agents are visible) and
+                    // before `run_short_agents` (so the new
+                    // `managed_by` is already correct when the agent
+                    // ticks).
+                    super::short_agent_runtime::rehome_fleet_short_agents,
                 )
+                    .chain()
                     .in_set(AiTickSet::Reason)
                     .after(super::npc_decision::backfill_mid_agents_for_ai_controlled)
                     .before(super::short_agent_runtime::run_short_agents)
