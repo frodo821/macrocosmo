@@ -415,19 +415,18 @@ fn two_region_empire_round_trips_cross_region_refs() {
     );
 }
 
-/// #449 PR2e: SAVE_VERSION must have been bumped to 16 in this PR (the
-/// jump from 15 covers the new Region / RegionMembership / MidAgent /
-/// ShortAgent / EmpireLongTermState wire fields plus the
-/// RegionRegistry resource entry on `SavedResources`). The strict-reject
-/// policy in `load.rs` then refuses to decode v15 saves so the
-/// fixture-regen workflow stays the only path forward.
+/// #449 PR2e bumped SAVE_VERSION 15 → 16 for Region / MidAgent / ShortAgent
+/// fields. #472 then bumped 16 → 17 to cover the
+/// `SavedGameEventKind::ShipMissing` retirement (postcard's positional enum
+/// tag encoding makes that a hard wire-format break). The strict-reject
+/// policy in `load.rs` continues to refuse decoding any prior version so
+/// the fixture-regen workflow stays the only path forward.
 #[test]
 fn save_version_strictly_rejects_previous_version() {
     assert_eq!(
-        SAVE_VERSION, 16,
-        "#449 PR2e bumps SAVE_VERSION from 15 to 16; postcard's positional \
-         encoding of the new SavedComponentBag / SavedResources fields is a \
-         hard wire-format break"
+        SAVE_VERSION, 17,
+        "#472 bumps SAVE_VERSION 16 → 17 (ShipMissing variant retired); \
+         postcard's positional enum tag encoding makes that a hard wire-format break"
     );
 
     // Hand-craft a minimal byte stream that begins with a v15 version

@@ -165,6 +165,17 @@ pub enum ObservationSource {
 pub const STALE_THRESHOLD_HEXADIES: i64 = 600;
 
 /// #409: Record of a ship destroyed in combat, pending light-speed notification.
+///
+/// #472: `destroyed_description` and `event_emitted` were removed because the
+/// `GameEvent::ShipDestroyed` audit fire is now produced at the destruction
+/// site itself (mirroring `CoreConquered`), not from this registry. The
+/// registry's remaining job is per-empire `KnowledgeStore` ghost transition
+/// + per-empire `KnowledgeFact::ShipMissing` emission when the grace window
+/// expires before destruction light has arrived. `marked_missing` doubles
+/// as the per-record idempotency flag for the missing emit (any empire
+/// having transitioned avoids re-emitting); a per-empire flag is overkill
+/// for today's small empire counts and `KnowledgeFact::ShipDestroyed`
+/// supersedes a missing fact when light eventually arrives.
 #[derive(Clone, Debug, bevy::reflect::Reflect)]
 pub struct DestroyedShipRecord {
     pub entity: Entity,
@@ -173,15 +184,10 @@ pub struct DestroyedShipRecord {
     pub name: String,
     pub design_id: String,
     pub last_known_system: Option<Entity>,
-    /// Set to `true` once the "Missing" notification has been emitted.
+    /// Set to `true` once the per-empire `KnowledgeFact::ShipMissing` has
+    /// been emitted at least once (idempotency guard so we don't re-fact
+    /// every tick after the grace window expires).
     pub marked_missing: bool,
-    /// #435: Human-readable description for the pending `ShipDestroyed`
-    /// event. The event is fired when light from the destruction arrives
-    /// at the player empire's viewer, NOT at destruction time.
-    pub destroyed_description: String,
-    /// #435: Set to `true` once the player-facing `ShipDestroyed` event
-    /// has been emitted (prevents re-firing across subsequent ticks).
-    pub event_emitted: bool,
 }
 
 /// Grace period (in hexadies) before a destroyed ship is considered "missing."
@@ -1251,17 +1257,28 @@ pub fn propagate_knowledge(
     } // end empire loop
 }
 
-/// #409 / #435: Check destroyed ship records. Two-phase transition:
-/// 1. After `MISSING_GRACE_HEXADIES` → mark snapshot as Missing, emit ShipMissing event
-/// 2. After full light-speed delay → mark snapshot as Destroyed, emit ShipDestroyed event, remove record
+/// #409 / #435 / #472: Tick the per-empire perception of pending ship
+/// destructions.
 ///
-/// #435: The `ShipDestroyed` [`GameEvent`] is fired **here**, not at the site
-/// where combat despawns the ship. This ensures the player's event log entry
-/// arrives at the same time as the ghost-to-destroyed transition, respecting
-/// the light-speed communication constraint.
+/// Two-phase per-empire transition (no longer player-gated):
+/// 1. After `MISSING_GRACE_HEXADIES` and before destruction light arrives,
+///    update the empire's `KnowledgeStore` ghost to `Missing` and emit a
+///    per-faction `KnowledgeFact::ShipMissing` (no `GameEvent` counterpart —
+///    "missing" is an empire-side epistemic state with no omniscient audit
+///    moment, see `events.rs` module docstring + #472).
+/// 2. After full light-speed delay, transition the ghost to `Destroyed`.
+///    The `KnowledgeFact::ShipDestroyed` itself is **not** emitted here —
+///    it was already routed per-faction at the destruction site (#472,
+///    matching the `GameEvent` audit + `KnowledgeFact` per-faction dual-write
+///    pattern codified by #463). The fact's own arrival time governs the
+///    banner; this system only handles the snapshot transition.
+///
+/// #472: removed the `Some(empire_entity) == player_empire` gate — every
+/// empire now ticks its own `KnowledgeStore`, and the missing fact is
+/// emitted per-empire so NPC AI sees lost ships too.
 pub fn update_destroyed_ship_knowledge(
     clock: Res<GameClock>,
-    positions: Query<&Position>,
+    positions: Query<&Position, (With<crate::galaxy::StarSystem>, Without<crate::ship::Ship>)>,
     mut empire_q: Query<
         (
             Entity,
@@ -1271,9 +1288,8 @@ pub fn update_destroyed_ship_knowledge(
         With<crate::player::Empire>,
     >,
     mut registry: ResMut<DestroyedShipRegistry>,
-    mut events: MessageWriter<crate::events::GameEvent>,
-    mut next_id: ResMut<NextEventId>,
-    player_empire_q: Query<Entity, With<crate::player::PlayerEmpire>>,
+    mut fact_sys: FactSysParam,
+    vantage_q: FactionVantageQueries,
 ) {
     // Collect empire viewer positions up front to avoid borrow conflicts.
     let empire_viewers: Vec<(Entity, [f64; 3])> = empire_q
@@ -1287,7 +1303,9 @@ pub fn update_destroyed_ship_knowledge(
         return;
     }
 
-    let player_empire = player_empire_q.iter().next();
+    // Per-faction vantages (used for `KnowledgeFact::ShipMissing` per-empire
+    // emission). Indexed by empire entity for O(1) lookup inside the loop.
+    let vantages = vantage_q.collect();
 
     registry.records.retain_mut(|record| {
         let mut all_received_destruction = true;
@@ -1298,7 +1316,10 @@ pub fn update_destroyed_ship_knowledge(
             let arrives_at = record.destruction_tick + delay;
 
             if clock.elapsed >= arrives_at {
-                // This empire can now learn about the destruction.
+                // Destruction light has arrived for this empire. Transition
+                // the snapshot ghost; the `KnowledgeFact::ShipDestroyed`
+                // banner was already enqueued at the destruction site
+                // (#472), so no fact emission is required here.
                 if let Ok((_, mut store, _)) = empire_q.get_mut(empire_entity) {
                     store.update_ship(ShipSnapshot {
                         entity: record.entity,
@@ -1312,30 +1333,14 @@ pub fn update_destroyed_ship_knowledge(
                         source: ObservationSource::Direct,
                     });
                 }
-
-                // #435: Fire the ShipDestroyed event for the player empire,
-                // at the moment light arrives (not at destruction time).
-                // Non-player empires only update their KnowledgeStore.
-                if Some(empire_entity) == player_empire
-                    && !record.event_emitted
-                    && !record.destroyed_description.is_empty()
-                {
-                    events.write(crate::events::GameEvent::new(
-                        &mut next_id,
-                        clock.elapsed,
-                        crate::events::GameEventKind::ShipDestroyed,
-                        record.destroyed_description.clone(),
-                        record.last_known_system,
-                    ));
-                    record.event_emitted = true;
-                }
             } else {
                 all_received_destruction = false;
 
-                // ShipMissing event — only emit for the player empire.
+                // Grace window expired and destruction light still in
+                // flight for this empire → it should perceive the ship as
+                // missing. Per-empire snapshot + per-empire fact.
                 if !record.marked_missing
                     && clock.elapsed >= record.destruction_tick + MISSING_GRACE_HEXADIES
-                    && Some(empire_entity) == player_empire
                 {
                     if let Ok((_, mut store, _)) = empire_q.get_mut(empire_entity) {
                         store.update_ship(ShipSnapshot {
@@ -1350,14 +1355,35 @@ pub fn update_destroyed_ship_knowledge(
                             source: ObservationSource::Direct,
                         });
                     }
+
+                    // Per-empire `KnowledgeFact::ShipMissing` emission.
+                    // The vantage slice is filtered down to this single
+                    // empire so `record_for` does not broadcast — "missing"
+                    // is by definition a per-observer state.
+                    if let Some(empire_vantage) =
+                        vantages.iter().find(|v| v.faction == empire_entity)
+                    {
+                        let fact = KnowledgeFact::ShipMissing {
+                            event_id: None,
+                            system: record.last_known_system,
+                            ship_name: record.name.clone(),
+                            detail: format!("{} has not returned — presumed missing", record.name),
+                        };
+                        fact_sys.record_for(
+                            fact,
+                            std::slice::from_ref(empire_vantage),
+                            record.destruction_pos,
+                            clock.elapsed,
+                        );
+                    }
+                    // Idempotency: `marked_missing` flips on the first
+                    // empire to cross the grace boundary. Subsequent
+                    // empires that hit grace later are still important
+                    // for AI vision, so flip per-record only after we've
+                    // emitted at least once. (Empire counts are tiny in
+                    // practice; if multi-emit becomes a concern, swap to
+                    // `HashSet<Entity>` per record.)
                     record.marked_missing = true;
-                    events.write(crate::events::GameEvent::new(
-                        &mut next_id,
-                        clock.elapsed,
-                        crate::events::GameEventKind::ShipMissing,
-                        format!("{} has not returned — presumed missing", record.name),
-                        record.last_known_system,
-                    ));
                 }
             }
         }

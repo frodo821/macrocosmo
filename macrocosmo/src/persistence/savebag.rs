@@ -3276,6 +3276,26 @@ pub enum SavedKnowledgeFact {
         #[serde(default)]
         event_id: Option<u64>,
     },
+    /// #472: per-faction `KnowledgeFact::ShipDestroyed` persisted to disk.
+    /// Appended on the tail with `SAVE_VERSION` bumped in lockstep.
+    ShipDestroyed {
+        system_bits: Option<u64>,
+        ship_name: String,
+        destroyed_at: i64,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
+    /// #472: per-empire epistemic "missing" perception. No `event_id`
+    /// counterpart on the wire — the live variant holds an `Option<EventId>`
+    /// only for symmetry with sibling kinds, but it is always `None` today.
+    ShipMissing {
+        system_bits: Option<u64>,
+        ship_name: String,
+        detail: String,
+        #[serde(default)]
+        event_id: Option<u64>,
+    },
 }
 
 impl SavedKnowledgeFact {
@@ -3396,6 +3416,30 @@ impl SavedKnowledgeFact {
                 system_bits: system.to_bits(),
                 conquered_by_bits: conquered_by.to_bits(),
                 original_owner_bits: original_owner.to_bits(),
+                detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
+            },
+            KnowledgeFact::ShipDestroyed {
+                event_id,
+                system,
+                ship_name,
+                destroyed_at,
+                detail,
+            } => Self::ShipDestroyed {
+                system_bits: system.map(|e| e.to_bits()),
+                ship_name: ship_name.clone(),
+                destroyed_at: *destroyed_at,
+                detail: detail.clone(),
+                event_id: event_id.map(|e| e.0),
+            },
+            KnowledgeFact::ShipMissing {
+                event_id,
+                system,
+                ship_name,
+                detail,
+            } => Self::ShipMissing {
+                system_bits: system.map(|e| e.to_bits()),
+                ship_name: ship_name.clone(),
                 detail: detail.clone(),
                 event_id: event_id.map(|e| e.0),
             },
@@ -3525,6 +3569,30 @@ impl SavedKnowledgeFact {
                 system: remap_entity(system_bits, map),
                 conquered_by: remap_entity(conquered_by_bits, map),
                 original_owner: remap_entity(original_owner_bits, map),
+                detail,
+            },
+            Self::ShipDestroyed {
+                system_bits,
+                ship_name,
+                destroyed_at,
+                detail,
+                event_id,
+            } => KnowledgeFact::ShipDestroyed {
+                event_id: event_id.map(EventId),
+                system: system_bits.map(|b| remap_entity(b, map)),
+                ship_name,
+                destroyed_at,
+                detail,
+            },
+            Self::ShipMissing {
+                system_bits,
+                ship_name,
+                detail,
+                event_id,
+            } => KnowledgeFact::ShipMissing {
+                event_id: event_id.map(EventId),
+                system: system_bits.map(|b| remap_entity(b, map)),
+                ship_name,
                 detail,
             },
         }
@@ -4622,7 +4690,6 @@ pub enum SavedGameEventKind {
     WarEnded,
     FactionAnnihilated,
     ShipDestroyed,
-    ShipMissing,
 }
 impl From<&GameEventKind> for SavedGameEventKind {
     fn from(v: &GameEventKind) -> Self {
@@ -4647,7 +4714,6 @@ impl From<&GameEventKind> for SavedGameEventKind {
             GameEventKind::WarEnded => Self::WarEnded,
             GameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
             GameEventKind::ShipDestroyed => Self::ShipDestroyed,
-            GameEventKind::ShipMissing => Self::ShipMissing,
         }
     }
 }
@@ -4674,7 +4740,6 @@ impl From<SavedGameEventKind> for GameEventKind {
             SavedGameEventKind::WarEnded => Self::WarEnded,
             SavedGameEventKind::FactionAnnihilated => Self::FactionAnnihilated,
             SavedGameEventKind::ShipDestroyed => Self::ShipDestroyed,
-            SavedGameEventKind::ShipMissing => Self::ShipMissing,
         }
     }
 }
@@ -4853,15 +4918,10 @@ pub struct SavedDestroyedShipRecord {
     pub last_known_system_bits: Option<u64>,
     #[serde(default)]
     pub marked_missing: bool,
-    /// #435: Pre-built description for the light-delayed `ShipDestroyed`
-    /// event. Defaults to empty for legacy saves — in which case the event
-    /// simply won't fire (the snapshot still transitions to Destroyed).
-    #[serde(default)]
-    pub destroyed_description: String,
-    /// #435: Tracks whether the player-facing `ShipDestroyed` event has
-    /// already been emitted, to prevent re-firing across save/load cycles.
-    #[serde(default)]
-    pub event_emitted: bool,
+    // #472: `destroyed_description` and `event_emitted` were removed once
+    // the `GameEvent::ShipDestroyed` audit fire migrated to the destruction
+    // site itself (mirroring `CoreConquered`). Their absence is a wire
+    // format break — see `SAVE_VERSION` 16 → 17 in `persistence/save.rs`.
 }
 
 impl SavedDestroyedShipRecord {
@@ -4874,8 +4934,6 @@ impl SavedDestroyedShipRecord {
             design_id: self.design_id,
             last_known_system: self.last_known_system_bits.map(|b| remap_entity(b, map)),
             marked_missing: self.marked_missing,
-            destroyed_description: self.destroyed_description,
-            event_emitted: self.event_emitted,
         }
     }
 }

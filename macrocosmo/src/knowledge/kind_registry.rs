@@ -350,6 +350,8 @@ pub const CORE_KIND_IDS: &[&str] = &[
     "core:colony_failed",
     "core:ship_arrived",
     "core:core_conquered",
+    "core:ship_destroyed",
+    "core:ship_missing",
 ];
 
 /// Full payload schema catalog for `core:*` kinds. The schema mirrors the
@@ -454,6 +456,29 @@ pub fn core_kind_catalog() -> &'static [(&'static str, &'static [(&'static str, 
                 ("system", PayloadFieldType::Entity),
                 ("conquered_by", PayloadFieldType::Entity),
                 ("original_owner", PayloadFieldType::Entity),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            // #472: per-faction observation of a ship destruction. `system`
+            // is `Option<Entity>` (the converter only inserts when Some),
+            // mirroring `core:structure_built` / `core:ship_arrived`.
+            "core:ship_destroyed",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("ship_name", PayloadFieldType::String),
+                ("destroyed_at", PayloadFieldType::Number),
+                ("detail", PayloadFieldType::String),
+            ],
+        ),
+        (
+            // #472: per-empire epistemic state when a ship has not returned
+            // by the grace window. No `GameEvent` counterpart — emitted
+            // straight from the per-faction observation pipeline.
+            "core:ship_missing",
+            &[
+                ("system", PayloadFieldType::Entity),
+                ("ship_name", PayloadFieldType::String),
                 ("detail", PayloadFieldType::String),
             ],
         ),

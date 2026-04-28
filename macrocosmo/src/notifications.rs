@@ -206,7 +206,6 @@ pub fn priority_for_event_kind(kind: &GameEventKind) -> Option<NotificationPrior
         GameEventKind::CombatVictory => Some(NotificationPriority::High),
         GameEventKind::CombatDefeat => Some(NotificationPriority::High),
         GameEventKind::ShipDestroyed => Some(NotificationPriority::High),
-        GameEventKind::ShipMissing => Some(NotificationPriority::High),
         GameEventKind::HostileDetected => Some(NotificationPriority::High),
         GameEventKind::PlayerRespawn => Some(NotificationPriority::High),
         GameEventKind::ResourceAlert => Some(NotificationPriority::Medium),
@@ -241,7 +240,6 @@ fn title_for_event_kind(kind: &GameEventKind) -> &'static str {
         GameEventKind::WarEnded => "War Ended",
         GameEventKind::FactionAnnihilated => "Faction Annihilated",
         GameEventKind::ShipDestroyed => "Ship Destroyed",
-        GameEventKind::ShipMissing => "Ship Missing",
     }
 }
 

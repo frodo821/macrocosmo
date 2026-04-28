@@ -276,6 +276,36 @@ pub enum KnowledgeFact {
         original_owner: Entity,
         detail: String,
     },
+    /// #472: A ship has been destroyed. Per-faction observation of the
+    /// destruction, paired with the audit-only [`crate::events::GameEvent::ShipDestroyed`]
+    /// fired at the destruction site. Empires learn about the loss after the
+    /// light-speed (or relay-shortened) delay from the destruction position
+    /// to their viewer — mirroring the [`KnowledgeFact::CoreConquered`]
+    /// contract codified by #463.
+    ShipDestroyed {
+        event_id: Option<EventId>,
+        /// Last known star system (the destruction site). `None` for
+        /// deep-space destructions with no associated system.
+        system: Option<Entity>,
+        ship_name: String,
+        /// Hexadies tick at which the ship was actually destroyed at the
+        /// origin. Distinct from `PerceivedFact::observed_at` in that this
+        /// stays useful to subscribers even after the fact has propagated.
+        destroyed_at: i64,
+        detail: String,
+    },
+    /// #472: A ship has not returned by expected time and is presumed
+    /// missing — an empire-side epistemic state with no omniscient audit
+    /// counterpart (`event_id` is therefore always `None`). Emitted once
+    /// per empire whose grace window has elapsed before destruction light
+    /// arrives. The matching [`KnowledgeFact::ShipDestroyed`] supersedes
+    /// this fact when the destruction light eventually reaches the empire.
+    ShipMissing {
+        event_id: Option<EventId>,
+        system: Option<Entity>,
+        ship_name: String,
+        detail: String,
+    },
     /// #351 (K-2): Lua-defined knowledge kind. The payload is captured as a
     /// [`PayloadSnapshot`](super::payload::PayloadSnapshot) so the fact
     /// survives being queued without keeping Lua references alive.
@@ -311,6 +341,8 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyFailed { .. } => "Colony Failed",
             KnowledgeFact::ShipArrived { .. } => "Ship Arrived",
             KnowledgeFact::CoreConquered { .. } => "Core Conquered",
+            KnowledgeFact::ShipDestroyed { .. } => "Ship Destroyed",
+            KnowledgeFact::ShipMissing { .. } => "Ship Missing",
             KnowledgeFact::Scripted { .. } => "Knowledge",
         }
     }
@@ -330,6 +362,8 @@ impl KnowledgeFact {
             }
             KnowledgeFact::ShipArrived { detail, .. } => detail.clone(),
             KnowledgeFact::CoreConquered { detail, .. } => detail.clone(),
+            KnowledgeFact::ShipDestroyed { detail, .. } => detail.clone(),
+            KnowledgeFact::ShipMissing { detail, .. } => detail.clone(),
             KnowledgeFact::Scripted {
                 kind_id,
                 payload_snapshot,
@@ -359,6 +393,8 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyFailed { .. } => High,
             KnowledgeFact::ShipArrived { .. } => Low,
             KnowledgeFact::CoreConquered { .. } => High,
+            KnowledgeFact::ShipDestroyed { .. } => High,
+            KnowledgeFact::ShipMissing { .. } => High,
             KnowledgeFact::Scripted { .. } => Medium,
         }
     }
@@ -376,6 +412,8 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyFailed { system, .. } => Some(*system),
             KnowledgeFact::ShipArrived { system, .. } => *system,
             KnowledgeFact::CoreConquered { system, .. } => Some(*system),
+            KnowledgeFact::ShipDestroyed { system, .. } => *system,
+            KnowledgeFact::ShipMissing { system, .. } => *system,
             KnowledgeFact::Scripted { origin_system, .. } => *origin_system,
         }
     }
@@ -394,6 +432,8 @@ impl KnowledgeFact {
             | KnowledgeFact::ColonyFailed { event_id, .. }
             | KnowledgeFact::ShipArrived { event_id, .. }
             | KnowledgeFact::CoreConquered { event_id, .. }
+            | KnowledgeFact::ShipDestroyed { event_id, .. }
+            | KnowledgeFact::ShipMissing { event_id, .. }
             | KnowledgeFact::Scripted { event_id, .. } => *event_id,
         }
     }
@@ -418,6 +458,8 @@ impl KnowledgeFact {
             KnowledgeFact::ColonyFailed { .. } => Some("core:colony_failed"),
             KnowledgeFact::ShipArrived { .. } => Some("core:ship_arrived"),
             KnowledgeFact::CoreConquered { .. } => Some("core:core_conquered"),
+            KnowledgeFact::ShipDestroyed { .. } => Some("core:ship_destroyed"),
+            KnowledgeFact::ShipMissing { .. } => Some("core:ship_missing"),
             KnowledgeFact::Scripted { .. } => None,
         }
     }
@@ -577,6 +619,35 @@ impl KnowledgeFact {
                     "original_owner".into(),
                     PayloadValue::Entity(original_owner.to_bits()),
                 );
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::ShipDestroyed {
+                system,
+                ship_name,
+                destroyed_at,
+                detail,
+                ..
+            } => {
+                if let Some(s) = system {
+                    fields.insert("system".into(), PayloadValue::Entity(s.to_bits()));
+                }
+                fields.insert("ship_name".into(), PayloadValue::String(ship_name.clone()));
+                fields.insert(
+                    "destroyed_at".into(),
+                    PayloadValue::Number(*destroyed_at as f64),
+                );
+                fields.insert("detail".into(), PayloadValue::String(detail.clone()));
+            }
+            KnowledgeFact::ShipMissing {
+                system,
+                ship_name,
+                detail,
+                ..
+            } => {
+                if let Some(s) = system {
+                    fields.insert("system".into(), PayloadValue::Entity(s.to_bits()));
+                }
+                fields.insert("ship_name".into(), PayloadValue::String(ship_name.clone()));
                 fields.insert("detail".into(), PayloadValue::String(detail.clone()));
             }
             KnowledgeFact::Scripted { .. } => return None,
@@ -1603,6 +1674,19 @@ mod tests {
                 original_owner: Entity::PLACEHOLDER,
                 detail: "".into(),
             },
+            KnowledgeFact::ShipDestroyed {
+                event_id: None,
+                system: Some(Entity::PLACEHOLDER),
+                ship_name: "".into(),
+                destroyed_at: 0,
+                detail: "".into(),
+            },
+            KnowledgeFact::ShipMissing {
+                event_id: None,
+                system: Some(Entity::PLACEHOLDER),
+                ship_name: "".into(),
+                detail: "".into(),
+            },
         ];
 
         let seen: HashSet<&'static str> = samples
@@ -1817,6 +1901,35 @@ mod tests {
                     event_id: None,
                     system: Some(Entity::from_bits(1)),
                     name: "".into(),
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:core_conquered",
+                KnowledgeFact::CoreConquered {
+                    event_id: None,
+                    system: Entity::from_bits(1),
+                    conquered_by: Entity::from_bits(2),
+                    original_owner: Entity::from_bits(3),
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:ship_destroyed",
+                KnowledgeFact::ShipDestroyed {
+                    event_id: None,
+                    system: Some(Entity::from_bits(1)),
+                    ship_name: "".into(),
+                    destroyed_at: 0,
+                    detail: "".into(),
+                },
+            ),
+            (
+                "core:ship_missing",
+                KnowledgeFact::ShipMissing {
+                    event_id: None,
+                    system: Some(Entity::from_bits(1)),
+                    ship_name: "".into(),
                     detail: "".into(),
                 },
             ),

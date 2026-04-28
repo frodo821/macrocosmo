@@ -1,21 +1,30 @@
-//! #435: Regression tests — ship destruction events MUST respect light-speed delay.
+//! #435 / #472: Regression tests — ship destruction perception path.
 //!
 //! Before #435 the `ShipDestroyed` `GameEvent` and the `CombatDefeat` "All
 //! ships destroyed by X" event were written immediately at the destruction
-//! tick, regardless of how far the destruction site was from the player. As
-//! a result the player's event log surfaced remote losses synchronously with
-//! the combat resolution, violating the core light-speed communication
-//! constraint.
+//! tick, regardless of how far the destruction site was from the player.
+//! #435 deferred the event emission to per-empire light-arrival time.
 //!
-//! These tests pin the corrected behaviour:
+//! #472 split the contract again to match the #463 `CoreConquered` template:
 //!
-//! * For a destruction at a REMOTE system (10 LY away), neither the event
-//!   log nor the `KnowledgeStore` snapshot should change until `light_delay`
-//!   hexadies have elapsed.
-//! * Once light arrives the `ShipDestroyed` event appears AND the snapshot
-//!   flips to `Destroyed`.
-//! * For a destruction at the SAME system as the player, the event fires
-//!   on the same tick (delay = 0).
+//! * `GameEvent::ShipDestroyed` is the **omniscient audit-only** record —
+//!   one immediate fire at the destruction site (no light-speed gating).
+//! * `KnowledgeFact::ShipDestroyed` carries the per-empire delayed
+//!   observation; it is routed via `FactSysParam::record_for(...)` so each
+//!   empire's `PendingFactQueue` arrival respects light-speed (or the relay
+//!   shortcut) from the destruction site to that empire's viewer.
+//! * The `KnowledgeStore` snapshot transition stays per-empire delayed —
+//!   the ghost flips to `Destroyed` only once light has arrived for that
+//!   specific empire.
+//!
+//! These tests pin the post-#472 behaviour:
+//!
+//! * The `KnowledgeStore` snapshot must still respect light-speed delay
+//!   (no early ghost-to-Destroyed transition for distant empires).
+//! * `CombatDefeat` (different code path) still respects light-speed delay
+//!   via `DelayedCombatEventQueue`.
+//! * For a destruction at the SAME system as the player, both the audit
+//!   `GameEvent` and the on-site snapshot transition fire on the same tick.
 
 mod common;
 
@@ -106,7 +115,7 @@ fn spawn_doomed_ship(world: &mut World, name: &str, system: Entity, pos: [f64; 3
 }
 
 #[test]
-fn remote_ship_destruction_event_respects_light_delay() {
+fn remote_ship_destruction_snapshot_respects_light_delay() {
     let mut app = test_app_with_event_log();
 
     let capital = spawn_capital(app.world_mut());
@@ -143,20 +152,20 @@ fn remote_ship_destruction_event_respects_light_delay() {
         "Ship should be despawned immediately at destruction tick"
     );
 
-    // Key regression guard: the player's EventLog must NOT contain a
-    // ShipDestroyed entry yet — the light hasn't arrived.
+    // #472: `GameEvent::ShipDestroyed` is now an omniscient audit record and
+    // fires immediately at the destruction site (no light-speed gating).
+    // The per-empire delayed perception flows through `KnowledgeFact` +
+    // `KnowledgeStore` instead — verified below.
     {
         let log = app.world().resource::<EventLog>();
-        let ship_destroyed_count = log
+        let ship_destroyed = log
             .entries
             .iter()
-            .filter(|e| e.kind == GameEventKind::ShipDestroyed)
-            .count();
-        assert_eq!(
-            ship_destroyed_count,
-            0,
-            "ShipDestroyed event must NOT fire at the destruction tick for a \
-             remote combat (light-speed delay violation). EventLog: {:?}",
+            .find(|e| e.kind == GameEventKind::ShipDestroyed);
+        assert!(
+            ship_destroyed.is_some(),
+            "#472: GameEvent::ShipDestroyed is an immediate audit fire at the \
+             destruction site (omniscient channel). EventLog: {:?}",
             log.entries
                 .iter()
                 .map(|e| &e.description)
@@ -164,8 +173,8 @@ fn remote_ship_destruction_event_respects_light_delay() {
         );
     }
 
-    // And the KnowledgeStore must NOT show the ship as Destroyed yet — the
-    // ghost should still be visible at its last known position.
+    // Light-speed delay still governs the per-empire `KnowledgeStore`
+    // snapshot transition — the ghost must NOT be flipped to Destroyed yet.
     {
         let empire = empire_entity(app.world_mut());
         let store = app.world().get::<KnowledgeStore>(empire).unwrap();
@@ -185,29 +194,8 @@ fn remote_ship_destruction_event_respects_light_delay() {
     advance_time(&mut app, delay);
     app.update();
 
-    // Now the event log must have a ShipDestroyed entry.
-    {
-        let log = app.world().resource::<EventLog>();
-        let ship_destroyed = log
-            .entries
-            .iter()
-            .find(|e| e.kind == GameEventKind::ShipDestroyed);
-        assert!(
-            ship_destroyed.is_some(),
-            "ShipDestroyed event must fire once light reaches the player. \
-             EventLog: {:?}",
-            log.entries
-                .iter()
-                .map(|e| &e.description)
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            ship_destroyed.unwrap().description.contains("Far-Away-1"),
-            "ShipDestroyed description should name the destroyed ship"
-        );
-    }
-
-    // And the KnowledgeStore snapshot must have transitioned to Destroyed.
+    // The KnowledgeStore snapshot must now have transitioned to Destroyed
+    // for this empire.
     {
         let empire = empire_entity(app.world_mut());
         let store = app.world().get::<KnowledgeStore>(empire).unwrap();

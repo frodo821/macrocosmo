@@ -107,10 +107,16 @@ pub enum GameEventKind {
     WarEnded,
     /// #324: A faction has been annihilated (no Core ships, no colonies).
     FactionAnnihilated,
-    /// #409: A ship has been destroyed in combat.
+    /// #409 / #472: A ship has been destroyed. Fired immediately at the
+    /// destruction site as the omniscient audit record (this channel) and
+    /// dual-written to [`crate::knowledge::KnowledgeFact::ShipDestroyed`]
+    /// for per-empire light-speed delayed observation.
+    ///
+    /// The legacy `GameEvent::ShipMissing` variant was removed in #472:
+    /// "missing" is a per-observer epistemic state with no omniscient
+    /// audit moment, so it is now expressed solely as
+    /// [`crate::knowledge::KnowledgeFact::ShipMissing`].
     ShipDestroyed,
-    /// #409: A ship has not returned by expected time — presumed missing.
-    ShipMissing,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -143,8 +149,7 @@ impl GameEventKind {
             | GameEventKind::CombatDefeat
             | GameEventKind::HostileDetected
             | GameEventKind::CoreConquered
-            | GameEventKind::ShipDestroyed
-            | GameEventKind::ShipMissing => EventCategory::Combat,
+            | GameEventKind::ShipDestroyed => EventCategory::Combat,
 
             GameEventKind::SurveyComplete
             | GameEventKind::SurveyDiscovery
@@ -185,8 +190,7 @@ impl GameEventKind {
             | GameEventKind::WarDeclared
             | GameEventKind::WarEnded
             | GameEventKind::FactionAnnihilated
-            | GameEventKind::ShipDestroyed
-            | GameEventKind::ShipMissing => true,
+            | GameEventKind::ShipDestroyed => true,
 
             GameEventKind::ShipArrived
             | GameEventKind::ShipBuilt
@@ -394,7 +398,6 @@ mod tests {
         assert!(GameEventKind::WarDeclared.should_pause());
         assert!(GameEventKind::WarEnded.should_pause());
         assert!(GameEventKind::ShipDestroyed.should_pause());
-        assert!(GameEventKind::ShipMissing.should_pause());
     }
 
     #[test]
@@ -435,7 +438,6 @@ mod tests {
             GameEventKind::WarEnded,
             GameEventKind::FactionAnnihilated,
             GameEventKind::ShipDestroyed,
-            GameEventKind::ShipMissing,
         ];
         for kind in &all_kinds {
             let _cat = kind.category();

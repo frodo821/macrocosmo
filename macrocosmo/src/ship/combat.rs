@@ -469,12 +469,34 @@ pub fn resolve_combat(
             }
 
             for (entity, name, design_id) in &destroyed_ships {
-                // #435: Build the player-facing description up front so the
-                // pending record can fire the ShipDestroyed event when light
-                // arrives (see `update_destroyed_ship_knowledge`).
                 let desc = format!("{} destroyed in combat at {}", name, system_name);
-                // #409 / #435: Record destruction for light-speed delayed
-                // snapshot update AND event emission.
+                // #472: Dual-write at the destruction site, mirroring the
+                // `CoreConquered` template codified by #463. The
+                // `GameEvent` is the omniscient audit-only record (single
+                // immediate fire); the `KnowledgeFact` routes per-faction
+                // through `record_for` so each empire learns of the loss
+                // after the light-speed (or relay-shortened) delay from
+                // the destruction site to its viewer.
+                let ship_destroyed_event_id = fact_sys.allocate_event_id();
+                events.write(GameEvent {
+                    id: ship_destroyed_event_id,
+                    timestamp: clock.elapsed,
+                    kind: GameEventKind::ShipDestroyed,
+                    description: desc.clone(),
+                    related_system: Some(*system_entity),
+                });
+                if let Some(pos) = system_pos_arr {
+                    let fact = KnowledgeFact::ShipDestroyed {
+                        event_id: Some(ship_destroyed_event_id),
+                        system: Some(*system_entity),
+                        ship_name: name.clone(),
+                        destroyed_at: clock.elapsed,
+                        detail: desc.clone(),
+                    };
+                    fact_sys.record_for(fact, &vantages, pos, clock.elapsed);
+                }
+                // #409: Record destruction for light-speed delayed snapshot
+                // ghost transition (Missing → Destroyed in `KnowledgeStore`).
                 if let Some(pos) = system_pos_arr {
                     destroyed_registry.records.push(DestroyedShipRecord {
                         entity: *entity,
@@ -484,8 +506,6 @@ pub fn resolve_combat(
                         design_id: design_id.clone(),
                         last_known_system: Some(*system_entity),
                         marked_missing: false,
-                        destroyed_description: desc.clone(),
-                        event_emitted: false,
                     });
                 }
                 // #59: Check if player is aboard this ship — respawn at capital.
@@ -524,12 +544,11 @@ pub fn resolve_combat(
                     }
                 }
                 commands.entity(*entity).despawn();
-                // #435: The ShipDestroyed `GameEvent` itself is now fired by
-                // `update_destroyed_ship_knowledge` once light reaches the
-                // player empire's viewer. We still dual-write the
-                // `CombatOutcome` fact here because the fact pipeline has its
-                // own (relay-aware) light-delay machinery that governs banner
-                // delivery.
+                // #472: `GameEvent::ShipDestroyed` + `KnowledgeFact::ShipDestroyed`
+                // are dual-written above next to the `DestroyedShipRecord`
+                // push. The `CombatOutcome` fact is a separate per-empire
+                // banner about the engagement outcome, not the destruction
+                // event itself, so it stays as its own routed fact here.
                 let event_id = fact_sys.allocate_event_id();
                 if let Some(op) = system_pos_arr {
                     let fact = KnowledgeFact::CombatOutcome {
@@ -806,13 +825,32 @@ pub fn resolve_combat(
                     .unwrap_or_else(|_| "Unknown".to_string());
 
                 for (entity, name, design_id) in &destroyed_a {
-                    // #435: Build description up front for the light-delayed event.
                     let desc = format!(
                         "{} ({}) destroyed by {} at {}",
                         name, faction_a_name, faction_b_name, system_name
                     );
-                    // #409 / #435: Record destruction for light-speed delayed
-                    // snapshot update AND ShipDestroyed event emission.
+                    // #472: Dual-write at the destruction site (immediate
+                    // audit `GameEvent` + per-faction `KnowledgeFact`).
+                    let ship_destroyed_event_id = fact_sys.allocate_event_id();
+                    events.write(GameEvent {
+                        id: ship_destroyed_event_id,
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::ShipDestroyed,
+                        description: desc.clone(),
+                        related_system: Some(*system_entity),
+                    });
+                    if let Some(pos) = system_pos_arr {
+                        let fact = KnowledgeFact::ShipDestroyed {
+                            event_id: Some(ship_destroyed_event_id),
+                            system: Some(*system_entity),
+                            ship_name: name.clone(),
+                            destroyed_at: clock.elapsed,
+                            detail: desc.clone(),
+                        };
+                        fact_sys.record_for(fact, &vantages, pos, clock.elapsed);
+                    }
+                    // #409: Record destruction for the per-empire snapshot
+                    // ghost transition tracked by `update_destroyed_ship_knowledge`.
                     if let Some(pos) = system_pos_arr {
                         destroyed_registry.records.push(DestroyedShipRecord {
                             entity: *entity,
@@ -822,8 +860,6 @@ pub fn resolve_combat(
                             design_id: design_id.clone(),
                             last_known_system: Some(*system_entity),
                             marked_missing: false,
-                            destroyed_description: desc.clone(),
-                            event_emitted: false,
                         });
                     }
                     // Check if player is aboard. PlayerRespawn stays immediate
@@ -855,8 +891,10 @@ pub fn resolve_combat(
                         }
                     }
                     commands.entity(*entity).despawn();
-                    // #435: ShipDestroyed event is deferred; the fact pipeline
-                    // keeps its own light-delay path for the banner side.
+                    // #472: ShipDestroyed audit + per-faction fact were
+                    // dual-written above next to the `DestroyedShipRecord`.
+                    // The `CombatOutcome` fact below is the engagement-level
+                    // banner and stays separate.
                     let event_id = fact_sys.allocate_event_id();
                     if let Some(op) = system_pos_arr {
                         let fact = KnowledgeFact::CombatOutcome {
@@ -870,13 +908,33 @@ pub fn resolve_combat(
                 }
 
                 for (entity, name, design_id) in &destroyed_b {
-                    // #435: Build description up front for the light-delayed event.
                     let desc = format!(
                         "{} ({}) destroyed by {} at {}",
                         name, faction_b_name, faction_a_name, system_name
                     );
-                    // #409 / #435: Record destruction for light-speed delayed
-                    // snapshot update AND ShipDestroyed event emission.
+                    // #472: Dual-write at the destruction site (mirroring
+                    // `destroyed_a` above). One immediate audit event + a
+                    // per-faction `KnowledgeFact::ShipDestroyed`.
+                    let ship_destroyed_event_id = fact_sys.allocate_event_id();
+                    events.write(GameEvent {
+                        id: ship_destroyed_event_id,
+                        timestamp: clock.elapsed,
+                        kind: GameEventKind::ShipDestroyed,
+                        description: desc.clone(),
+                        related_system: Some(*system_entity),
+                    });
+                    if let Some(pos) = system_pos_arr {
+                        let fact = KnowledgeFact::ShipDestroyed {
+                            event_id: Some(ship_destroyed_event_id),
+                            system: Some(*system_entity),
+                            ship_name: name.clone(),
+                            destroyed_at: clock.elapsed,
+                            detail: desc.clone(),
+                        };
+                        fact_sys.record_for(fact, &vantages, pos, clock.elapsed);
+                    }
+                    // #409: Record destruction for the per-empire snapshot
+                    // ghost transition tracked by `update_destroyed_ship_knowledge`.
                     if let Some(pos) = system_pos_arr {
                         destroyed_registry.records.push(DestroyedShipRecord {
                             entity: *entity,
@@ -886,8 +944,6 @@ pub fn resolve_combat(
                             design_id: design_id.clone(),
                             last_known_system: Some(*system_entity),
                             marked_missing: false,
-                            destroyed_description: desc.clone(),
-                            event_emitted: false,
                         });
                     }
                     if let Ok((player_entity, aboard)) = player_q.single() {
@@ -917,8 +973,8 @@ pub fn resolve_combat(
                         }
                     }
                     commands.entity(*entity).despawn();
-                    // #435: ShipDestroyed event is deferred; the fact pipeline
-                    // keeps its own light-delay path for the banner side.
+                    // #472: ShipDestroyed audit + per-faction fact were
+                    // dual-written above next to the `DestroyedShipRecord`.
                     let event_id = fact_sys.allocate_event_id();
                     if let Some(op) = system_pos_arr {
                         let fact = KnowledgeFact::CombatOutcome {

@@ -124,7 +124,13 @@ use super::savebag::*;
 /// state survives save/load. Postcard's positional encoding
 /// requires the bump (15 → 16) and a fixture regeneration. v15
 /// saves are strictly rejected at load (matches existing policy).
-pub const SAVE_VERSION: u32 = 16;
+/// #472: removed `SavedGameEventKind::ShipMissing` (the live
+/// `GameEventKind::ShipMissing` variant was retired in favour of
+/// per-faction `KnowledgeFact::ShipMissing`). Postcard's positional
+/// enum tag encoding makes this a breaking change. v16 saves
+/// containing the old variant tag would deserialize incorrectly, so
+/// SAVE_VERSION bumps 16 → 17 and a fixture regeneration follows.
+pub const SAVE_VERSION: u32 = 17;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
@@ -390,8 +396,6 @@ fn capture_resources(world: &World, entity_map: &EntityMap) -> Result<SavedResou
                         design_id: r.design_id.clone(),
                         last_known_system_bits: system_id,
                         marked_missing: r.marked_missing,
-                        destroyed_description: r.destroyed_description.clone(),
-                        event_emitted: r.event_emitted,
                     })
                 })
                 .collect()
