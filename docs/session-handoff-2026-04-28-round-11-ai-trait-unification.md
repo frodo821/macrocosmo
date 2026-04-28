@@ -356,16 +356,93 @@ AI architecture 中核。 #450/#451/#452/#467 全ての前提。 単一 Mid → 
 ### Skip 候補
 - #394 crate 分割 (icebox)
 
+## さらに後半: #449 Region 概念導入 (同セッション継続、 Round 12 相当)
+
+#449 を 6 sub-PRs で landing。 user 確定 architecture: **state-on-Component (Option c)** — orchestrator wrapping を game side から削除し、 agent state を MidAgent / ShortAgent Components に直接持たせる。
+
+### sub-PR 6 件
+
+| Commit | PR | 内容 |
+|---|---|---|
+| `980400a` | 2a | `Region` Component (`empire / member_systems / capital_system / mid_agent`) + `RegionMembership` 逆 index + `RegionRegistry` Resource + `EmpireLongTermState` Component。 PR1 の `OrchestratorState.long_state` を Empire entity に migrate (caller 不在で機械的) |
+| `2754321` | 2b | `MidAgent` Component が `state: MidTermState` を `#[reflect(ignore)]` で直接保持。 `npc_decision_tick` を per-MidAgent loop に refactor (15 SystemParam)、 `BevyMidGameAdapter` に `member_systems` filter 追加 (4 site)。 既存 AI integration tests 用の `backfill_mid_agents_for_ai_controlled` system で test 経路を温存 |
+| `1aeabce` | 2c | `ShortAgent { managed_by, scope: ShortScope::Fleet/ColonizedSystem, state: PlanState, auto_managed }` Component + `Added<Fleet>`/`Added<Colony>` 経由 spawn hook + `despawn_orphaned_short_agents` reaper。 game-side `OrchestratorRegistry` / `FactionOrchestrator` / `register_demo_orchestrator` / `run_orchestrators` を全削除 (= 295 LoC delete)、 `run_short_agents` system が `CampaignReactiveShort::tick` を per-ShortAgent で呼ぶ |
+| `0bbe4da` | 2d | Rules 2 (survey) / 5b (slot fill) を Mid から Short に **一括 cutover**。 `ShortGameAdapter` trait + `BevyShortAgentAdapter` 構造体 + `ShortStanceAgent::decide` 新設。 `MidGameAdapter` から Rule 2/5b 用 method 削除。 同 tick 内 double-claim 防止 `claimed_survey_targets` set (Bug A の cross-tick dedup の同 tick 補完)。 sentinel test 2 件で Round 11 emit shape 不変を pin |
+| `e03e186` | 2e | persistence: 6 savebag shims (`SavedRegion`/`SavedRegionMembership`/`SavedRegionRegistry`/`SavedEmpireLongTermState`/`SavedMidAgent`/`SavedShortAgent` + `SavedShortScope` enum)。 SAVE_VERSION **15 → 16**、 fixture regen (803 → 829 B)、 v15 strict reject (既存 policy 整合)。 `assign_save_ids` の `Or<>` bundle に `With<Region>`/`With<MidAgent>`/`With<ShortAgent>` 追加 |
+| `4bfefbb` | 2f | per-Region NPC e2e smoke test (production code 不変、 +736 LoC test)。 2-region empire で Mid 独立 emit + cross-region leak なし、 save/load round-trip を統合検証 |
+
+### 重要な設計判断
+
+#### Orchestrator 削除の現実
+当初 plan は `Orchestrator` 全削除だったが、 macrocosmo-ai の `OrchestratorState` は `intent_queue` / `pending_specs` / `campaigns` / `override_log` / `drop_log` 等の field を **依然保持**しており、 abstract scenario harness (`macrocosmo-ai/tests/scenario_*.rs` 10+ tests) で使われ続ける。 game-side wrapping (`OrchestratorRegistry` Resource、 `register_demo_orchestrator` system 等) は完全削除、 ai-core 側は engine-agnostic harness として温存、 という現実的着地。
+
+#### state-on-Component の整理結果
+- `LongTermState` → `EmpireLongTermState { inner: macrocosmo_ai::LongTermState }` Component on Empire entity
+- `MidTermState` → `MidAgent.state` (`#[reflect(ignore)]` で wrap)
+- `PlanState` → `ShortAgent.state` (`#[reflect(ignore)]` で wrap)
+- 各 macrocosmo-ai 側 type は serde-derive 済 (PR1)、 savebag は serde 経由 passthrough、 ai-core-isolation 維持
+
+#### Rules 2/5b cutover
+- 一括 cutover (PR2d)、 sentinel test で Round 11 emit shape mirror を pin
+- Mid 残存 rule: 1/3/5a/6/7/8 (= empire-level / region-level の 6 rules)
+- Short 担当 rule: 2 (per-fleet survey)、 5b (per-colony slot fill)
+
+#### 同 tick double-claim race fix (PR2d 副産物)
+per-fleet ShortAgent split で同 tick 内に 2 fleet が同 target に survey emit する race が露見 → `run_short_agents` 内 `claimed_survey_targets: HashSet<(empire, target)>` で per-tick block。 Bug A (Round 11) の cross-tick outbox dedup の同 tick 補完。
+
+### Multi-region は半分だけ完成
+**重要 known limitation**: ShortAgent spawn hook が `RegionRegistry.by_empire[empire].first()` で MidAgent 解決、 multi-region empire でも全 ShortAgent が **primary region の MidAgent 配下** になる。 region isolation は今 Mid-decision layer (`Region.member_systems` filter) のみで実現中。 Per-system Fleet/Colony→MidAgent routing は **#471** (新規起票) で対応。 PR2f の e2e smoke が現 contract を explicitly pin、 #471 fix 時に test 更新で migration を gate。
+
+### 関連 issue
+- **#449 closed** (本セッション 6 sub-PRs)
+- **#471 (新規起票、 0.3.1 milestone、 #451 blocked-by)**: per-system Fleet/Colony → MidAgent routing for multi-region empires
+- **#451** (既存): Mid-Mid Short handoff、 #471 と統合検討候補
+- **#450** (既存): inter-layer comm、 #471 の cross-region handover routing 経路
+
+### Test status (#449 完了時点)
+- `cargo test --workspace --tests`: 3300+ pass、 #465/#453 既知 flaky のみ偶発
+- 11 new test files、 19 new integration tests across PR2a-2f
+- ai-core-isolation CI 維持 (macrocosmo-ai に Bevy 依存なし)
+
+### SAVE_VERSION 遷移 (本セッション通算)
+
+`11 → 12 (Bug C) → 13 (#458) → 14 (#463) → 15 (#464) → 16 (#449 PR2e)`
+
+最終 fixture: 829 B。
+
+## 次セッション最優先 (改訂)
+
+### Top: per-empire 化 sweep (priority:high 並列消化)
+#449 が大規模 land 完了したので、 残り priority:high で並列化しやすい単発 fix:
+- **#465/#453 flaky test** root cause investigation (long-standing、 dispatch→process timing over-gating)
+- **#466 ThreatState** (依存: per-empire ShipDestroyed propagation の続編)
+
+### 中位 (中規模)
+- **#471 per-system ShortAgent routing** (#449 の真の完成、 #451 と統合検討)
+- **#451 Mid-Mid Short handoff** + **#450 Inter-layer comm** + **#467 Mid-Mid arbiter** (geographic AI の残課題、 統合判断が必要)
+- **#347 In-game keybinding manager + UI**
+
+### 単発
+- **#411** 戦闘 report 可視化
+- **#445** shipyard_capacity 値活用
+- **#455** clippy 整理
+- **#459** CommandLog 意図確定
+
+### Skip 候補
+- #394 crate 分割 (icebox)
+
 ## 次セッション再開プロンプト例
 
 ```
-2026-04-28 ハンドオフ参照。 まず docs/session-handoff-2026-04-28-round-11-ai-trait-unification.md
-読んで全体像把握。 今日は #449 Region 概念導入 → AI architecture を本格的に
-geographic-distributed に拡張。 Plan agent → sub-PR 分解 → 順次実装の流れで。
+2026-04-28/29 ハンドオフ参照。 docs/session-handoff-2026-04-28-round-11-ai-trait-unification.md
+読んで全体像把握。 #448 / #449 完了で AI architecture の主軸 (3 layer + Region) は
+landing 済。 残 0.3.1 milestone は per-empire/region sweep の細部 + flaky test
+investigation。
 
-設計確定事項: docs/session-handoff-2026-04-27-ai-decomposition.md line 211-242
-+ 本ハンドオフの「Mid-Mid 競合解決 (#467)」 section。
-
-Region 内 1 Mid + 1 Short という単純構成から始める。 Rules 2/5b を Mid → Short
-に再移植 (PR3 で Mid に暫定 host 中)。 Player UI は #452 (別 PR) で。
+優先度:
+1. #471 per-system ShortAgent routing (#449 の補完、 中規模、 #451 と統合検討)
+2. #451/#450/#467 inter-layer comm + Mid-Mid handoff arbiter (architectural、
+   Plan agent → sub-PR 分解の流れ)
+3. #466 ThreatState (依存: ShipDestroyed propagation)
+4. flaky test #453/#465 root cause
 ```
