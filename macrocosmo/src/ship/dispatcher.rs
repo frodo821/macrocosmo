@@ -15,6 +15,7 @@
 //! tiny (well below Bevy's 16-param cap) and frees each handler to hold
 //! only the queries *it* needs (plan §2.2, §2.3).
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use super::command_events::{
@@ -23,11 +24,12 @@ use super::command_events::{
     ScoutRequested, SurveyRequested, TransferToStructureRequested,
 };
 use super::routing::PendingRoute;
-use super::{CommandQueue, QueuedCommand, Ship, ShipState};
+use super::{CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 use crate::communication::{CommandLog, CommandLogEntry};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
-use crate::player::PlayerEmpire;
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState, compute_ship_projection};
+use crate::player::{AboardShip, Empire, EmpireRuler, PlayerEmpire, Ruler, StationedAt};
 use crate::time_system::GameClock;
 
 /// Lightweight dispatcher: validates + emits `CommandRequested` messages.
@@ -63,6 +65,10 @@ pub fn dispatch_queued_commands(
     // `bridge_command_executed_to_log` finalizes via `CommandId` match.
     // Optional — observer-mode apps without a `PlayerEmpire` skip logging.
     mut command_log_q: Query<&mut CommandLog, With<PlayerEmpire>>,
+    // #488: extra ECS access for the defensive dispatcher-side
+    // `ShipProjection` write. Bundled into a `SystemParam` to stay
+    // under the 16-arg limit.
+    mut projection_params: ProjectionWriteParams,
 ) {
     let mut command_log = command_log_q.single_mut().ok();
     for (ship_entity, ship, state, ship_pos, mut queue) in ships.iter_mut() {
@@ -79,6 +85,31 @@ pub fn dispatch_queued_commands(
         if queue.commands.is_empty() {
             continue;
         }
+
+        // #488: defensive `ShipProjection` write for the **direct
+        // CommandQueue append** path (BRP `world.mutate_components`,
+        // future plugins, tests, etc.). The 3 civilised dispatch sites
+        // (AI outbox / Lua `request_command` / player UI) write their
+        // own projection at the *dispatch instant* — that path stays
+        // intact and produces light-cone-correct semantics. This
+        // dispatcher-side write covers everything that bypassed those
+        // sites, so the renderer (#477) never sees an empty
+        // `KnowledgeStore.projections` for a queued ship.
+        //
+        // The guard `get_projection().is_none()` makes the write
+        // idempotent: if a caller-side projection exists (= the
+        // canonical case), we leave it alone — the caller's
+        // dispatch-time light-delay numbers are strictly better than
+        // anything we can recompute here.
+        maybe_write_dispatcher_projection(
+            ship_entity,
+            ship,
+            &queue.commands[0],
+            ship_pos.as_array(),
+            docked_system,
+            clock.elapsed,
+            &mut projection_params,
+        );
 
         // Peek the head command. We only mutate the queue if this command
         // is a Phase-1 migrated variant AND passes dispatcher validation.
@@ -372,12 +403,266 @@ pub fn dispatch_queued_commands(
     }
 }
 
+// ---------------------------------------------------------------------------
+// #488: defensive dispatcher-side `ShipProjection` write.
+//
+// Pre-#488, the 3 civilised dispatch sites (AI outbox / Lua / player UI)
+// each wrote a projection at the **dispatch instant** (= correct light-cone
+// semantics from the dispatcher's POV). But anything that appended to
+// `CommandQueue` outside those 3 paths — BRP `world.mutate_components`,
+// new plugins, tests, etc. — bypassed the projection write. Without a
+// projection, the Galaxy Map renderer (#477) shows nothing → ship
+// vanishes.
+//
+// The defensive write below runs at queue-processing time and only
+// fires when the issuing empire's `KnowledgeStore` does not already
+// have a projection for the ship. Caller-side writes always take
+// precedence — they have access to the caller's exact dispatch tick
+// and Ruler position, while the dispatcher only knows "now" and the
+// empire's ruler.
+// ---------------------------------------------------------------------------
+
+/// SystemParam bundle holding the extra ECS access the dispatcher needs
+/// to perform the #488 defensive `ShipProjection` write. Bundled because
+/// `dispatch_queued_commands` is already at 14 params (1 over Bevy's 16
+/// soft limit if we expanded inline).
+#[derive(SystemParam)]
+pub struct ProjectionWriteParams<'w, 's> {
+    /// `Empire → Ruler` chain — used to locate the ruler entity, which
+    /// stands in for "the dispatcher" when `dispatch_queued_commands`
+    /// processes a direct-CommandQueue-append.
+    pub empire_rulers: Query<'w, 's, &'static EmpireRuler, With<Empire>>,
+    /// Ruler's world location — `StationedAt` for system-bound,
+    /// `AboardShip` for ship-bound. Position is read off the system /
+    /// ship entity via [`positions`].
+    pub rulers:
+        Query<'w, 's, (Option<&'static StationedAt>, Option<&'static AboardShip>), With<Ruler>>,
+    /// Per-system positions used for `target_system_pos` and as the
+    /// fallback for `ship_pos` (when no `ShipSnapshot` exists). The
+    /// `Without<Ship>` guard avoids overlap with the dispatcher's
+    /// mutable ship query.
+    pub star_positions: Query<'w, 's, &'static Position, (With<StarSystem>, Without<Ship>)>,
+    /// Ruler reference position — read off whichever entity the Ruler
+    /// is stationed at / aboard. Constrained to entities **without**
+    /// `Ship` mutation locks, so we share the same `Without<Ship>`
+    /// filter as `star_positions`. In practice the Ruler's location
+    /// is a `StarSystem` entity (StationedAt) or a Ship entity
+    /// (AboardShip); for `AboardShip` we fall through to `dispatcher_pos
+    /// = ship_pos` since reading a ship's `Position` here would
+    /// conflict with the dispatcher's mutable query.
+    pub ruler_system_positions: Query<'w, 's, &'static Position, (With<StarSystem>, Without<Ship>)>,
+    /// Per-empire `KnowledgeStore` — read for snapshot lookup +
+    /// projection idempotency check, and mutated for the actual
+    /// projection write.
+    pub knowledge_stores: Query<'w, 's, &'static mut KnowledgeStore, With<Empire>>,
+}
+
+/// Map a queued command to the [`ShipSnapshotState`] it implies once the
+/// command takes effect. Mirrors
+/// [`crate::knowledge::command_kind_to_intended_state`] but works
+/// directly on the typed `QueuedCommand` enum so the dispatcher does
+/// not have to round-trip through the AI command-kind string namespace.
+///
+/// Returns `None` for cargo / structure variants — those produce no
+/// `ShipState` change once executed, so the projection write skips them
+/// (matches the spatial-less skip in
+/// `scripting::gamestate_scope::write_lua_dispatch_projection`).
+pub fn queued_command_intended_state(cmd: &QueuedCommand) -> Option<ShipSnapshotState> {
+    match cmd {
+        QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
+            Some(ShipSnapshotState::InTransit)
+        }
+        QueuedCommand::Survey { .. } | QueuedCommand::Scout { .. } => {
+            Some(ShipSnapshotState::Surveying)
+        }
+        QueuedCommand::Colonize { .. } => Some(ShipSnapshotState::Settling),
+        QueuedCommand::LoadDeliverable { .. }
+        | QueuedCommand::DeployDeliverable { .. }
+        | QueuedCommand::TransferToStructure { .. }
+        | QueuedCommand::LoadFromScrapyard { .. } => None,
+    }
+}
+
+/// Extract the target [`StarSystem`] entity from a queued command, if any.
+/// `MoveToCoordinates` and `DeployDeliverable` carry deep-space coords
+/// (no star system) — the projection still writes with `intended_system =
+/// None` and `target_system_pos = None`.
+pub fn queued_command_target_system(cmd: &QueuedCommand) -> Option<Entity> {
+    match cmd {
+        QueuedCommand::MoveTo { system } => Some(*system),
+        QueuedCommand::Survey { system } => Some(*system),
+        QueuedCommand::Colonize { system, .. } => Some(*system),
+        QueuedCommand::Scout { target_system, .. } => Some(*target_system),
+        QueuedCommand::LoadDeliverable { system, .. } => Some(*system),
+        QueuedCommand::MoveToCoordinates { .. }
+        | QueuedCommand::DeployDeliverable { .. }
+        | QueuedCommand::TransferToStructure { .. }
+        | QueuedCommand::LoadFromScrapyard { .. } => None,
+    }
+}
+
+/// Whether the command implies the ship returns to its origin after
+/// completion. Mirrors
+/// [`crate::knowledge::command_kind_has_return_leg`] — only
+/// survey / scout missions have a return leg.
+pub fn queued_command_has_return_leg(cmd: &QueuedCommand) -> bool {
+    matches!(
+        cmd,
+        QueuedCommand::Survey { .. } | QueuedCommand::Scout { .. }
+    )
+}
+
+/// #488: defensive projection write invoked once per ship per tick
+/// inside `dispatch_queued_commands`.
+///
+/// Skips when:
+/// * Ship has `Owner::Neutral` (mirrors `seed_own_ship_projections`'s
+///   neutral skip — hostile / pirate factions never seed any empire's
+///   projection store).
+/// * The owning empire already has a projection for this ship (= a
+///   caller-side dispatch site already wrote it; their numbers are
+///   strictly better than what we can recompute here).
+/// * The command is spatial-less (cargo / structure ops with no
+///   `ShipState` implication) — `queued_command_intended_state`
+///   returns `None`.
+fn maybe_write_dispatcher_projection(
+    ship_entity: Entity,
+    ship: &Ship,
+    cmd: &QueuedCommand,
+    ship_pos_arr: [f64; 3],
+    docked_system: Option<Entity>,
+    now: i64,
+    params: &mut ProjectionWriteParams,
+) {
+    // Hostile / Neutral ships — never seed an empire's projection.
+    let owner_empire = match ship.owner {
+        Owner::Empire(e) => e,
+        Owner::Neutral => return,
+    };
+
+    // Idempotency guard: a caller-side write already covered this
+    // ship's dispatch — leave it alone.
+    if let Ok(store) = params.knowledge_stores.get(owner_empire) {
+        if store.get_projection(ship_entity).is_some() {
+            return;
+        }
+    } else {
+        // Owning empire missing or has no `KnowledgeStore` — nothing
+        // to write into.
+        return;
+    }
+
+    // Skip spatial-less commands (cargo ops). They have no ShipState
+    // implication once executed.
+    let intended_state = queued_command_intended_state(cmd);
+    if intended_state.is_none() {
+        return;
+    }
+
+    let intended_system = queued_command_target_system(cmd);
+    let target_system_pos =
+        intended_system.and_then(|sys| params.star_positions.get(sys).ok().map(|p| p.as_array()));
+    let has_return_leg = queued_command_has_return_leg(cmd);
+
+    // Resolve the dispatcher's reference position via the empire's
+    // Ruler. We read the Ruler's `StationedAt` system position; if
+    // the Ruler is `AboardShip`, the ruler-aboard ship's `Position`
+    // would conflict with the dispatcher's mutable `Ship` query, so
+    // we fall back to the queued ship's known position (the next
+    // most-local proxy for "where the dispatch instruction
+    // originated"). This is a best-effort approximation — the 3
+    // civilised dispatch sites (which always run *first* on the
+    // canonical path) supply the exact Ruler position via their
+    // own writes.
+    let dispatcher_pos = resolve_dispatcher_pos(owner_empire, ship_pos_arr, params);
+
+    // Use the dispatcher's last-known snapshot of the ship if it
+    // exists. The fallback projected_system is the ship's home_port —
+    // matches `seed_own_ship_projections`'s conservative default.
+    let snapshot = params
+        .knowledge_stores
+        .get(owner_empire)
+        .ok()
+        .and_then(|store| store.get_ship(ship_entity).cloned());
+
+    let fallback_system = Some(ship.home_port);
+
+    // Ship position the dispatcher *believes*. Drawn from snapshot
+    // (last_known_system position or Loitering coord) when present;
+    // from `fallback_system` (home_port) position as last resort.
+    // For the no-snapshot, no-home_port-position case we fall back to
+    // the ship's currently-docked system position (`docked_system`)
+    // since at this point the dispatcher has already verified the
+    // ship is in `InSystem`/`Loitering` state via the docked-state
+    // pattern match.
+    let ship_pos = match snapshot.as_ref().map(|s| &s.last_known_state) {
+        Some(ShipSnapshotState::Loitering { position }) => *position,
+        _ => snapshot
+            .as_ref()
+            .and_then(|s| s.last_known_system)
+            .or(fallback_system)
+            .or(docked_system)
+            .and_then(|sys| params.star_positions.get(sys).ok().map(|p| p.as_array()))
+            .unwrap_or(ship_pos_arr),
+    };
+
+    let projection = compute_ship_projection(
+        ship_entity,
+        snapshot.as_ref(),
+        dispatcher_pos,
+        ship_pos,
+        target_system_pos,
+        intended_state,
+        intended_system,
+        has_return_leg,
+        fallback_system,
+        now,
+    );
+
+    if let Ok(mut store) = params.knowledge_stores.get_mut(owner_empire) {
+        store.update_projection(projection);
+    }
+}
+
+/// Resolve the empire Ruler's world-space position. Used as the
+/// `dispatcher_pos` input to [`compute_ship_projection`] for the #488
+/// fallback path.
+///
+/// `AboardShip` rulers cannot be resolved here — reading the
+/// ruler-ship's `Position` would conflict with the dispatcher's
+/// mutable `Ship` query — so we fall back to `ship_pos_arr` (the
+/// queued ship's own believed position) for that case. The 3 civilised
+/// dispatch sites supply the exact AboardShip Ruler position via their
+/// own pre-dispatch writes, so this fallback is only exercised when the
+/// canonical path was bypassed.
+fn resolve_dispatcher_pos(
+    empire: Entity,
+    ship_pos_arr: [f64; 3],
+    params: &ProjectionWriteParams,
+) -> [f64; 3] {
+    let Ok(empire_ruler) = params.empire_rulers.get(empire) else {
+        return ship_pos_arr;
+    };
+    let Ok((stationed, _aboard)) = params.rulers.get(empire_ruler.0) else {
+        return ship_pos_arr;
+    };
+    if let Some(stationed) = stationed {
+        if let Ok(pos) = params.ruler_system_positions.get(stationed.system) {
+            return pos.as_array();
+        }
+    }
+    // AboardShip path: handled implicitly via fallback (cannot read
+    // ship Position without query conflict). Return the queued ship's
+    // own position as the most-local proxy.
+    ship_pos_arr
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::amount::Amt;
     use crate::ship::command_events::CommandEventsPlugin;
-    use crate::ship::{Owner, ShipHitpoints, ShipModifiers, ShipStats};
+    use crate::ship::{ShipHitpoints, ShipModifiers, ShipStats};
     use bevy::MinimalPlugins;
     use bevy::ecs::message::Messages;
 
