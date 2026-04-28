@@ -129,9 +129,11 @@ fn every_empire_gets_initial_region_anchored_at_home_system() {
             "empire '{}': initial region member_systems should be [home_system]",
             faction_id
         );
+        // #449 PR2b: Region.mid_agent is populated immediately after
+        // the Region spawn — every Region gets a paired MidAgent.
         assert!(
-            region.mid_agent.is_none(),
-            "empire '{}': mid_agent slot should remain None until #449 PR2b",
+            region.mid_agent.is_some(),
+            "empire '{}': Region.mid_agent must be populated by #449 PR2b",
             faction_id
         );
 

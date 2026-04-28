@@ -40,6 +40,8 @@ pub fn register_all_types(app: &mut App) {
     app.register_type::<crate::ai::assignments::PendingAssignment>();
     // crate::ai::command_consumer
     app.register_type::<crate::ai::command_consumer::PendingRulerBoarding>();
+    // crate::ai::mid_agent (#449 PR2b)
+    app.register_type::<crate::ai::mid_agent::MidAgent>();
     // crate::ai::debug_log
     #[cfg(feature = "ai-log")]
     app.register_type::<crate::ai::debug_log::AiLogConfig>();

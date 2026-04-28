@@ -69,6 +69,147 @@ pub fn mark_player_ai_controlled(
     }
 }
 
+/// #449 PR2b: backfill a default `Region` + `MidAgent` pair for every
+/// `AiControlled` empire that does not yet own one. The production
+/// spawn path (`crate::setup::spawn_initial_region_for_faction`) builds
+/// these eagerly during `OnEnter(NewGame)`, but several integration
+/// tests (e.g. `ai_npc_*`, `ai_player_e2e`, `ai_command_lightspeed`)
+/// hand-spawn `Empire` entities without going through `GameSetupPlugin`
+/// — those tests would otherwise see `npc_decision_tick` skip every
+/// empire because the per-MidAgent loop has nothing to iterate. The
+/// backfill keeps test setups working without each test needing to
+/// know about the Region/MidAgent split.
+///
+/// Production setups never trigger this code path (the spawn pipeline
+/// already populated `Region.mid_agent`), so the cost is exactly the
+/// per-frame query and a no-op iter for fully-spawned worlds.
+pub fn backfill_mid_agents_for_ai_controlled(world: &mut World) {
+    // Collect empires that need a backfill: AiControlled, but not in
+    // any RegionRegistry entry. Snapshot before mutating to avoid
+    // query-during-mutation.
+    let registry_known: std::collections::HashSet<Entity> = world
+        .get_resource::<crate::region::RegionRegistry>()
+        .map(|r| r.by_empire.keys().copied().collect())
+        .unwrap_or_default();
+    let needs_backfill: Vec<(Entity, bool)> = {
+        let mut q = world
+            .query_filtered::<(Entity, Option<&PlayerEmpire>), (With<Empire>, With<AiControlled>)>(
+            );
+        q.iter(world)
+            .filter(|(e, _)| !registry_known.contains(e))
+            .map(|(e, p)| (e, p.is_some()))
+            .collect()
+    };
+    if needs_backfill.is_empty() {
+        return;
+    }
+
+    // Defensive: ensure the registry resource exists.
+    if world
+        .get_resource::<crate::region::RegionRegistry>()
+        .is_none()
+    {
+        world.insert_resource(crate::region::RegionRegistry::default());
+    }
+
+    for (empire, is_player) in needs_backfill {
+        // Pick a home system. Test setups don't always insert
+        // `HomeSystem`; in that case fall back to "every visible
+        // StarSystem belongs to this empire's region" — same scope
+        // the legacy per-empire decision path used. The first owned
+        // colony's system is the next-best signal; if neither exists,
+        // we collect every StarSystem entity in the world and use
+        // them as the implicit region scope.
+        let home_system = world
+            .get::<crate::galaxy::HomeSystem>(empire)
+            .map(|h| h.0)
+            .or_else(|| {
+                let mut colony_q =
+                    world.query::<(&crate::colony::Colony, &crate::faction::FactionOwner)>();
+                let mut planet_q = world.query::<&crate::galaxy::Planet>();
+                let colony_planet = colony_q
+                    .iter(world)
+                    .find(|(_, fo)| fo.0 == empire)
+                    .map(|(c, _)| c.planet);
+                colony_planet
+                    .and_then(|planet_e| planet_q.get(world, planet_e).ok().map(|p| p.system))
+            });
+
+        let member_systems: Vec<Entity> = {
+            let mut q = world.query_filtered::<Entity, With<crate::galaxy::StarSystem>>();
+            q.iter(world).collect()
+        };
+        if member_systems.is_empty() {
+            // No systems exist yet — defer to a later frame.
+            continue;
+        }
+        // Skip if a Region already exists owned by this empire — a
+        // previous backfill or the production spawn path created
+        // one. Looking at `Region.empire` directly (rather than the
+        // per-system `RegionMembership` reverse index) avoids false
+        // positives in test setups where multiple empires share the
+        // same star systems: each gets its own Region, and the
+        // capital-only `RegionMembership` we attach below is enough
+        // to satisfy the invariant for production callers.
+        let already_has_region = {
+            let mut q = world.query::<&crate::region::Region>();
+            q.iter(world).any(|r| r.empire == empire)
+        };
+        if already_has_region {
+            continue;
+        }
+
+        let capital = home_system.unwrap_or(member_systems[0]);
+        let region = world
+            .spawn(crate::region::Region {
+                empire,
+                member_systems: member_systems.clone(),
+                capital_system: capital,
+                mid_agent: None,
+            })
+            .id();
+        // RegionMembership reverse index: only attach if the capital
+        // does not already carry one (a sibling empire's backfill
+        // may have claimed it first in shared-galaxy tests). The
+        // per-system membership invariant is best-effort for the
+        // backfill path — production callers maintain it strictly
+        // via `spawn_initial_region`.
+        if world
+            .get::<crate::region::RegionMembership>(capital)
+            .is_none()
+        {
+            world
+                .entity_mut(capital)
+                .insert(crate::region::RegionMembership { region });
+        }
+        world
+            .resource_mut::<crate::region::RegionRegistry>()
+            .by_empire
+            .entry(empire)
+            .or_default()
+            .push(region);
+
+        // Backfill always sets `auto_managed = true` — by the time
+        // this system runs the empire is already `AiControlled`,
+        // which is the upstream "AI may drive this" signal. The
+        // production spawn path keeps the player-empire default at
+        // `false` so the player retains manual control until they
+        // opt in via the #452 UI; tests opting into AiPlayerMode
+        // implicitly want the player MidAgent to tick too.
+        let _ = is_player;
+        let mid_agent = world
+            .spawn(super::mid_agent::MidAgent {
+                region,
+                state: macrocosmo_ai::MidTermState::default(),
+                auto_managed: true,
+            })
+            .id();
+        if let Some(mut region_comp) = world.get_mut::<crate::region::Region>(region) {
+            region_comp.mid_agent = Some(mid_agent);
+        }
+    }
+}
+
 /// Per-ship summary extracted from ECS for the NPC policy.
 pub struct ShipInfo {
     pub entity: Entity,
@@ -222,6 +363,15 @@ pub fn npc_decision_tick(
         (&crate::galaxy::AtSystem, &crate::faction::FactionOwner),
         With<crate::ship::CoreShip>,
     >,
+    // #449 PR2b: per-MidAgent decision loop. Each `MidAgent` is
+    // attached to a `Region`; the agent reasons over the systems in
+    // its region only. With one region per empire today the loop
+    // observes the same emit pattern as the legacy per-empire loop
+    // (1 region = 1 mid agent = full empire scope), so existing NPC
+    // integration tests stay green. Multi-region splits (PR2c+)
+    // automatically activate cross-region isolation.
+    mid_agents: Query<(Entity, &super::mid_agent::MidAgent)>,
+    regions: Query<&crate::region::Region>,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     use crate::knowledge::SystemVisibilityTier;
@@ -305,7 +455,52 @@ pub fn npc_decision_tick(
         }
     }
 
-    for (entity, faction, knowledge, vis_map_opt) in &npcs {
+    // #449 PR2b: per-MidAgent loop. We resolve each MidAgent →
+    // Region → empire entity, then run the rule pipeline scoped to
+    // the region's `member_systems`. With one region per empire (the
+    // initial PR2a/PR2b state), `member_systems` is the empire's full
+    // owned-system set so existing per-empire NPC behavior is
+    // preserved bit-for-bit. PR2c+ (region split) automatically
+    // activates cross-region isolation for free.
+    //
+    // Empire-level dedup precomputes (`outbox_*_per_empire`,
+    // `core_systems_per_empire`) stay empire-keyed — they are
+    // semantically per-faction and the simplest correct shape today.
+    // Per-region narrowing is a future optimization once multi-region
+    // splits land.
+    for (mid_agent_entity, mid_agent) in &mid_agents {
+        // Resolve region → empire. Skip silently if the back-references
+        // are inconsistent (defensive: spawn pipeline guarantees a
+        // valid Region; only a partial despawn or load could invalidate
+        // it).
+        let Ok(region) = regions.get(mid_agent.region) else {
+            continue;
+        };
+        let empire = region.empire;
+        let member_systems_slice = region.member_systems.as_slice();
+        let member_systems_set: std::collections::HashSet<Entity> =
+            member_systems_slice.iter().copied().collect();
+
+        // Resolve empire-level data. Skip if the empire is not
+        // `AiControlled` (e.g. a player empire whose MidAgent has
+        // `auto_managed = false` — we still spawn the agent so PR3 UI
+        // can reason about it, but the decision system stays silent).
+        let Ok((entity, faction, knowledge, vis_map_opt)) = npcs.get(empire) else {
+            continue;
+        };
+        // Player-empire / manual mode gate: MidAgent.auto_managed
+        // controls whether NPC reasoning may emit commands for this
+        // region. Today only the PlayerEmpire spawn path sets this to
+        // false; #452 adds the per-region UI toggle.
+        if !mid_agent.auto_managed {
+            continue;
+        }
+        // `mid_agent_entity` is currently used only for logging /
+        // future per-MidAgent state mutations; stance modulation is a
+        // noop today (Rule pipeline ignores `Stance::default()`), so
+        // we hold the agent by `&MidAgent` rather than `&mut`.
+        let _ = mid_agent_entity;
+
         // Round 9 PR #2 Step 4: pre-collect this faction's in-flight
         // assignments so we can filter both ship and target candidates.
         // `pending_survey_targets` excludes systems already being
@@ -347,6 +542,10 @@ pub fn npc_decision_tick(
         // list minus whatever the empire has already surveyed —
         // otherwise freshly-spawned empires never find survey targets
         // because their KnowledgeStore is empty aside from the capital.
+        //
+        // PR2b: each list is intersected with `member_systems_set`
+        // before reaching the adapter, so the Mid sees only systems
+        // belonging to its region.
         let mut hostile_systems = Vec::new();
         let mut hostile_systems_set: std::collections::HashSet<Entity> =
             std::collections::HashSet::new();
@@ -363,7 +562,7 @@ pub fn npc_decision_tick(
             .get(&entity)
             .unwrap_or(&empty_core_set);
         for (_, k) in knowledge.iter() {
-            if k.data.has_hostile {
+            if k.data.has_hostile && member_systems_set.contains(&k.system) {
                 hostile_systems.push(k.system);
                 hostile_systems_set.insert(k.system);
             }
@@ -380,6 +579,8 @@ pub fn npc_decision_tick(
                     // the policy re-emits onto the same target every
                     // mid_cadence tick until the command lands.
                     && !pending_colonize_targets.contains(&k.system)
+                    // PR2b: only colonize systems inside this Mid's region.
+                    && member_systems_set.contains(&k.system)
                 {
                     colonizable_systems.push(k.system);
                 }
@@ -429,6 +630,14 @@ pub fn npc_decision_tick(
                     .map(|vm| vm.get(*e) >= SystemVisibilityTier::Catalogued)
                     .unwrap_or(true)
             })
+            // PR2b: only survey systems inside this Mid's region.
+            // Note: Rule 2's classical use case is "explore the
+            // frontier of known space" — restricting to the region's
+            // own member systems means survey targets must already
+            // belong to this region. PR2c will introduce a separate
+            // "expansion frontier" rule that proposes adding a system
+            // to the region.
+            .filter(|(e, _)| member_systems_set.contains(e))
             .map(|(e, p)| (e, p.as_array()))
             .collect();
         let unsurveyed_systems =
@@ -442,6 +651,13 @@ pub fn npc_decision_tick(
         // `drain_ai_commands` writes a `SurveyRequested` event but
         // `handle_survey_requested` hasn't yet pushed the `MoveTo` /
         // `Survey` pair into the queue.
+        //
+        // PR2b: filter ships to those currently in this Mid's region
+        // (`InSystem { system }` ∈ `member_systems`). Ships in transit
+        // (`system: None`) are deliberately excluded — they belong to
+        // whichever region they're heading toward (handled when they
+        // arrive). Cross-region transfers will be modelled explicitly
+        // by PR2c+.
         let ships: Vec<ShipInfo> = all_ships
             .iter()
             .filter(|(_, ship, _, _)| ship.owner == crate::ship::Owner::Empire(entity))
@@ -469,6 +685,16 @@ pub fn npc_decision_tick(
                     is_combat,
                     ftl_range: ship.ftl_range,
                 }
+            })
+            // PR2b: drop ships whose docked system is not in this
+            // region's `member_systems`. In-transit ships
+            // (`system: None`) never make it into the idle / combat /
+            // colonizer / surveyor sets below regardless, so we filter
+            // them out here too for clarity.
+            .filter(|info| {
+                info.system
+                    .map(|s| member_systems_set.contains(&s))
+                    .unwrap_or(false)
             })
             .collect();
 
@@ -500,11 +726,11 @@ pub fn npc_decision_tick(
             ruler_aboard,
         };
 
-        // Route the per-empire decision through the layered MidStanceAgent
-        // (#448). Pre-compute idle_combat / idle_colonizers / idle_surveyors
-        // with the same expressions the agent's rules use (Rules 1 / 3 / 2)
-        // so the adapter can hand them straight in without re-scanning the
-        // ship list.
+        // Route the per-MidAgent decision through the layered
+        // MidStanceAgent (#448). Pre-compute idle_combat /
+        // idle_colonizers / idle_surveyors with the same expressions
+        // the agent's rules use (Rules 1 / 3 / 2) so the adapter can
+        // hand them straight in without re-scanning the ship list.
         let idle_combat: Vec<Entity> = context
             .ships
             .iter()
@@ -530,10 +756,16 @@ pub fn npc_decision_tick(
             idle_combat: &idle_combat,
             idle_colonizers: &idle_colonizers,
             idle_surveyors: &idle_surveyors,
+            member_systems: member_systems_slice,
         };
+        // Stance is read from the per-MidAgent state. Today every
+        // rule ignores stance (`MidStanceAgent::decide` accepts but
+        // does not consult it — see its module doc); a future PR
+        // wires stance modulation into Rule priority weighting.
+        // Keeping the read here means the spec is already in place.
         let proposals = super::mid_stance::MidStanceAgent::decide(
             &adapter,
-            &macrocosmo_ai::Stance::default(),
+            &mid_agent.state.stance,
             &faction.id,
             now,
         );

@@ -156,6 +156,18 @@ impl Plugin for AiPlugin {
                     .after(crate::time_system::advance_game_time)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
+            // #449 PR2b: backfill `Region` + `MidAgent` for
+            // `AiControlled` empires that did not go through the
+            // production spawn pipeline (typical of integration
+            // tests). Idempotent — production setups never trigger
+            // any work here.
+            .add_systems(
+                Update,
+                super::npc_decision::backfill_mid_agents_for_ai_controlled
+                    .in_set(AiTickSet::Reason)
+                    .before(super::npc_decision::npc_decision_tick)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
             // NPC decision tick — MidStanceAgent reads metrics and emits commands.
             .add_systems(
                 Update,

@@ -581,22 +581,33 @@ pub fn run_faction_on_game_start(world: &mut World) {
     spawn_initial_region_for_faction(world, &faction_id);
 }
 
-/// #449 PR2a: spawn the empire's initial `Region` anchored at its
-/// `HomeSystem`. Idempotent — if a `RegionMembership` already exists on
-/// the home system (e.g. a hot-reloaded scene path), this skips. The
-/// `RegionRegistry` resource is created on-demand if missing (defensive:
-/// `GameSetupPlugin` does not currently register it as a resource, but
-/// the Region spawn path must work even when the registry was not
-/// pre-installed by a plugin).
+/// #449 PR2a/PR2b: spawn the empire's initial `Region` anchored at its
+/// `HomeSystem`, plus a `MidAgent` Component that owns the region's
+/// engine-agnostic `MidTermState`. Idempotent — if a `RegionMembership`
+/// already exists on the home system (e.g. a hot-reloaded scene path),
+/// this skips entirely. The `RegionRegistry` resource is created
+/// on-demand if missing (defensive: `GameSetupPlugin` does not
+/// currently register it as a resource, but the Region spawn path must
+/// work even when the registry was not pre-installed by a plugin).
+///
+/// PR2b ordering inside the function: `Region` is spawned first so the
+/// `MidAgent` can carry a non-`PLACEHOLDER` `region: Entity` field;
+/// the back-reference `Region.mid_agent = Some(mid_agent_entity)` is
+/// then populated in a second pass. `auto_managed` is `true` for NPC
+/// empires (legacy behavior — Mid-tier reasoning may emit commands)
+/// and `false` for the player empire (`PlayerEmpire` marker present);
+/// the per-region toggle gets a UI in #452.
 fn spawn_initial_region_for_faction(world: &mut World, faction_id: &str) {
-    // Find the empire entity for this faction.
+    // Find the empire entity for this faction (also note whether it is
+    // the player empire — drives `MidAgent.auto_managed`).
     let empire_entity = {
-        let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+        let mut q =
+            world.query_filtered::<(Entity, &Faction, Option<&PlayerEmpire>), With<Empire>>();
         q.iter(world)
-            .find(|(_, f)| f.id == faction_id)
-            .map(|(e, _)| e)
+            .find(|(_, f, _)| f.id == faction_id)
+            .map(|(e, _, p)| (e, p.is_some()))
     };
-    let Some(empire) = empire_entity else {
+    let Some((empire, is_player_empire)) = empire_entity else {
         warn!(
             "Setup: spawn_initial_region: no Empire for faction '{}'",
             faction_id
@@ -632,7 +643,29 @@ fn spawn_initial_region_for_faction(world: &mut World, faction_id: &str) {
         return;
     }
 
-    let _region = crate::region::spawn_initial_region(world, empire, home_system);
+    let region = crate::region::spawn_initial_region(world, empire, home_system);
+
+    // #449 PR2b: spawn the `MidAgent` for the freshly-created region.
+    // `MidTermState::default()` = stance `Consolidating`, no active
+    // operations, `region_id` (the `arc_str_id` form) `None` — the
+    // ECS-side `region: Entity` back-reference is the integration
+    // layer's source of truth.
+    let mid_agent = world
+        .spawn(crate::ai::MidAgent {
+            region,
+            state: macrocosmo_ai::MidTermState::default(),
+            // Player empire: `auto_managed = false` (only player
+            // commands apply); NPC empires: `auto_managed = true`
+            // (legacy NPC AI behavior). #452 adds the per-region UI
+            // toggle.
+            auto_managed: !is_player_empire,
+        })
+        .id();
+
+    // Populate `Region.mid_agent` back-reference.
+    if let Some(mut region_comp) = world.get_mut::<crate::region::Region>(region) {
+        region_comp.mid_agent = Some(mid_agent);
+    }
 }
 
 /// #429: Look up the faction's assigned home system and insert a `HomeSystem`

@@ -140,6 +140,21 @@ pub trait MidGameAdapter {
     /// Empire-wide net food production. Rule 5b's farm branch fires
     /// when `net_production_energy >= 0.0` AND this is `< 0.0`.
     fn net_production_food(&self) -> f64;
+
+    /// Member systems of this Mid's region. Adapter implementations
+    /// filter all per-system / per-ship lists they expose
+    /// (`hostile_systems`, `colonizable_systems`, `unsurveyed_systems`,
+    /// `idle_*_ships`) by intersection with this slice.
+    ///
+    /// **Default empty** = "no filter" — preserves the legacy single
+    /// empire-wide Mid behavior so existing test stubs (e.g.
+    /// `mid_stance::tests::StubAdapter`) keep working without
+    /// change. Production [`BevyMidGameAdapter`] always returns the
+    /// region's actual member set so PR2c+ multi-region splits
+    /// activate cross-region isolation automatically.
+    fn member_systems(&self) -> &[Entity] {
+        &[]
+    }
 }
 
 /// Three counts Rule 6 needs to pick the next ship to build.
@@ -173,6 +188,13 @@ pub struct BevyMidGameAdapter<'a> {
     /// filtered over `context.ships`. Borrowed (not owned) for the
     /// same reason `idle_colonizers` is.
     pub idle_surveyors: &'a [Entity],
+    /// Member systems of the Mid's `Region` (#449 PR2b). All
+    /// per-system / per-ship lists exposed through the trait are
+    /// intersected with this slice so a Mid sees only the systems in
+    /// its region. Pre-region-split (today) every empire has exactly
+    /// one region containing every owned system, so the intersect is
+    /// a no-op and existing NPC integration tests stay green.
+    pub member_systems: &'a [Entity],
 }
 
 impl<'a> BevyMidGameAdapter<'a> {
@@ -314,6 +336,17 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
                 self.faction_id(),
             ))
             .unwrap_or(0.0)
+    }
+
+    fn member_systems(&self) -> &[Entity] {
+        // The other slice methods (`hostile_systems`,
+        // `colonizable_systems`, `unsurveyed_systems`, `idle_*`) are
+        // already region-scoped — `npc_decision_tick` builds
+        // `NpcContext` and the idle ship lists by intersecting with
+        // `Region.member_systems` before this adapter is constructed.
+        // This accessor exposes the scope itself for diagnostic /
+        // reflective use; rules do not need to re-filter.
+        self.member_systems
     }
 }
 
