@@ -57,12 +57,14 @@ pub mod short_adapter;
 pub mod short_agent;
 pub mod short_agent_runtime;
 pub mod short_stance;
+pub mod threat_query;
 
 pub use mid_adapter::{BevyMidGameAdapter, MidGameAdapter};
 pub use mid_agent::MidAgent;
 pub use npc_decision::{AiControlled, AiPlayerMode};
 pub use plugin::{AiBusResource, AiPlugin, AiTickSet};
 pub use short_agent::{ShortAgent, ShortScope};
+pub use threat_query::{OVERDUE_TOLERANCE_HEXADIES, is_ship_overdue};
 
 /// Re-export of the `macrocosmo-ai` crate. Callers should prefer
 /// `crate::ai::core::…` over `macrocosmo_ai::…` so that swapping the AI
