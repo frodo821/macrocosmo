@@ -51,8 +51,9 @@ pub fn register_all_types(app: &mut App) {
     app.register_type::<crate::ai::npc_decision::LastAiDecisionTick>();
     // crate::ai::command_outbox
     app.register_type::<crate::ai::command_outbox::AiCommandOutbox>();
-    // crate::ai::orchestrator_runtime
-    app.register_type::<crate::ai::orchestrator_runtime::OrchestratorRegistry>();
+    // crate::ai::short_agent (#449 PR2c)
+    app.register_type::<crate::ai::short_agent::ShortAgent>();
+    app.register_type::<crate::ai::short_agent::ShortScope>();
     // crate::ai::plugin
     app.register_type::<crate::ai::plugin::AiBusResource>();
     app.register_type::<crate::ai::plugin::DeclaredFactionSlots>();

@@ -22,7 +22,7 @@
 //! in `decomposition_rules.rs`) asserts the *abstract* chain at the
 //! `CampaignReactiveShort` boundary. This test is the **end-to-end**
 //! companion: it pipes the chain through the real Bevy schedule
-//! (`run_orchestrators` → `dispatch_ai_pending_commands` →
+//! (`run_short_agents` → `dispatch_ai_pending_commands` →
 //! `process_ai_pending_commands` → `drain_ai_commands` → handler dispatch
 //! → ECS event emission), verifying that each primitive surfaces as the
 //! correct game-side ECS event one hexadies after the prior:
@@ -35,17 +35,19 @@
 //! | `unload_deliverable` | `DeployDeliverableRequested` message                      |
 //! | `colonize_planet`    | `ColonizeRequested { planet: Some(_), .. }` message       |
 //!
-//! ## How the macro reaches the orchestrator
+//! ## How the macro reaches the short layer
 //!
 //! `CampaignReactiveShort::make_command` synthesizes a command from a
 //! Campaign with only `campaign` / `source_intent` params — none of the
 //! spatial parameters that the consumer-side handlers require
 //! (`target_system`, `target_planet`, `ship_*`, `definition_id`). To
-//! exercise the full pipeline we therefore seed the orchestrator's
-//! per-context `PlanState` directly with a fully-parameterized primitive
-//! sequence. The Short layer's `intercept_and_drain` Step 2 drains one
-//! head per non-empty slot per tick, so over five `advance_time(&mut app, 1)`
-//! steps the orchestrator emits the five primitives in order.
+//! exercise the full pipeline we therefore seed the courier fleet's
+//! `ShortAgent` `PlanState` (#449 PR2c — the per-fleet replacement for
+//! the deleted `OrchestratorState.plan_states` map) directly with a
+//! fully-parameterized primitive sequence. The Short layer's
+//! `intercept_and_drain` Step 2 drains one head per non-empty slot per
+//! tick, so over five `advance_time(&mut app, 1)` steps the agent emits
+//! the five primitives in order.
 //!
 //! This is faithful to the F-track contract: F2/F3 build the registry
 //! and the rules, F4 wires `intercept_and_drain` against `PlanState`, and
@@ -57,9 +59,9 @@ mod common;
 
 use bevy::prelude::*;
 
-use macrocosmo::ai::core::{Command, CommandValue, ObjectiveId, ShortContext};
-use macrocosmo::ai::orchestrator_runtime::{FactionOrchestrator, OrchestratorRegistry};
+use macrocosmo::ai::core::{Command, CommandValue, ObjectiveId};
 use macrocosmo::ai::schema::ids::command as cmd_ids;
+use macrocosmo::ai::short_agent::{ShortAgent, ShortScope};
 use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue};
 use macrocosmo::empire::CommsParams;
@@ -122,28 +124,53 @@ fn spawn_npc_empire(world: &mut World) -> Entity {
         .id()
 }
 
-/// Wire a manually-constructed [`FactionOrchestrator`] for `empire`
-/// into the `OrchestratorRegistry`. `register_demo_orchestrator` only
-/// runs on `OnEnter(GameState::NewGame)` and `test_app()` starts the
-/// world directly in `InGame`, so the test seeds the registry by hand.
-fn register_orchestrator_for(app: &mut App, empire: Entity) {
-    let fid = macrocosmo::ai::convert::to_ai_faction(empire);
-    let mut registry = app.world_mut().resource_mut::<OrchestratorRegistry>();
-    registry
-        .by_entity
-        .insert(empire, FactionOrchestrator::new_demo(fid));
+/// Spawn the empire's initial `Region` + `MidAgent` pair so the new
+/// `ShortAgent` spawn hook (`spawn_short_agent_for_new_fleets`) can
+/// resolve `system → region → mid_agent`. `test_app()` starts the
+/// world directly in `InGame` and bypasses the production
+/// `OnEnter(NewGame)` spawn pipeline, so PR2c tests must seed the
+/// region structure by hand. Mirrors the path in
+/// `setup::spawn_initial_region_for_faction` minus the Lua-side
+/// faction lookup.
+fn install_region_and_mid_agent(app: &mut App, empire: Entity, home_system: Entity) -> Entity {
+    use macrocosmo::ai::MidAgent;
+    use macrocosmo::region::{Region, RegionMembership, RegionRegistry, spawn_initial_region};
+
+    let world = app.world_mut();
+    if world.get_resource::<RegionRegistry>().is_none() {
+        world.insert_resource(RegionRegistry::default());
+    }
+    // Skip if a region already covers the home system (defensive).
+    if world.get::<RegionMembership>(home_system).is_some() {
+        let existing = world
+            .get::<RegionMembership>(home_system)
+            .map(|m| m.region)
+            .unwrap();
+        return existing;
+    }
+    let region = spawn_initial_region(world, empire, home_system);
+    let mid_agent = world
+        .spawn(MidAgent {
+            region,
+            state: macrocosmo::ai::core::MidTermState::default(),
+            auto_managed: true,
+        })
+        .id();
+    if let Some(mut region_comp) = world.get_mut::<Region>(region) {
+        region_comp.mid_agent = Some(mid_agent);
+    }
+    region
 }
 
-/// Push a fully-parameterized primitive sequence into the
-/// orchestrator's per-context `PlanState`. The Short layer's
-/// `intercept_and_drain` Step 2 will surface one head per tick.
+/// Find the `ShortAgent` attached to `courier`'s fleet and seed its
+/// `PlanState` with the fully-parameterized primitive sequence. The
+/// Short layer's `intercept_and_drain` Step 2 will surface one head
+/// per non-empty slot per tick.
 ///
-/// The orchestrator's default `ShortContext` is `"faction"` (see
-/// `OrchestratorConfig::default`); the slot key
-/// `(macro_kind, ObjectiveId)` may be any pair as long as it's unique
-/// within the `BTreeMap` for the context. We use
-/// `(colonize_system, "decomp-e2e")` so debug logs trace cleanly back
-/// to this test if a regression ever surfaces in CI.
+/// The slot key `(macro_kind, ObjectiveId)` may be any pair as long as
+/// it's unique within the `BTreeMap`. We use `(colonize_system,
+/// "decomp-e2e")` so debug logs trace cleanly back to this test if a
+/// regression ever surfaces in CI.
 fn seed_plan_state(
     app: &mut App,
     empire: Entity,
@@ -192,18 +219,24 @@ fn seed_plan_state(
         .with_param("ship_0", CommandValue::Entity(courier_ref))
         .with_param("ship", CommandValue::Entity(courier_ref));
 
-    let mut registry = app.world_mut().resource_mut::<OrchestratorRegistry>();
-    let fo = registry
-        .by_entity
-        .get_mut(&empire)
-        .expect("orchestrator must already be registered");
-    let plan = fo
-        .orchestrator
-        .state
-        .plan_states
-        .entry(ShortContext::from("faction"))
-        .or_default();
-    plan.pending.insert(
+    // Resolve courier's fleet → ShortAgent. `spawn_test_ship` always
+    // creates a 1-ship fleet inline, so the courier's `Ship.fleet` is
+    // populated synchronously.
+    let fleet = app
+        .world()
+        .get::<macrocosmo::ship::Ship>(courier)
+        .and_then(|s| s.fleet)
+        .expect("courier must have a Fleet");
+    let mut short_agent = app.world_mut().get_mut::<ShortAgent>(fleet).expect(
+        "ShortAgent must already be installed on the courier fleet \
+             (run `app.update()` after region+mid setup so \
+             `spawn_short_agent_for_new_fleets` fires before seeding)",
+    );
+    assert!(
+        matches!(short_agent.scope, ShortScope::Fleet(f) if f == fleet),
+        "courier fleet's ShortAgent.scope should match"
+    );
+    short_agent.state.pending.insert(
         (cmd_ids::colonize_system(), ObjectiveId::from("decomp-e2e")),
         vec![build, load, mv, unload, colonize],
     );
@@ -218,7 +251,7 @@ fn current_count<M: bevy::ecs::message::Message>(app: &App) -> usize {
 }
 
 /// H1 regression: full Bevy app integration test for the
-/// `colonize_system` macro chain end-to-end. Drives `run_orchestrators`
+/// `colonize_system` macro chain end-to-end. Drives `run_short_agents`
 /// (registered by `AiPlugin` in `test_app()`), the AI command outbox,
 /// and the consumer pipeline; asserts each primitive surfaces as its
 /// intended ECS event in the per-tick order
@@ -234,13 +267,13 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
     // minimal shape `handle_build_deliverable` looks up.
     install_infra_core_design(&mut app);
 
-    // `run_orchestrators` is registered by `AiPlugin::build` (already
+    // `run_short_agents` is registered by `AiPlugin::build` (already
     // included in `test_app()`); we don't add it again here since the
     // plugin set up the `.after(npc_decision_tick)` ordering and the
     // `run_if(in_state(GameState::InGame))` gate, and `test_app()`
     // seeds the world directly into `GameState::InGame`. Adding the
     // system a second time would also panic on `SystemTypeSet`
-    // ambiguity because `dispatch_ai_pending_commands.after(run_orchestrators)`
+    // ambiguity because `dispatch_ai_pending_commands.after(run_short_agents)`
     // already references the type-set form.
 
     // Spawn the NPC empire (no PlayerEmpire — this is the AI-controlled
@@ -315,11 +348,13 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
             });
     }
 
-    // Wire the orchestrator and seed its per-context plan state with
-    // the five primitive commands. From here on the Short layer's
-    // `intercept_and_drain` Step 2 will surface one primitive per
-    // tick.
-    register_orchestrator_for(&mut app, npc_empire);
+    // #449 PR2c: install the Region + MidAgent pair so the Added<Fleet>
+    // hook (`spawn_short_agent_for_new_fleets`) can resolve
+    // `home_system → region → mid_agent` and attach a `ShortAgent` to
+    // the courier's fleet. Then run one Update so the spawn hook
+    // fires before we mutate the agent's state.
+    install_region_and_mid_agent(&mut app, npc_empire, home);
+    app.update();
     seed_plan_state(&mut app, npc_empire, target, target_planet, courier);
 
     // Reset the message buffers so `iter_current_update_messages()`

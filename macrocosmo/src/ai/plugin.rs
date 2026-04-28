@@ -103,7 +103,6 @@ impl Plugin for AiPlugin {
             .init_resource::<super::npc_decision::LastAiDecisionTick>()
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
-            .init_resource::<super::orchestrator_runtime::OrchestratorRegistry>()
             // Round 9 PR #3: AI command light-speed delay shim. Outbox
             // resource is initialised here so save/load round-trips see
             // a consistent type-registered Resource even on fresh runs.
@@ -117,12 +116,8 @@ impl Plugin for AiPlugin {
             // `declare_foreign_slots_on_awareness` on Update.
             .add_systems(
                 OnEnter(crate::game_state::GameState::NewGame),
-                (
-                    declare_foreign_slots_for_existing_factions
-                        .after(crate::setup::run_all_factions_on_game_start),
-                    super::orchestrator_runtime::register_demo_orchestrator
-                        .after(declare_foreign_slots_for_existing_factions),
-                ),
+                declare_foreign_slots_for_existing_factions
+                    .after(crate::setup::run_all_factions_on_game_start),
             )
             // Foreign-slot declaration must run during Bootstrapping /
             // NewGame / LoadingSave too — it reacts to `Added<Faction>` so
@@ -175,22 +170,37 @@ impl Plugin for AiPlugin {
                     .in_set(AiTickSet::Reason)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
-            // Three-layer orchestrator tick — runs alongside (not instead
-            // of) `MidStanceAgent`. Ordered `.after(npc_decision_tick)`
-            // to avoid `ResMut<AiBusResource>` contention within the same
-            // schedule step. Both write the bus; the orchestrator only
-            // emits `pursue_metric:*` kinds which `drain_ai_commands`
-            // logs as `unknown` and ignores — observed-only for now.
+            // #449 PR2c: per-`ShortAgent` execution tick — replaces the
+            // deleted `run_orchestrators` (per-faction `Orchestrator`
+            // cluster). Drives `CampaignReactiveShort::tick` against
+            // each agent's own `PlanState` so decomposition / drain
+            // semantics are unchanged.  Ordered `.after(npc_decision_tick)`
+            // to keep the producer-side `ResMut<AiBusResource>` linear.
             .add_systems(
                 Update,
-                super::orchestrator_runtime::run_orchestrators
+                super::short_agent_runtime::run_short_agents
                     .after(super::npc_decision::npc_decision_tick)
                     .in_set(AiTickSet::Reason)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
+            // #449 PR2c: spawn ShortAgents for newly-created Fleets /
+            // Colonies. `Added<>`-driven so test setups that hand-spawn
+            // empires + ships pick up agents without each test needing
+            // to know about ShortAgent. Runs alongside the spawn-side
+            // `MidAgent` backfill.
+            .add_systems(
+                Update,
+                (
+                    super::short_agent_runtime::spawn_short_agent_for_new_fleets,
+                    super::short_agent_runtime::spawn_short_agent_for_new_colonies,
+                )
+                    .in_set(AiTickSet::Reason)
+                    .before(super::short_agent_runtime::run_short_agents)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
             // Round 9 PR #3: AI command light-speed delay shim. The
-            // dispatcher runs at the **end** of `Reason` (after both
-            // producers `npc_decision_tick` and `run_orchestrators`)
+            // dispatcher runs at the **end** of `Reason` (after the
+            // producers `npc_decision_tick` and `run_short_agents`)
             // so it sees every command emitted this tick before the
             // bus reaches `CommandDrain`. The processor runs at the
             // **start** of `CommandDrain`, before `drain_ai_commands`,
@@ -200,8 +210,18 @@ impl Plugin for AiPlugin {
             .add_systems(
                 Update,
                 super::command_outbox::dispatch_ai_pending_commands
-                    .after(super::orchestrator_runtime::run_orchestrators)
+                    .after(super::short_agent_runtime::run_short_agents)
                     .in_set(AiTickSet::Reason)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
+            // ShortAgent reaper — runs in CommandDrain alongside
+            // existing despawn-cleanup work. Mirrors the
+            // `prune_empty_fleets` pattern (per-tick scan, despawn
+            // orphaned children).
+            .add_systems(
+                Update,
+                super::short_agent_runtime::despawn_orphaned_short_agents
+                    .in_set(AiTickSet::CommandDrain)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // Command consumer — drains AI commands and converts to ECS actions.

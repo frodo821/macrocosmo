@@ -48,8 +48,12 @@ use crate::ai::schema::ids::command as cmd_ids;
 /// 1. `colonize_system` → [`expand_colonize_system`]
 /// 2. `deploy_deliverable` → [`expand_deploy_deliverable`]
 ///
-/// Game code installs the returned registry via
-/// [`macrocosmo_ai::Orchestrator::with_decomposition`].
+/// Game code wires the returned registry into `CampaignReactiveShort`
+/// via the per-`ShortAgent` driver (`run_short_agents` in
+/// [`super::short_agent_runtime`]). Pre-#449 PR2c the registry was
+/// instead handed to `macrocosmo_ai::Orchestrator::with_decomposition`;
+/// the engine-agnostic harness still exposes that API in
+/// `macrocosmo-ai`'s scenario tests.
 pub fn build_default_registry() -> StaticDecompositionRegistry {
     let mut reg = StaticDecompositionRegistry::new();
     reg.register(DecompositionRule::new(

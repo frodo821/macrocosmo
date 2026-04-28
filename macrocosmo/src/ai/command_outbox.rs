@@ -4,7 +4,7 @@
 //! `PendingCommand` entities with an `arrives_at` timestamp computed from
 //! the issuer-to-target distance, so the *light-speed information
 //! constraint* applies symmetrically. AI commands historically bypassed
-//! this: producers (`npc_decision_tick`, `run_orchestrators`) called
+//! this: producers (`npc_decision_tick`, `run_short_agents`) called
 //! `bus.emit_command(...)` and the consumer (`drain_ai_commands`) drained
 //! and applied them in the same tick, giving NPC empires perfect
 //! instantaneous reach across the galaxy.

@@ -4,7 +4,7 @@
 //! drain_ai_commands` in a single tick — NPCs had perfect
 //! instantaneous reach across the galaxy regardless of their Ruler's
 //! position. The fix interposes [`AiCommandOutbox`] between producer
-//! (`npc_decision_tick`, `run_orchestrators`) and consumer
+//! (`npc_decision_tick`, `run_short_agents`) and consumer
 //! (`drain_ai_commands`), computing each command's `arrives_at` from
 //! the Ruler's position to the command's destination via the
 //! existing [`compute_fact_arrival`] knowledge-side helper.
