@@ -18,8 +18,8 @@ use ahash::AHashMap;
 use serde::{Deserialize, Serialize};
 
 use crate::agent::{
-    CampaignOp, LongTermAgent, LongTermInput, LongTermState, MidTermAgent, MidTermInput,
-    MidTermState, OverrideEntry, PlanState, ShortTermAgent, ShortTermInput,
+    CampaignOp, LongTermAgent, LongTermInput, MidTermAgent, MidTermInput, MidTermState,
+    OverrideEntry, PlanState, ShortTermAgent, ShortTermInput,
 };
 use crate::ai_params::AiParamsExt;
 use crate::bus::AiBus;
@@ -139,14 +139,15 @@ pub struct OrchestratorState {
     /// map has at most one entry — the keyed shape is in place for
     /// future per-fleet / per-colony short agents.
     pub plan_states: AHashMap<ShortContext, PlanState>,
-    /// Empire-wide strategic memory. Threaded across long ticks once
-    /// PR4 unifies the agent traits; in PR1 the orchestrator owns
-    /// storage but does not yet read from it (existing default agents
-    /// keep their own internal state).
-    pub long_state: LongTermState,
     /// Region-scoped tactical memory. Single-instance today (one
     /// empire-wide Mid per faction); the multi-Mid split lands in
     /// #449.
+    ///
+    /// Note: empire-wide strategic memory (formerly `long_state:
+    /// LongTermState`) was migrated to a game-side `EmpireLongTermState`
+    /// Component in #449 PR2a (state-on-Component direction). The
+    /// `LongTermState` type itself still lives in `agent.rs` and is
+    /// re-exported from the crate root — game integrations wrap it.
     pub mid_state: MidTermState,
 }
 

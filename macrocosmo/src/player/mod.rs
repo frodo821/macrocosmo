@@ -82,6 +82,9 @@ pub fn spawn_player_empire(mut commands: Commands) {
             PendingFactQueue::default(),
             // #464: Per-empire faction discovery (was global resource).
             crate::faction::KnownFactions::default(),
+            // #449 PR2a: empire-wide strategic memory (migrated out of
+            // the engine-agnostic `OrchestratorState.long_state`).
+            crate::region::EmpireLongTermState::default(),
         ),
     ));
     info!("Player empire entity spawned");

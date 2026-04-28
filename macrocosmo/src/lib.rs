@@ -25,6 +25,7 @@ pub mod physics;
 pub mod player;
 pub mod profiling;
 pub mod reflect_registration;
+pub mod region;
 #[cfg(feature = "remote")]
 pub mod remote;
 pub mod scripting;

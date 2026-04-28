@@ -285,6 +285,9 @@ fn empire_bundle(
             // #464: Per-empire faction discovery — every NPC empire
             // builds its own KnownFactions independently.
             crate::faction::KnownFactions::default(),
+            // #449 PR2a: empire-wide strategic memory (migrated out of
+            // the engine-agnostic `OrchestratorState.long_state`).
+            crate::region::EmpireLongTermState::default(),
         ),
     )
 }
@@ -390,6 +393,11 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
 
         // #429: Insert HomeSystem component on the empire entity.
         insert_home_system_on_empire(world, &snap.id);
+
+        // #449 PR2a: spawn the empire's initial Region anchored at its
+        // HomeSystem. Must run AFTER `insert_home_system_on_empire`
+        // (reads `HomeSystem`) and BEFORE PR2b's MidAgent spawn.
+        spawn_initial_region_for_faction(world, &snap.id);
 
         // #421: Spawn a Ruler entity for this NPC empire.
         spawn_npc_ruler(world, &snap.id, &snap.name);
@@ -565,6 +573,66 @@ pub fn run_faction_on_game_start(world: &mut World) {
 
     // #429: Insert HomeSystem component on the player empire entity.
     insert_home_system_on_empire(world, &faction_id);
+
+    // #449 PR2a: spawn the empire's initial Region anchored at its
+    // HomeSystem. Must run AFTER `insert_home_system_on_empire` (we
+    // read `HomeSystem`) and BEFORE PR2b's MidAgent spawn (which fills
+    // `Region.mid_agent`).
+    spawn_initial_region_for_faction(world, &faction_id);
+}
+
+/// #449 PR2a: spawn the empire's initial `Region` anchored at its
+/// `HomeSystem`. Idempotent — if a `RegionMembership` already exists on
+/// the home system (e.g. a hot-reloaded scene path), this skips. The
+/// `RegionRegistry` resource is created on-demand if missing (defensive:
+/// `GameSetupPlugin` does not currently register it as a resource, but
+/// the Region spawn path must work even when the registry was not
+/// pre-installed by a plugin).
+fn spawn_initial_region_for_faction(world: &mut World, faction_id: &str) {
+    // Find the empire entity for this faction.
+    let empire_entity = {
+        let mut q = world.query_filtered::<(Entity, &Faction), With<Empire>>();
+        q.iter(world)
+            .find(|(_, f)| f.id == faction_id)
+            .map(|(e, _)| e)
+    };
+    let Some(empire) = empire_entity else {
+        warn!(
+            "Setup: spawn_initial_region: no Empire for faction '{}'",
+            faction_id
+        );
+        return;
+    };
+
+    // Read the HomeSystem inserted by `insert_home_system_on_empire`.
+    let Some(home_system) = world.get::<crate::galaxy::HomeSystem>(empire).map(|h| h.0) else {
+        warn!(
+            "Setup: spawn_initial_region: empire '{}' has no HomeSystem; skipping",
+            faction_id
+        );
+        return;
+    };
+
+    // Defensive: ensure the registry resource exists. PR2a does not yet
+    // have a dedicated `RegionPlugin` so the resource is created here on
+    // first use.
+    if world
+        .get_resource::<crate::region::RegionRegistry>()
+        .is_none()
+    {
+        world.insert_resource(crate::region::RegionRegistry::default());
+    }
+
+    // Idempotent: skip if the home system already has a RegionMembership
+    // (e.g. re-entry into NewGame).
+    if world
+        .get::<crate::region::RegionMembership>(home_system)
+        .is_some()
+    {
+        return;
+    }
+
+    let _region = crate::region::spawn_initial_region(world, empire, home_system);
 }
 
 /// #429: Look up the faction's assigned home system and insert a `HomeSystem`

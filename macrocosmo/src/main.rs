@@ -25,6 +25,7 @@ mod physics;
 mod player;
 mod profiling;
 mod reflect_registration;
+mod region;
 #[cfg(feature = "remote")]
 mod remote;
 mod scripting;

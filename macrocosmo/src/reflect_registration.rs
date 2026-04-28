@@ -188,6 +188,11 @@ pub fn register_all_types(app: &mut App) {
     app.register_type::<crate::player::PlayerEmpire>();
     app.register_type::<crate::player::Ruler>();
     app.register_type::<crate::player::StationedAt>();
+    // crate::region (#449 PR2a)
+    app.register_type::<crate::region::EmpireLongTermState>();
+    app.register_type::<crate::region::Region>();
+    app.register_type::<crate::region::RegionMembership>();
+    app.register_type::<crate::region::RegionRegistry>();
     // crate::remote
     #[cfg(feature = "remote")]
     app.register_type::<crate::remote::PendingInputReleases>();
