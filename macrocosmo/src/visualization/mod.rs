@@ -1,5 +1,5 @@
 mod camera;
-mod ships;
+pub mod ships;
 mod stars;
 pub mod territory;
 

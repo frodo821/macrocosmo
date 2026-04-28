@@ -5,9 +5,9 @@ use bevy::prelude::*;
 use super::{GalaxyView, SelectedShip};
 use crate::components::Position;
 use crate::galaxy::StarSystem;
-use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
-use crate::player::PlayerEmpire;
-use crate::ship::{CommandQueue, QueuedCommand, Ship, ShipState, ShipStats};
+use crate::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshotState};
+use crate::player::{Empire, PlayerEmpire};
+use crate::ship::{CommandQueue, Owner, QueuedCommand, Ship, ShipState, ShipStats};
 use crate::time_system::GameClock;
 
 // #16: Ship drawing helpers and system
@@ -62,6 +62,121 @@ struct DockedShipInfo {
     is_harbour: bool,
 }
 
+/// #477: Light-coherent metadata about an own-empire ship as the viewing
+/// empire perceives it through its [`KnowledgeStore::projections`].
+///
+/// `name` / `design_id` / `is_harbour` / `is_station` are read from the
+/// realtime [`Ship`] / [`ShipStats`] components — own-empire metadata
+/// (build cost, hull, harbour capacity) is locally known and not bound by
+/// light-speed. The *position-affecting state* (`projected_state`,
+/// `projected_system`) comes purely from the projection store.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OwnShipRenderItem {
+    pub entity: Entity,
+    pub design_id: String,
+    pub is_station: bool,
+    pub is_harbour: bool,
+    pub projected_state: ShipSnapshotState,
+    pub projected_system: Option<Entity>,
+}
+
+/// Per-entity ship metadata pulled from realtime ECS Components.
+///
+/// Only describes Components that are *not* light-delayed for the viewing
+/// empire (own-empire ship build data, role flags). The realtime
+/// [`ShipState`] is intentionally NOT part of this metadata — that's the
+/// FTL leak #477 fixes.
+#[derive(Clone, Debug)]
+pub struct OwnShipMetadata {
+    pub design_id: String,
+    pub is_station: bool,
+    pub is_harbour: bool,
+    pub owned_by_viewing_empire: bool,
+}
+
+/// #477: Pure helper — given a viewing empire's [`KnowledgeStore`] and a
+/// per-entity metadata lookup, compute what the renderer should draw for
+/// each own-empire ship. Returns an empty `Vec` if the store has no
+/// projections.
+///
+/// Skips:
+/// * ships with no realtime metadata (the entity has been despawned —
+///   `Destroyed`/`Missing` snapshots are rendered by the foreign-ghost
+///   branch in [`draw_ships`] which handles both own and foreign empires
+///   for despawned ships);
+/// * stations (rendered as overlay icons, not ship markers);
+/// * `Destroyed` / `Missing` projected states (also rendered via the
+///   snapshot ghost branch for visual consistency with foreign ships);
+/// * ships whose [`Ship::owner`] is not the viewing empire — projections
+///   are dispatcher-keyed but defense-in-depth is cheap here.
+pub fn compute_own_ship_render_inputs(
+    store: &KnowledgeStore,
+    metadata: &HashMap<Entity, OwnShipMetadata>,
+) -> Vec<OwnShipRenderItem> {
+    let mut out = Vec::new();
+    for (ship_entity, projection) in store.iter_projections() {
+        let Some(meta) = metadata.get(ship_entity) else {
+            // Entity gone (Destroyed/Missing reconciled) — let the
+            // snapshot ghost branch render it.
+            continue;
+        };
+        if !meta.owned_by_viewing_empire {
+            continue;
+        }
+        if meta.is_station {
+            continue;
+        }
+        match &projection.projected_state {
+            ShipSnapshotState::Destroyed | ShipSnapshotState::Missing => {
+                // Terminal states render via the existing ghost branch
+                // for parity with foreign ship rendering.
+                continue;
+            }
+            _ => {}
+        }
+        out.push(OwnShipRenderItem {
+            entity: *ship_entity,
+            design_id: meta.design_id.clone(),
+            is_station: meta.is_station,
+            is_harbour: meta.is_harbour,
+            projected_state: projection.projected_state.clone(),
+            projected_system: projection.projected_system,
+        });
+    }
+    out
+}
+
+/// #477: Resolve the on-screen position implied by a [`ShipProjection`].
+///
+/// `view_scale` is `GalaxyView.scale`. Returns `None` if the projection's
+/// `projected_system` cannot be resolved to a [`Position`]. For
+/// `Loitering`, the position comes directly from the projection's inline
+/// coordinates and never consults `stars`.
+///
+/// `InTransit`: the projection does not carry from/to/depart/eta
+/// interpolation fields, so we draw at `projected_system` (= the
+/// destination, per #475 / #476). This is coarser than the pre-#477
+/// realtime renderer (which interpolated along the leg), but is the
+/// light-coherent answer until #478 expands the projection schema.
+pub fn projection_screen_pos(
+    projection: &ShipProjection,
+    stars: &Query<&Position, With<StarSystem>>,
+    view_scale: f32,
+) -> Option<Vec2> {
+    if let ShipSnapshotState::Loitering { position } = &projection.projected_state {
+        return Some(Vec2::new(
+            position[0] as f32 * view_scale,
+            position[1] as f32 * view_scale,
+        ));
+    }
+    let system = projection.projected_system?;
+    let pos = stars.get(system).ok()?;
+    Some(Vec2::new(
+        pos.x as f32 * view_scale,
+        pos.y as f32 * view_scale,
+    ))
+}
+
 pub fn draw_ships(
     mut gizmos: Gizmos,
     ships: Query<(
@@ -76,18 +191,17 @@ pub fn draw_ships(
     clock: Res<GameClock>,
     selected_ship: Res<SelectedShip>,
     empire_q: Query<(Entity, &KnowledgeStore), With<PlayerEmpire>>,
-    player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
+    all_empire_stores: Query<&KnowledgeStore, With<Empire>>,
+    _player_q: Query<&crate::player::StationedAt, With<crate::player::Player>>,
     observer_mode: Res<crate::observer::ObserverMode>,
     observer_view: Res<crate::observer::ObserverView>,
-    all_empire_q: Query<Entity, With<crate::player::Empire>>,
+    all_empire_q: Query<Entity, With<Empire>>,
 ) {
-    // #434: Only draw player-owned ships on the galaxy map. NPC ships at
-    // the player's local system could be drawn in the future, but for now
-    // we only show what the player directly controls.
-    //
-    // Observer mode: no PlayerEmpire exists. Resolve the viewing empire
-    // via `ObserverView` and draw its ships — god-view always shows the
-    // selected NPC empire's fleet so the map isn't blank.
+    // #434 / #477: Resolve the viewing empire (PlayerEmpire in normal play,
+    // ObserverView.viewing in observer mode). The ship marker rendering
+    // pipeline reads from this empire's `KnowledgeStore.projections` so the
+    // galaxy map is light-coherent: no realtime ECS `ShipState` is consulted
+    // for own-empire ship rendering (epic #473).
     let empire_entity = if observer_mode.enabled {
         observer_view.viewing.and_then(|e| all_empire_q.get(e).ok())
     } else {
@@ -96,174 +210,117 @@ pub fn draw_ships(
     let Some(empire_entity) = empire_entity else {
         return;
     };
-    let _player_system = player_q.iter().next().map(|s| s.system);
+
+    // Look up the viewing empire's KnowledgeStore. Both `empire_q` and
+    // `all_empire_stores` borrow `&KnowledgeStore` (read-only), so they
+    // do not conflict per Bevy B0001.
+    let Ok(viewing_store) = all_empire_stores.get(empire_entity) else {
+        return;
+    };
+
+    // Build the metadata table from the realtime ships query. Only own-empire
+    // ships' `Ship` / `ShipStats` Components are read here — the realtime
+    // `ShipState` is intentionally NOT consulted (the FTL leak fix).
+    let mut metadata: HashMap<Entity, OwnShipMetadata> = HashMap::new();
+    for (entity, ship, _state, _queue, stats) in &ships {
+        let owned_by_viewing_empire = matches!(ship.owner, Owner::Empire(e) if e == empire_entity);
+        metadata.insert(
+            entity,
+            OwnShipMetadata {
+                design_id: ship.design_id.clone(),
+                is_station: is_station(ship),
+                is_harbour: is_harbour(stats),
+                owned_by_viewing_empire,
+            },
+        );
+    }
+
+    // #477: Compute the projection-driven render items. This is the only
+    // source of own-ship marker positions on the galaxy map.
+    let render_items = compute_own_ship_render_inputs(viewing_store, &metadata);
 
     // Group docked ships by system so we can offset them.
-    // #395: Immobile ships (stations / infrastructure) are excluded entirely —
-    // they are represented by icons in the galaxy overlay instead.
+    // #395: Immobile ships (stations / infrastructure) are excluded entirely
+    // (filtered out by `compute_own_ship_render_inputs`) — they are
+    // represented by icons in the galaxy overlay instead.
     let mut docked_counts: HashMap<Entity, Vec<DockedShipInfo>> = HashMap::new();
     let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
 
-    for (_entity, ship, state, _queue, stats) in &ships {
-        // #434: Only draw player-owned ships.
-        if !matches!(ship.owner, crate::ship::Owner::Empire(e) if e == empire_entity) {
-            continue;
-        }
-        let station = is_station(ship);
-        if station {
-            // #395: Skip immobile ships — they are shown as development icons
-            // next to system names in `draw_galaxy_overlay`, not as ship markers.
-            if !matches!(
-                state,
-                ShipState::InSystem { .. }
-                    | ShipState::Refitting { .. }
-                    | ShipState::Scouting { .. }
-            ) {
-                // Non-docked states still need movement visuals for mobile ships,
-                // but stations should never be in transit — skip entirely.
-            }
-            continue;
-        }
-        let harbour = is_harbour(stats);
-        match state {
-            ShipState::InSystem { system } => {
-                docked_counts
-                    .entry(*system)
-                    .or_default()
-                    .push(DockedShipInfo {
-                        design_id: ship.design_id.clone(),
-                        is_harbour: harbour,
-                    });
-                *system_ship_counts.entry(*system).or_insert(0) += 1;
-            }
-            ShipState::SubLight {
-                origin,
-                destination,
-                departed_at,
-                arrival_at,
-                ..
-            } => {
-                let total = (*arrival_at - *departed_at) as f64;
-                let elapsed = (clock.elapsed - *departed_at) as f64;
-                let t = if total > 0.0 {
-                    (elapsed / total).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-
-                let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
-                let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
-
-                let (r, g, b) = ship_color_rgb(&ship.design_id);
-
-                // Draw ship marker
-                gizmos.circle_2d(Vec2::new(cx, cy), 3.5, Color::srgb(r, g, b));
-
-                // Draw movement path as dashed line segments
-                let dest_x = destination[0] as f32 * view.scale;
-                let dest_y = destination[1] as f32 * view.scale;
-                draw_dashed_line(
-                    &mut gizmos,
-                    Vec2::new(cx, cy),
-                    Vec2::new(dest_x, dest_y),
-                    Color::srgba(r, g, b, 0.5),
-                );
-            }
-            ShipState::InFTL {
-                origin_system,
-                destination_system,
-                departed_at,
-                arrival_at,
-            } => {
-                // #31: Ghost marker showing estimated FTL position
-                let (Ok(origin_pos), Ok(dest_pos)) =
-                    (stars.get(*origin_system), stars.get(*destination_system))
-                else {
+    for item in &render_items {
+        match &item.projected_state {
+            // Docked-style states render as a circle around the system.
+            ShipSnapshotState::InSystem | ShipSnapshotState::Refitting => {
+                let Some(system) = item.projected_system else {
                     continue;
                 };
-
-                let total = (*arrival_at - *departed_at) as f64;
-                let elapsed = (clock.elapsed - *departed_at) as f64;
-                let t = if total > 0.0 {
-                    (elapsed / total).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-
-                let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32 * view.scale;
-                let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32 * view.scale;
-
-                let (r, g, b) = ship_color_rgb(&ship.design_id);
-
-                // Ghost marker: semi-transparent, smaller circle
-                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgba(r, g, b, 0.4));
-
-                // Dashed trajectory line from current position to destination
-                let dest_x = dest_pos.x as f32 * view.scale;
-                let dest_y = dest_pos.y as f32 * view.scale;
-                draw_dashed_line(
-                    &mut gizmos,
-                    Vec2::new(cx, cy),
-                    Vec2::new(dest_x, dest_y),
-                    Color::srgba(r, g, b, 0.25),
-                );
+                docked_counts
+                    .entry(system)
+                    .or_default()
+                    .push(DockedShipInfo {
+                        design_id: item.design_id.clone(),
+                        is_harbour: item.is_harbour,
+                    });
+                *system_ship_counts.entry(system).or_insert(0) += 1;
             }
-            ShipState::Settling { system, .. } => {
-                // Draw settling ships at the target system with a pulsing indicator
-                if let Ok(sys_pos) = stars.get(*system) {
+            // #477: `InTransit` falls back to drawing at `projected_system`
+            // (the destination, per #475). The pre-#477 realtime renderer
+            // interpolated from origin → destination based on departed_at /
+            // arrival_at, but `ShipProjection` doesn't carry those fields;
+            // adding them is deferred to a later schema bump (epic #473
+            // sub-issue E or follow-up). The coarser draw is the
+            // light-coherent answer.
+            ShipSnapshotState::InTransit => {
+                let Some(system) = item.projected_system else {
+                    continue;
+                };
+                let Ok(sys_pos) = stars.get(system) else {
+                    continue;
+                };
+                let cx = sys_pos.x as f32 * view.scale;
+                let cy = sys_pos.y as f32 * view.scale;
+                let (r, g, b) = ship_color_rgb(&item.design_id);
+                // Same semi-transparent marker the FTL ghost path used,
+                // marking the projected destination as the ship's
+                // light-coherent location.
+                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgba(r, g, b, 0.4));
+            }
+            ShipSnapshotState::Settling => {
+                let Some(system) = item.projected_system else {
+                    continue;
+                };
+                if let Ok(sys_pos) = stars.get(system) {
                     let sx = sys_pos.x as f32 * view.scale;
                     let sy = sys_pos.y as f32 * view.scale;
-                    let (r, g, b) = ship_color_rgb(&ship.design_id);
+                    let (r, g, b) = ship_color_rgb(&item.design_id);
                     let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
                     gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
                 }
             }
-            ShipState::Surveying { target_system, .. } => {
-                if let Ok(sys_pos) = stars.get(*target_system) {
+            ShipSnapshotState::Surveying => {
+                let Some(system) = item.projected_system else {
+                    continue;
+                };
+                if let Ok(sys_pos) = stars.get(system) {
                     let sx = sys_pos.x as f32 * view.scale;
                     let sy = sys_pos.y as f32 * view.scale;
-                    let (r, g, b) = ship_color_rgb(&ship.design_id);
-
-                    // Pulsing indicator
+                    let (r, g, b) = ship_color_rgb(&item.design_id);
                     let pulse = (clock.as_years_f64() as f32 * 5.0).sin() * 0.3 + 0.7;
                     gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
-
-                    // Ship marker
                     gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
                 }
             }
-            ShipState::Refitting { system, .. } => {
-                // Refitting ships are docked — show them at the system
-                docked_counts
-                    .entry(*system)
-                    .or_default()
-                    .push(DockedShipInfo {
-                        design_id: ship.design_id.clone(),
-                        is_harbour: harbour,
-                    });
-                *system_ship_counts.entry(*system).or_insert(0) += 1;
-            }
-            // #185: Loitering ships are drawn as a small marker at their deep-space coordinate.
-            ShipState::Loitering { position } => {
+            // #185: Loitering ships are drawn at their inline deep-space coord.
+            ShipSnapshotState::Loitering { position } => {
                 let cx = position[0] as f32 * view.scale;
                 let cy = position[1] as f32 * view.scale;
-                let (r, g, b) = ship_color_rgb(&ship.design_id);
+                let (r, g, b) = ship_color_rgb(&item.design_id);
                 gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgb(r, g, b));
-                // Faint outer halo to distinguish "loitering" from in-transit.
                 gizmos.circle_2d(Vec2::new(cx, cy), 5.5, Color::srgba(r, g, b, 0.25));
             }
-            // #217: Scouting — display at the target system like docked.
-            ShipState::Scouting { target_system, .. } => {
-                docked_counts
-                    .entry(*target_system)
-                    .or_default()
-                    .push(DockedShipInfo {
-                        design_id: ship.design_id.clone(),
-                        is_harbour: harbour,
-                    });
-                *system_ship_counts.entry(*target_system).or_insert(0) += 1;
-            }
+            // Destroyed / Missing are filtered by `compute_own_ship_render_inputs`
+            // and rendered by the foreign-ghost branch below.
+            ShipSnapshotState::Destroyed | ShipSnapshotState::Missing => {}
         }
     }
 
@@ -341,82 +398,17 @@ pub fn draw_ships(
         }
     }
 
-    // #104: Command queue overlay for selected ship
+    // #104 / #477: Command queue overlay for selected ship.
+    // Starting position is read from the viewing empire's `ShipProjection`
+    // so the dashed queue path begins at the same point the ship marker is
+    // drawn. Falls back to `None` (no overlay) if no projection exists for
+    // the ship — that's normal for foreign-empire / freshly-spawned ships.
     if let Some(selected_entity) = selected_ship.0 {
-        if let Ok((_entity, ship, state, Some(queue), _stats)) = ships.get(selected_entity) {
+        if let Ok((_entity, ship, _state, Some(queue), _stats)) = ships.get(selected_entity) {
             if !queue.commands.is_empty() {
-                // Determine the ship's current screen position from its state
-                let current_pos = match state {
-                    ShipState::InSystem { system } => stars
-                        .get(*system)
-                        .ok()
-                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
-                    ShipState::SubLight {
-                        origin,
-                        destination,
-                        departed_at,
-                        arrival_at,
-                        ..
-                    } => {
-                        let total = (*arrival_at - *departed_at) as f64;
-                        let elapsed = (clock.elapsed - *departed_at) as f64;
-                        let t = if total > 0.0 {
-                            (elapsed / total).clamp(0.0, 1.0)
-                        } else {
-                            1.0
-                        };
-                        let cx = (origin[0] + (destination[0] - origin[0]) * t) as f32 * view.scale;
-                        let cy = (origin[1] + (destination[1] - origin[1]) * t) as f32 * view.scale;
-                        Some(Vec2::new(cx, cy))
-                    }
-                    ShipState::InFTL {
-                        origin_system,
-                        destination_system,
-                        departed_at,
-                        arrival_at,
-                    } => {
-                        if let (Ok(origin_pos), Ok(dest_pos)) =
-                            (stars.get(*origin_system), stars.get(*destination_system))
-                        {
-                            let total = (*arrival_at - *departed_at) as f64;
-                            let elapsed = (clock.elapsed - *departed_at) as f64;
-                            let t = if total > 0.0 {
-                                (elapsed / total).clamp(0.0, 1.0)
-                            } else {
-                                1.0
-                            };
-                            let cx = (origin_pos.x + (dest_pos.x - origin_pos.x) * t) as f32
-                                * view.scale;
-                            let cy = (origin_pos.y + (dest_pos.y - origin_pos.y) * t) as f32
-                                * view.scale;
-                            Some(Vec2::new(cx, cy))
-                        } else {
-                            None
-                        }
-                    }
-                    ShipState::Settling { system, .. } => stars
-                        .get(*system)
-                        .ok()
-                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
-                    ShipState::Surveying { target_system, .. } => stars
-                        .get(*target_system)
-                        .ok()
-                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
-                    ShipState::Refitting { system, .. } => stars
-                        .get(*system)
-                        .ok()
-                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
-                    // #185: Loitering ship's current screen pos for queue overlay.
-                    ShipState::Loitering { position } => Some(Vec2::new(
-                        position[0] as f32 * view.scale,
-                        position[1] as f32 * view.scale,
-                    )),
-                    // #217: Scouting ships render at the target system.
-                    ShipState::Scouting { target_system, .. } => stars
-                        .get(*target_system)
-                        .ok()
-                        .map(|pos| Vec2::new(pos.x as f32 * view.scale, pos.y as f32 * view.scale)),
-                };
+                let current_pos = viewing_store
+                    .get_projection(selected_entity)
+                    .and_then(|p| projection_screen_pos(p, &stars, view.scale));
 
                 if let Some(mut prev_pos) = current_pos {
                     let (r, g, b) = ship_color_rgb(&ship.design_id);
