@@ -305,6 +305,10 @@ impl Plugin for KnowledgePlugin {
             // #435: holds CombatDefeat-style aggregate events until light from
             // the combat site reaches the player empire's viewer.
             .init_resource::<DelayedCombatEventQueue>()
+            // #475: dispatch-time projection writes from sites without
+            // direct mutable KnowledgeStore access (egui UI). Drained by
+            // `flush_ship_projection_writes`.
+            .init_resource::<ShipProjectionWriteQueue>()
             // #439 Phase 3: world-spawn systems migrated from Startup to
             // OnEnter(NewGame). Capital knowledge seeding + initial
             // visibility-tier computation only runs during new-game
@@ -369,6 +373,16 @@ impl Plugin for KnowledgePlugin {
                     .after(ensure_tracked_ship_system)
                     .after(crate::time_system::advance_game_time)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
+            // #475: drain projection writes queued by dispatch sites
+            // without direct KnowledgeStore access (egui UI). The
+            // dispatch tick is already pinned in the projection's
+            // `dispatched_at`, so the flush ordering only affects when
+            // *consumers* see it (next-frame at worst), not the
+            // dispatch-time semantics themselves.
+            .add_systems(
+                Update,
+                flush_ship_projection_writes.after(crate::time_system::advance_game_time),
             );
     }
 }
@@ -645,6 +659,180 @@ impl KnowledgeStore {
     /// #474: Remove a ship trajectory projection. Returns the removed entry.
     pub fn clear_projection(&mut self, ship: Entity) -> Option<ShipProjection> {
         self.projections.remove(&ship)
+    }
+}
+
+/// #475: Compute a [`ShipProjection`] from local info available at command
+/// dispatch time.
+///
+/// **All inputs are dispatch-time-local** — the dispatcher's KnowledgeStore
+/// snapshot of the ship, the dispatcher's Ruler position, the command's
+/// intended state / target, and the current clock. The helper *never* reads
+/// the ship's realtime ECS state, which is the entire point of epic #473.
+///
+/// # Arguments
+///
+/// * `ship` — the ship the projection is about (key into
+///   [`KnowledgeStore::projections`]).
+/// * `ship_snapshot` — the dispatcher's last-known snapshot of `ship`. May
+///   be `None` if the ship was just spawned and the dispatcher has not yet
+///   received any observation; in that case we fall back to a plain
+///   `InSystem` projection at `fallback_system`.
+/// * `dispatcher_pos` — world-space position of the dispatcher's Ruler at
+///   the moment the command was emitted. Used as the origin of the
+///   light-delay calculation between the dispatcher and the ship.
+/// * `ship_pos` — world-space position the dispatcher *believes* the ship
+///   to be at right now (= the position of `projected_system` when the
+///   snapshot reports a system, the snapshot's loitering coordinate
+///   otherwise, or `dispatcher_pos` for the no-snapshot fallback).
+/// * `target_system_pos` — world-space position the command intends the
+///   ship to head to. `None` for spatial-less commands (e.g. `set_roe`),
+///   in which case `expected_arrival_at` and `expected_return_at` are
+///   left as `None`.
+/// * `intended_state` — the [`ShipSnapshotState`] the command implies for
+///   the ship after it takes effect. See [`command_kind_to_intended_state`].
+/// * `intended_system` — the [`Entity`] of the intended target system.
+///   `None` for spatial-less commands.
+/// * `has_return_leg` — `true` for survey / scout missions where the ship
+///   is expected to return to its origin. `false` for one-way commands
+///   like `move_to` and `colonize_system`.
+/// * `fallback_system` — used as `projected_system` when `ship_snapshot`
+///   is `None`. Conventionally the ship's `home_port`.
+/// * `now` — current `GameClock.elapsed`. Becomes `dispatched_at`.
+///
+/// # Math
+///
+/// * `intended_takes_effect_at = now + light_delay(dispatcher → ship)`
+/// * `expected_arrival_at = intended_takes_effect_at + light_delay(ship → target)`
+/// * `expected_return_at = expected_arrival_at + light_delay(target → ship_origin) + light_delay(ship_origin → dispatcher)`
+///
+/// The arrival / return legs use light-delay even though ships travel at
+/// FTL or sublight; this is the producer's *best-effort* projection. The
+/// reconciler in #476 corrects against actual `KnowledgeFact` arrivals.
+pub fn compute_ship_projection(
+    ship: Entity,
+    ship_snapshot: Option<&ShipSnapshot>,
+    dispatcher_pos: [f64; 3],
+    ship_pos: [f64; 3],
+    target_system_pos: Option<[f64; 3]>,
+    intended_state: Option<ShipSnapshotState>,
+    intended_system: Option<Entity>,
+    has_return_leg: bool,
+    fallback_system: Option<Entity>,
+    now: i64,
+) -> ShipProjection {
+    // Projected state/system: from snapshot if present, else conservative
+    // fallback to "InSystem at fallback_system" — the dispatcher's best
+    // local guess for a freshly-spawned ship is "it's parked at its home
+    // port until proven otherwise."
+    let (projected_state, projected_system) = match ship_snapshot {
+        Some(s) => (s.last_known_state.clone(), s.last_known_system),
+        None => (ShipSnapshotState::InSystem, fallback_system),
+    };
+
+    let dispatch_to_ship = physics::distance_ly_arr(dispatcher_pos, ship_pos);
+    let intended_takes_effect_at =
+        now.saturating_add(physics::light_delay_hexadies(dispatch_to_ship));
+
+    let (expected_arrival_at, expected_return_at) = match target_system_pos {
+        Some(target_pos) => {
+            let ship_to_target = physics::distance_ly_arr(ship_pos, target_pos);
+            let arrival = intended_takes_effect_at
+                .saturating_add(physics::light_delay_hexadies(ship_to_target));
+            let return_at = if has_return_leg {
+                let target_to_ship = physics::distance_ly_arr(target_pos, ship_pos);
+                let ship_to_dispatcher = physics::distance_ly_arr(ship_pos, dispatcher_pos);
+                Some(
+                    arrival
+                        .saturating_add(physics::light_delay_hexadies(target_to_ship))
+                        .saturating_add(physics::light_delay_hexadies(ship_to_dispatcher)),
+                )
+            } else {
+                None
+            };
+            (Some(arrival), return_at)
+        }
+        None => (None, None),
+    };
+
+    ShipProjection {
+        entity: ship,
+        dispatched_at: now,
+        expected_arrival_at,
+        expected_return_at,
+        projected_state,
+        projected_system,
+        intended_state,
+        intended_system,
+        intended_takes_effect_at: Some(intended_takes_effect_at),
+    }
+}
+
+/// #475: Map an AI command kind id to the [`ShipSnapshotState`] it implies
+/// once the command takes effect at the ship.
+///
+/// * Movement-style commands → `InTransit`
+/// * Survey / scout → `Surveying`
+/// * Colonize → `Settling`
+/// * Spatial-less / unknown kinds → `None` (no intended state to project;
+///   the projection still records the dispatch intent via
+///   `intended_takes_effect_at` but leaves `intended_state` blank).
+pub fn command_kind_to_intended_state(kind: &str) -> Option<ShipSnapshotState> {
+    match kind {
+        "attack_target" | "reposition" | "blockade" | "fortify_system" | "move_ruler"
+        | "move_to" => Some(ShipSnapshotState::InTransit),
+        "survey_system" => Some(ShipSnapshotState::Surveying),
+        "colonize_system" | "colonize_planet" => Some(ShipSnapshotState::Settling),
+        _ => None,
+    }
+}
+
+/// #475: Whether a command kind implies a return leg (survey / scout
+/// missions return after completing). One-way commands (move, colonize,
+/// fortify) return `false`.
+pub fn command_kind_has_return_leg(kind: &str) -> bool {
+    matches!(kind, "survey_system" | "scout")
+}
+
+/// #475: Pending dispatch-time projection writes, queued by dispatch sites
+/// that don't have direct mutable access to the empire's
+/// [`KnowledgeStore`] (notably the egui UI path) and drained by
+/// [`flush_ship_projection_writes`] each tick.
+///
+/// AI dispatch (`ai::command_outbox::dispatch_ai_pending_commands`) and
+/// the Lua dispatch path (`scripting::gamestate_scope::request_command`)
+/// have direct mutable access and write through that — they do not go
+/// through this queue. Both paths produce semantically identical
+/// projections; the queue exists purely as a plumbing concession.
+#[derive(Resource, Default)]
+pub struct ShipProjectionWriteQueue {
+    pub entries: Vec<PendingProjectionWrite>,
+}
+
+/// One queued dispatch-time projection write: which empire receives it,
+/// and the projection itself (already computed at the dispatch site).
+pub struct PendingProjectionWrite {
+    pub empire: Entity,
+    pub projection: ShipProjection,
+}
+
+/// #475: Flush queued projection writes into each empire's
+/// [`KnowledgeStore`].
+///
+/// Runs after `advance_game_time` so the dispatch tick is the same as the
+/// store-write tick (the projection's `dispatched_at` field already pins
+/// the dispatch time, regardless of when the flush runs).
+pub fn flush_ship_projection_writes(
+    mut queue: ResMut<ShipProjectionWriteQueue>,
+    mut empires: Query<&mut KnowledgeStore, With<Empire>>,
+) {
+    if queue.entries.is_empty() {
+        return;
+    }
+    for entry in queue.entries.drain(..) {
+        if let Ok(mut store) = empires.get_mut(entry.empire) {
+            store.update_projection(entry.projection);
+        }
     }
 }
 

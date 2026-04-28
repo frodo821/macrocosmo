@@ -84,13 +84,17 @@ use bevy::prelude::*;
 
 use macrocosmo_ai::Command;
 
-use crate::ai::convert::{from_ai_system, to_ai_faction};
+use crate::ai::convert::{from_ai_entity, from_ai_system, to_ai_faction};
 use crate::ai::schema::ids::command as cmd_ids;
 use crate::components::Position;
 use crate::empire::CommsParams;
 use crate::galaxy::{HomeSystem, HomeSystemAssignments, StarSystem};
-use crate::knowledge::{ArrivalPlan, ObservationSource, compute_fact_arrival};
+use crate::knowledge::{
+    ArrivalPlan, KnowledgeStore, ObservationSource, command_kind_has_return_leg,
+    command_kind_to_intended_state, compute_fact_arrival, compute_ship_projection,
+};
 use crate::player::{AboardShip, Empire, EmpireRuler, Faction, Ruler, StationedAt};
+use crate::ship::Ship;
 
 /// Resource holding AI commands that have been produced but not yet
 /// reached their destination at light speed.
@@ -336,6 +340,35 @@ pub fn build_pending_command(
     }
 }
 
+/// #475: Extract the primary ship entity an AI command targets, if any.
+///
+/// Convention used by the AI Short layer / consumer: ship-bearing commands
+/// pass their ship list as `ship_count` + `ship_0`, `ship_1`, ... (see
+/// `command_consumer::extract_ship_list`). For the dispatch-time
+/// projection we only need the *first* ship — multi-ship commands write
+/// one projection per ship in a follow-up; the data model already keys on
+/// entity so this scales naturally.
+///
+/// Returns `None` when no `ship_0` param is present, when its `CommandValue`
+/// is the wrong shape, or for spatial-less commands like `research_focus`.
+pub fn extract_primary_ship(cmd: &Command) -> Option<Entity> {
+    use macrocosmo_ai::CommandValue;
+    match cmd.params.get("ship_0")? {
+        CommandValue::Entity(e) => Some(from_ai_entity(*e)),
+        _ => None,
+    }
+}
+
+/// #475: Extract the `target_system` Entity from an AI command's params,
+/// if present. Returns `None` for spatial-less commands.
+pub fn extract_target_system(cmd: &Command) -> Option<Entity> {
+    use macrocosmo_ai::CommandValue;
+    match cmd.params.get("target_system")? {
+        CommandValue::System(s) => Some(from_ai_system(*s)),
+        _ => None,
+    }
+}
+
 /// Reuse the consumer-side faction-entity lookup logic without
 /// pulling in `command_consumer.rs` as a module dependency. The
 /// faction id encodes only `Entity::index()` (see
@@ -429,6 +462,14 @@ pub struct DispatchParams<'w, 's> {
     /// absent the dispatcher treats the relay set as empty — the
     /// arrival plan falls back to pure light-speed direct path.
     pub relay_network: Option<Res<'w, crate::knowledge::RelayNetwork>>,
+    /// #475: per-empire `KnowledgeStore` for dispatch-time projection
+    /// writes (epic #473). Mutable so we can call
+    /// `KnowledgeStore::update_projection` for the issuer's empire
+    /// after staging the outbox entry.
+    pub knowledge_stores: Query<'w, 's, &'static mut KnowledgeStore, With<Empire>>,
+    /// #475: ship metadata used to resolve the ship's `home_port` for
+    /// the no-snapshot fallback in `compute_ship_projection`.
+    pub ships: Query<'w, 's, &'static Ship>,
 }
 
 /// End-of-`Reason` system: drain the AI bus's pending command queue,
@@ -444,7 +485,7 @@ pub fn dispatch_ai_pending_commands(
     mut bus: ResMut<crate::ai::plugin::AiBusResource>,
     mut outbox: ResMut<AiCommandOutbox>,
     clock: Res<crate::time_system::GameClock>,
-    params: DispatchParams,
+    mut params: DispatchParams,
 ) {
     let now = clock.elapsed;
     let drained = bus.drain_commands();
@@ -515,8 +556,124 @@ pub fn dispatch_ai_pending_commands(
             .unwrap_or_default();
 
         let pending = build_pending_command(cmd, now, origin_pos, destination_pos, relays, &comms);
+
+        // #475: dispatch-time projection write (epic #473). Only emit
+        // projections for ship-bearing commands; spatial-less commands
+        // (`research_focus`, etc.) don't move a ship and need no entry.
+        let projection_inputs = build_projection_inputs(
+            &pending.command,
+            empire_entity,
+            origin_pos,
+            now,
+            &params.knowledge_stores,
+            &params.ships,
+            &params.star_positions,
+        );
+        if let Some(inputs) = projection_inputs {
+            let projection = compute_ship_projection(
+                inputs.ship,
+                inputs.snapshot.as_ref(),
+                inputs.dispatcher_pos,
+                inputs.ship_pos,
+                inputs.target_system_pos,
+                inputs.intended_state,
+                inputs.intended_system,
+                inputs.has_return_leg,
+                inputs.fallback_system,
+                now,
+            );
+            if let Ok(mut store) = params.knowledge_stores.get_mut(empire_entity) {
+                store.update_projection(projection);
+            }
+        }
+
         outbox.entries.push(pending);
     }
+}
+
+/// #475: Local struct collecting the inputs `compute_ship_projection`
+/// needs from the AI dispatch site. Returning `None` from
+/// [`build_projection_inputs`] means "no projection to write" — the
+/// command either lacks a ship (spatial-less) or the ship isn't owned by
+/// any tracked entity.
+struct ProjectionInputs {
+    ship: Entity,
+    snapshot: Option<crate::knowledge::ShipSnapshot>,
+    dispatcher_pos: [f64; 3],
+    ship_pos: [f64; 3],
+    target_system_pos: Option<[f64; 3]>,
+    intended_state: Option<crate::knowledge::ShipSnapshotState>,
+    intended_system: Option<Entity>,
+    has_return_leg: bool,
+    fallback_system: Option<Entity>,
+}
+
+/// #475: Gather everything `compute_ship_projection` needs from the AI
+/// dispatch path. Returns `None` for spatial-less commands (no ship).
+///
+/// The ship's *position* is read from the dispatcher's KnowledgeStore
+/// snapshot — explicitly *not* from the ship's realtime ECS `Position`.
+/// That's the entire point of #473: own-ship rendering / AI judgment must
+/// flow through the dispatcher's local knowledge, not through the
+/// ground-truth simulation. When no snapshot exists (= ship newly
+/// spawned, dispatcher hasn't observed it yet) we fall back to the
+/// ship's `home_port` system as the projected location.
+fn build_projection_inputs(
+    cmd: &Command,
+    empire_entity: Entity,
+    dispatcher_pos: [f64; 3],
+    _now: i64,
+    knowledge_stores: &Query<&mut KnowledgeStore, With<Empire>>,
+    ships: &Query<&Ship>,
+    star_positions: &Query<&Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
+) -> Option<ProjectionInputs> {
+    let ship = extract_primary_ship(cmd)?;
+    let target_system = extract_target_system(cmd);
+    let target_system_pos =
+        target_system.and_then(|sys| star_positions.get(sys).ok().map(|p| p.as_array()));
+
+    // Dispatcher's last-known snapshot of this ship. Cloned so we can
+    // release the immutable borrow before the mutable update at the
+    // call site.
+    let snapshot = knowledge_stores
+        .get(empire_entity)
+        .ok()
+        .and_then(|store| store.get_ship(ship).cloned());
+
+    // Fallback projected_system for the no-snapshot case: the ship's
+    // home_port. We deliberately *don't* read the ship's runtime
+    // `Position` or `ShipState` here — that would reintroduce the FTL
+    // leak (#473 Q7).
+    let fallback_system = ships.get(ship).ok().map(|s| s.home_port);
+
+    // Ship position the dispatcher *believes*. Drawn from snapshot's
+    // last_known_system position when present; from the loitering
+    // coordinate when the snapshot is `Loitering`; from fallback_system
+    // otherwise. *Never* from the ship's realtime `Position` component.
+    let ship_pos = match snapshot.as_ref().map(|s| &s.last_known_state) {
+        Some(crate::knowledge::ShipSnapshotState::Loitering { position }) => *position,
+        _ => snapshot
+            .as_ref()
+            .and_then(|s| s.last_known_system)
+            .or(fallback_system)
+            .and_then(|sys| star_positions.get(sys).ok().map(|p| p.as_array()))
+            .unwrap_or(dispatcher_pos),
+    };
+
+    let intended_state = command_kind_to_intended_state(cmd.kind.as_str());
+    let has_return_leg = command_kind_has_return_leg(cmd.kind.as_str());
+
+    Some(ProjectionInputs {
+        ship,
+        snapshot,
+        dispatcher_pos,
+        ship_pos,
+        target_system_pos,
+        intended_state,
+        intended_system: target_system,
+        has_return_leg,
+        fallback_system,
+    })
 }
 
 /// Start-of-`CommandDrain` system: walk the outbox, partition into

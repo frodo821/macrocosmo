@@ -1718,8 +1718,118 @@ fn draw_main_panels_system(
     if let Some((ship_entity, harbour_entity)) = ctx_menu_actions.dock_at {
         crate::ship::harbour::dock(&mut commands, ship_entity, harbour_entity);
     }
+    let dispatch_clock = clock.elapsed;
     for pending_cmd in pending_ship_commands {
+        // #475: dispatch-time `ShipProjection` write (epic #473). Must
+        // run at the spawn (= dispatch) tick, not when
+        // `process_pending_ship_commands` consumes the command at
+        // arrival. The egui pipeline only has `&KnowledgeStore` here,
+        // so we defer the actual store mutation through `commands.queue`
+        // — the closure runs the same frame against `&mut World` and
+        // the projection's `dispatched_at` is pinned to `clock.elapsed`
+        // captured here.
+        let ship = pending_cmd.ship;
+        let ship_cmd = pending_cmd.command.clone();
+        commands.queue(move |world: &mut World| {
+            write_player_dispatch_projection(world, ship, &ship_cmd, dispatch_clock);
+        });
         commands.spawn(pending_cmd);
+    }
+}
+
+/// #475: Compute and write a [`crate::knowledge::ShipProjection`] from the
+/// player's UI-issued ship command at the dispatch tick. Mirrors the Lua
+/// path's `write_lua_dispatch_projection` and the AI path's projection
+/// write — all three sites use the same local-info-only contract.
+///
+/// `dispatch_clock` must be captured at the egui-system's `clock.elapsed`
+/// (the actual dispatch tick) — *not* the world's current clock when the
+/// `commands.queue` closure runs, which may be a frame later.
+fn write_player_dispatch_projection(
+    world: &mut World,
+    ship: Entity,
+    cmd: &crate::ship::ShipCommand,
+    dispatch_clock: i64,
+) {
+    use crate::components::Position;
+    use crate::knowledge::{
+        KnowledgeStore, ShipSnapshotState, command_kind_has_return_leg,
+        command_kind_to_intended_state, compute_ship_projection,
+    };
+    use crate::player::{AboardShip, EmpireRuler, PlayerEmpire, StationedAt};
+    use crate::ship::{QueuedCommand as QC, Ship, ShipCommand};
+
+    // Map ShipCommand → AI-style command kind string. SetROE is
+    // spatial-less and produces no projection.
+    let (kind, intended_system) = match cmd {
+        ShipCommand::MoveTo { destination } => ("move_to", Some(*destination)),
+        ShipCommand::Survey { target } => ("survey_system", Some(*target)),
+        ShipCommand::Colonize => ("colonize_system", None),
+        ShipCommand::EnqueueCommand(qc) => match qc {
+            QC::MoveTo { system } => ("move_to", Some(*system)),
+            QC::Survey { system } => ("survey_system", Some(*system)),
+            QC::Colonize { system, .. } => ("colonize_system", Some(*system)),
+            _ => return,
+        },
+        ShipCommand::SetROE { .. } => return,
+    };
+
+    let intended_state = command_kind_to_intended_state(kind);
+    let has_return_leg = command_kind_has_return_leg(kind);
+
+    // PlayerEmpire entity + Ruler position.
+    let (empire_entity, dispatcher_pos) = {
+        let mut q = world.query_filtered::<(Entity, &EmpireRuler), With<PlayerEmpire>>();
+        let Some((empire, ruler)) = q.iter(world).next().map(|(e, r)| (e, r.0)) else {
+            return;
+        };
+        let aboard = world.get::<AboardShip>(ruler).map(|a| a.ship);
+        let stationed = world.get::<StationedAt>(ruler).map(|s| s.system);
+        let pos = if let Some(s) = aboard {
+            world.get::<Position>(s).map(|p| p.as_array())
+        } else if let Some(sys) = stationed {
+            world.get::<Position>(sys).map(|p| p.as_array())
+        } else {
+            None
+        };
+        let Some(pos) = pos else { return };
+        (empire, pos)
+    };
+
+    let target_system_pos =
+        intended_system.and_then(|sys| world.get::<Position>(sys).map(|p| p.as_array()));
+
+    let fallback_system = world.get::<Ship>(ship).map(|s| s.home_port);
+
+    let snapshot = world
+        .get::<KnowledgeStore>(empire_entity)
+        .and_then(|store| store.get_ship(ship).cloned());
+
+    let ship_pos = match snapshot.as_ref().map(|s| &s.last_known_state) {
+        Some(ShipSnapshotState::Loitering { position }) => *position,
+        _ => snapshot
+            .as_ref()
+            .and_then(|s| s.last_known_system)
+            .or(fallback_system)
+            .and_then(|sys| world.get::<Position>(sys).map(|p| p.as_array()))
+            .unwrap_or(dispatcher_pos),
+    };
+
+    let projection = compute_ship_projection(
+        ship,
+        snapshot.as_ref(),
+        dispatcher_pos,
+        ship_pos,
+        target_system_pos,
+        intended_state,
+        intended_system,
+        has_return_leg,
+        fallback_system,
+        dispatch_clock,
+    );
+
+    if let Some(mut store) = world.get_mut::<KnowledgeStore>(empire_entity) {
+        store.update_projection(projection);
     }
 }
 

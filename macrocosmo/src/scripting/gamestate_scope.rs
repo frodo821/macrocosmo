@@ -1684,6 +1684,13 @@ pub mod apply {
             .map(|c| c.elapsed)
             .unwrap_or(0);
 
+        // #475: dispatch-time `ShipProjection` write (epic #473). Must
+        // happen at the **sender's tick**, not on `PendingScriptedCommand`
+        // arrival — writing at arrival reintroduces the FTL leak. The
+        // helper consumes only local info: the player empire's
+        // KnowledgeStore + Ruler position + the parsed request.
+        write_lua_dispatch_projection(world, &req, issued_at);
+
         // #461: Route remote commands through a delayed queue so
         // Lua-issued typed messages incur light-speed delay just like
         // `send_remote_command` does for colony commands. Local issuers
@@ -1705,6 +1712,123 @@ pub mod apply {
 
         emit_typed_message(world, command_id, req, issued_at);
         Ok(command_id.0)
+    }
+
+    /// #475: Compute and write a [`ShipProjection`](crate::knowledge::ShipProjection)
+    /// at the sender's tick (the moment `request_command` is called).
+    ///
+    /// The dispatch tick is captured via `issued_at` so the projection's
+    /// `dispatched_at` reflects the original Lua-call moment, not when
+    /// the underlying `*Requested` event eventually fires (after the
+    /// `PendingScriptedCommand` light-delay arrival).
+    ///
+    /// Spatial-less variants (`SetROE`, etc.) and worlds without a
+    /// `PlayerEmpire` quietly skip — the write is best-effort.
+    fn write_lua_dispatch_projection(world: &mut World, req: &ParsedRequest, issued_at: i64) {
+        use crate::components::Position;
+        use crate::knowledge::{
+            KnowledgeStore, ShipSnapshotState, command_kind_has_return_leg,
+            command_kind_to_intended_state, compute_ship_projection,
+        };
+        use crate::player::{AboardShip, EmpireRuler, PlayerEmpire, StationedAt};
+        use crate::ship::Ship;
+
+        let ship = parsed_request_ship(req);
+
+        // Map ParsedRequest → AI-style command kind string (the same
+        // namespace `command_kind_to_intended_state` understands). The
+        // Lua surface uses different verbs ("move", "scout") than the
+        // AI bus ("move_to", "survey_system"); normalise here so both
+        // sites share one mapping table.
+        let kind = match req {
+            ParsedRequest::Move { .. } | ParsedRequest::MoveToCoordinates { .. } => "move_to",
+            ParsedRequest::Scout { .. } => "survey_system",
+            ParsedRequest::Survey { .. } => "survey_system",
+            ParsedRequest::Colonize { .. } => "colonize_system",
+            // No ship-state implication for cargo / structure ops; we
+            // skip projection writes for those.
+            ParsedRequest::LoadDeliverable { .. }
+            | ParsedRequest::DeployDeliverable { .. }
+            | ParsedRequest::TransferToStructure { .. }
+            | ParsedRequest::LoadFromScrapyard { .. } => return,
+        };
+
+        let intended_state = command_kind_to_intended_state(kind);
+        let has_return_leg = command_kind_has_return_leg(kind);
+
+        // target_system extraction.
+        let intended_system = match req {
+            ParsedRequest::Move { target, .. } => Some(*target),
+            ParsedRequest::Scout { target_system, .. } => Some(*target_system),
+            ParsedRequest::Colonize { target_system, .. } => Some(*target_system),
+            ParsedRequest::Survey { target_system, .. } => Some(*target_system),
+            // MoveToCoordinates has no target System entity. Leave None
+            // — the projection still records dispatch + intent state.
+            ParsedRequest::MoveToCoordinates { .. } => None,
+            _ => return,
+        };
+
+        // Dispatcher's PlayerEmpire entity + Ruler position. Skip if
+        // either is missing (test-only worlds).
+        let (player_empire_entity, dispatcher_pos) = {
+            let mut q = world.query_filtered::<(Entity, &EmpireRuler), With<PlayerEmpire>>();
+            let Some((empire, ruler)) = q.iter(world).next().map(|(e, r)| (e, r.0)) else {
+                return;
+            };
+            let aboard = world.get::<AboardShip>(ruler).map(|a| a.ship);
+            let stationed = world.get::<StationedAt>(ruler).map(|s| s.system);
+            let pos = if let Some(s) = aboard {
+                world.get::<Position>(s).map(|p| p.as_array())
+            } else if let Some(sys) = stationed {
+                world.get::<Position>(sys).map(|p| p.as_array())
+            } else {
+                None
+            };
+            let Some(pos) = pos else { return };
+            (empire, pos)
+        };
+
+        let target_system_pos =
+            intended_system.and_then(|sys| world.get::<Position>(sys).map(|p| p.as_array()));
+
+        let fallback_system = world.get::<Ship>(ship).map(|s| s.home_port);
+
+        // Snapshot read from the dispatcher's KnowledgeStore. Clone so
+        // we can later borrow the store mutably for the write.
+        let snapshot = world
+            .get::<KnowledgeStore>(player_empire_entity)
+            .and_then(|store| store.get_ship(ship).cloned());
+
+        // Ship position the dispatcher *believes* — drawn from snapshot
+        // (last_known_system or Loitering position) only. Never the
+        // ship's realtime `Position`. For the no-snapshot case fall
+        // back to home_port.
+        let ship_pos = match snapshot.as_ref().map(|s| &s.last_known_state) {
+            Some(ShipSnapshotState::Loitering { position }) => *position,
+            _ => snapshot
+                .as_ref()
+                .and_then(|s| s.last_known_system)
+                .or(fallback_system)
+                .and_then(|sys| world.get::<Position>(sys).map(|p| p.as_array()))
+                .unwrap_or(dispatcher_pos),
+        };
+
+        let projection = compute_ship_projection(
+            ship,
+            snapshot.as_ref(),
+            dispatcher_pos,
+            ship_pos,
+            target_system_pos,
+            intended_state,
+            intended_system,
+            has_return_leg,
+            fallback_system,
+            issued_at,
+        );
+
+        if let Some(mut store) = world.get_mut::<KnowledgeStore>(player_empire_entity) {
+            store.update_projection(projection);
+        }
     }
 
     /// Helper used by both [`request_command`] (immediate path) and the
