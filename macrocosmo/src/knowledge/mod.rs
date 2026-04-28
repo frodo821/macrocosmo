@@ -380,9 +380,20 @@ impl Plugin for KnowledgePlugin {
             // `dispatched_at`, so the flush ordering only affects when
             // *consumers* see it (next-frame at worst), not the
             // dispatch-time semantics themselves.
+            //
+            // #485: defense-in-depth — gate on `InGame` so the flush
+            // never runs in `Bootstrapping` / `NewGame` / `LoadingSave`.
+            // Today every push site is itself `InGame`-gated so the
+            // queue is empty in non-InGame states, but a future push
+            // path (e.g. save/load rehydration) could change that. The
+            // surrounding tier/reconciler systems all carry the same
+            // run condition; mirroring it here keeps the gating
+            // consistent.
             .add_systems(
                 Update,
-                flush_ship_projection_writes.after(crate::time_system::advance_game_time),
+                flush_ship_projection_writes
+                    .after(crate::time_system::advance_game_time)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             )
             // #481: Seed steady-state projections for newly-spawned
             // own-empire ships so the Galaxy Map's #477 projection-only
@@ -775,23 +786,85 @@ pub fn compute_ship_projection(
         None => (ShipSnapshotState::InSystem, fallback_system),
     };
 
+    // #486: `saturating_add` collapses any astronomically-distant or
+    // malformed input to `i64::MAX`. Once that happens, downstream
+    // consumers misbehave: `is_ship_overdue` (#480) treats `i64::MAX`
+    // expected_return_at as "never overdue", and the renderer's
+    // intended layer never fades. In release builds we silently let
+    // the saturated value through (cheaper than a `Result` channel up
+    // through every dispatch site), but warn-log the context so the
+    // bug is observable; in debug / test builds we trip a
+    // `debug_assert!` so the test harness flags it loudly.
+    //
+    // The threshold is `i64::MAX / 2` (instead of `== i64::MAX`) so a
+    // single saturated leg followed by another `saturating_add` still
+    // trips the warning rather than being masked.
+    let saturation_threshold = i64::MAX / 2;
     let dispatch_to_ship = physics::distance_ly_arr(dispatcher_pos, ship_pos);
     let intended_takes_effect_at =
         now.saturating_add(physics::light_delay_hexadies(dispatch_to_ship));
+    if intended_takes_effect_at >= saturation_threshold {
+        bevy::log::warn!(
+            "ShipProjection saturation: intended_takes_effect_at={} (ship={:?}, dispatcher_pos={:?}, ship_pos={:?}, dispatch_to_ship_ly={}, now={})",
+            intended_takes_effect_at,
+            ship,
+            dispatcher_pos,
+            ship_pos,
+            dispatch_to_ship,
+            now,
+        );
+        debug_assert!(
+            intended_takes_effect_at < saturation_threshold,
+            "ShipProjection saturation at intended_takes_effect_at: dispatch_to_ship_ly={}, now={}",
+            dispatch_to_ship,
+            now,
+        );
+    }
 
     let (expected_arrival_at, expected_return_at) = match target_system_pos {
         Some(target_pos) => {
             let ship_to_target = physics::distance_ly_arr(ship_pos, target_pos);
             let arrival = intended_takes_effect_at
                 .saturating_add(physics::light_delay_hexadies(ship_to_target));
+            if arrival >= saturation_threshold {
+                bevy::log::warn!(
+                    "ShipProjection saturation: expected_arrival_at={} (ship={:?}, ship_to_target_ly={}, intended_takes_effect_at={})",
+                    arrival,
+                    ship,
+                    ship_to_target,
+                    intended_takes_effect_at,
+                );
+                debug_assert!(
+                    arrival < saturation_threshold,
+                    "ShipProjection saturation at expected_arrival_at: ship_to_target_ly={}, intended_takes_effect_at={}",
+                    ship_to_target,
+                    intended_takes_effect_at,
+                );
+            }
             let return_at = if has_return_leg {
                 let target_to_ship = physics::distance_ly_arr(target_pos, ship_pos);
                 let ship_to_dispatcher = physics::distance_ly_arr(ship_pos, dispatcher_pos);
-                Some(
-                    arrival
-                        .saturating_add(physics::light_delay_hexadies(target_to_ship))
-                        .saturating_add(physics::light_delay_hexadies(ship_to_dispatcher)),
-                )
+                let r = arrival
+                    .saturating_add(physics::light_delay_hexadies(target_to_ship))
+                    .saturating_add(physics::light_delay_hexadies(ship_to_dispatcher));
+                if r >= saturation_threshold {
+                    bevy::log::warn!(
+                        "ShipProjection saturation: expected_return_at={} (ship={:?}, target_to_ship_ly={}, ship_to_dispatcher_ly={}, arrival={})",
+                        r,
+                        ship,
+                        target_to_ship,
+                        ship_to_dispatcher,
+                        arrival,
+                    );
+                    debug_assert!(
+                        r < saturation_threshold,
+                        "ShipProjection saturation at expected_return_at: target_to_ship_ly={}, ship_to_dispatcher_ly={}, arrival={}",
+                        target_to_ship,
+                        ship_to_dispatcher,
+                        arrival,
+                    );
+                }
+                Some(r)
             } else {
                 None
             };
@@ -1152,7 +1225,19 @@ fn apply_reconciliation(
             // intended layer so the UI no longer renders a "pending"
             // overlay. Mismatched arrivals leave intended_* in place
             // (the command may still be in flight to a different system).
-            if reconcile.system.is_some() && projection.intended_system == reconcile.system {
+            //
+            // #484: also gate on `fact_observed_at >= projection.dispatched_at`.
+            // Without this, an in-flight `ShipArrived` fact from the
+            // *previous* mission to the same system can prematurely
+            // clear a freshly re-dispatched mission's `intended_*` (=
+            // re-dispatch happens after the old fact was emitted but
+            // before this empire received it). `dispatched_at` doubles
+            // as the mission anchor — see the bump at the bottom of
+            // this fn and the doc on `ShipProjection::dispatched_at`.
+            if reconcile.system.is_some()
+                && projection.intended_system == reconcile.system
+                && fact_observed_at >= projection.dispatched_at
+            {
                 projection.intended_state = None;
                 projection.intended_system = None;
                 projection.intended_takes_effect_at = None;
@@ -1170,10 +1255,16 @@ fn apply_reconciliation(
             // Surveying intent has been satisfied for the matching
             // target; clear it so the UI stops dashed-rendering the
             // outbound leg.
+            //
+            // #484: same staleness gate as the `Arrived` arm above —
+            // an old `SurveyComplete` fact from a prior survey-mission
+            // must not clear a new survey-mission's `intended_*` if
+            // re-dispatch happened after the old fact was emitted.
             if matches!(
                 projection.intended_state,
                 Some(ShipSnapshotState::Surveying)
             ) && projection.intended_system == reconcile.system
+                && fact_observed_at >= projection.dispatched_at
             {
                 projection.intended_state = None;
                 projection.intended_system = None;
