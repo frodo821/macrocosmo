@@ -53,8 +53,10 @@ pub mod mid_stance;
 pub mod npc_decision;
 pub mod plugin;
 pub mod schema;
+pub mod short_adapter;
 pub mod short_agent;
 pub mod short_agent_runtime;
+pub mod short_stance;
 
 pub use mid_adapter::{BevyMidGameAdapter, MidGameAdapter};
 pub use mid_agent::MidAgent;

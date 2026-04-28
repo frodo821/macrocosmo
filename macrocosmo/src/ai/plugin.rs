@@ -101,6 +101,10 @@ impl Plugin for AiPlugin {
         app.init_resource::<AiBusResource>()
             .init_resource::<super::npc_decision::AiPlayerMode>()
             .init_resource::<super::npc_decision::LastAiDecisionTick>()
+            // PR2d: per-tick scratch for `run_short_agents` populated
+            // by `npc_decision_tick`. Cleared at the start of every
+            // decision tick.
+            .init_resource::<super::npc_decision::ShortAgentTickInputs>()
             .init_resource::<super::command_consumer::PendingRulerBoarding>()
             .init_resource::<DeclaredFactionSlots>()
             // Round 9 PR #3: AI command light-speed delay shim. Outbox
@@ -187,7 +191,12 @@ impl Plugin for AiPlugin {
             // Colonies. `Added<>`-driven so test setups that hand-spawn
             // empires + ships pick up agents without each test needing
             // to know about ShortAgent. Runs alongside the spawn-side
-            // `MidAgent` backfill.
+            // `MidAgent` backfill — the `.after(backfill_*)` constraint
+            // is load-bearing: `Added<Fleet>` only persists for one
+            // Update cycle after the entity's component lands, so a
+            // test that hand-spawns a Fleet *before* the empire's
+            // Region/MidAgent is wired (which happens during backfill)
+            // would otherwise miss the spawn opportunity entirely.
             .add_systems(
                 Update,
                 (
@@ -195,6 +204,7 @@ impl Plugin for AiPlugin {
                     super::short_agent_runtime::spawn_short_agent_for_new_colonies,
                 )
                     .in_set(AiTickSet::Reason)
+                    .after(super::npc_decision::backfill_mid_agents_for_ai_controlled)
                     .before(super::short_agent_runtime::run_short_agents)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
             )

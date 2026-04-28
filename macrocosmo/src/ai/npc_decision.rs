@@ -224,6 +224,11 @@ pub struct ShipInfo {
     /// it can participate in combat.
     pub is_combat: bool,
     pub ftl_range: f64,
+    /// `Ship.fleet` back-pointer (#287 γ-1). `None` only for the brief
+    /// window between ship spawn and `prune_empty_fleets`. Used by
+    /// PR2d's per-fleet `ShortAgent` to partition idle surveyors by
+    /// fleet membership.
+    pub fleet: Option<Entity>,
 }
 
 /// Read-only context data extracted from ECS for the NPC policy.
@@ -259,6 +264,48 @@ pub struct NpcContext {
 #[derive(Resource, Default, Reflect)]
 #[reflect(Resource)]
 pub struct LastAiDecisionTick(pub i64);
+
+/// Per-tick precompute that `npc_decision_tick` publishes for the
+/// downstream `run_short_agents` system (#449 PR2d). Lets the
+/// per-`ShortAgent` Rule ports read empire-level data without
+/// re-running the ECS scans `npc_decision_tick` already performed.
+///
+/// The map is keyed by **empire entity** (the `MidAgent → Region →
+/// empire` chain a Short uses). Cleared at the start of every
+/// `npc_decision_tick` so stale entries from a despawned empire never
+/// leak into the next tick.
+///
+/// Not registered with `Reflect` — purely transient per-tick scratch.
+#[derive(Resource, Default, Debug)]
+pub struct ShortAgentTickInputs {
+    pub per_empire: std::collections::HashMap<Entity, EmpireShortInputs>,
+}
+
+/// Inputs needed by `ShortStanceAgent::decide` for one empire on one
+/// tick. Built by `npc_decision_tick` from the same data it produces
+/// for the Mid layer; consumed by `run_short_agents` to build per-agent
+/// `BevyShortAgentAdapter`s.
+#[derive(Default, Debug)]
+pub struct EmpireShortInputs {
+    /// Per-fleet idle surveyor list: `Ship.fleet == Some(fleet)` AND
+    /// `is_idle && can_survey`. Built once per empire; per-fleet
+    /// ShortAgents look up by their `ShortScope::Fleet(fleet)` key.
+    pub idle_surveyors_by_fleet: std::collections::HashMap<Entity, Vec<Entity>>,
+    /// Region-scoped, ranked, and dedup-filtered survey targets — the
+    /// exact slice the deleted Mid Rule 2 consumed. Empire-level
+    /// today (one Region per empire); multi-region split (#449 PR2c+)
+    /// will key by region. Bug A dedup
+    /// (`PendingAssignment` ∪ outbox-resident commands) is already
+    /// applied here.
+    pub unsurveyed_targets: Vec<Entity>,
+    /// Empire-wide free building slots (proxied through the
+    /// `free_building_slots` faction metric on the bus).
+    pub free_building_slots: f64,
+    /// Empire-wide net energy production (`net_production_energy`).
+    pub net_production_energy: f64,
+    /// Empire-wide net food production (`net_production_food`).
+    pub net_production_food: f64,
+}
 
 /// Rank candidate unsurveyed systems by "accessibility" — an approximation
 /// of travel time that's more useful than raw distance.
@@ -311,6 +358,7 @@ pub fn npc_decision_tick(
     clock: Res<GameClock>,
     mut last_tick: ResMut<LastAiDecisionTick>,
     mut bus: ResMut<AiBusResource>,
+    mut short_inputs: ResMut<ShortAgentTickInputs>,
     npcs: Query<
         (
             Entity,
@@ -381,6 +429,12 @@ pub fn npc_decision_tick(
         return;
     }
     last_tick.0 = now;
+
+    // PR2d: clear stale per-tick scratch from the previous tick before
+    // the empire loop below repopulates it. `run_short_agents` runs
+    // `.after(npc_decision_tick)` so the data we populate here is the
+    // input it consumes the same frame.
+    short_inputs.per_empire.clear();
 
     // #299 / #446: precompute per-empire "systems with our own Core"
     // before the empire loop. Used to filter `colonizable_systems` —
@@ -684,6 +738,7 @@ pub fn npc_decision_tick(
                     can_colonize,
                     is_combat,
                     ftl_range: ship.ftl_range,
+                    fleet: ship.fleet,
                 }
             })
             // PR2b: drop ships whose docked system is not in this
@@ -728,9 +783,14 @@ pub fn npc_decision_tick(
 
         // Route the per-MidAgent decision through the layered
         // MidStanceAgent (#448). Pre-compute idle_combat /
-        // idle_colonizers / idle_surveyors with the same expressions
-        // the agent's rules use (Rules 1 / 3 / 2) so the adapter can
-        // hand them straight in without re-scanning the ship list.
+        // idle_colonizers with the same expressions the agent's rules
+        // use (Rules 1 / 3) so the adapter can hand them straight in
+        // without re-scanning the ship list. PR2d removes the Mid-side
+        // `idle_surveyors` (Rule 2 lives on per-Fleet ShortAgent now);
+        // `npc_decision_tick` still publishes the empire-wide
+        // `unsurveyed_systems` ranking via `NpcContext` so the Short
+        // adapter can slice it per fleet without re-running
+        // `rank_survey_targets`.
         let idle_combat: Vec<Entity> = context
             .ships
             .iter()
@@ -743,19 +803,12 @@ pub fn npc_decision_tick(
             .filter(|s| s.is_idle && s.can_colonize)
             .map(|s| s.entity)
             .collect();
-        let idle_surveyors: Vec<Entity> = context
-            .ships
-            .iter()
-            .filter(|s| s.is_idle && s.can_survey)
-            .map(|s| s.entity)
-            .collect();
         let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
             faction: entity,
             context: &context,
             bus: &bus.0,
             idle_combat: &idle_combat,
             idle_colonizers: &idle_colonizers,
-            idle_surveyors: &idle_surveyors,
             member_systems: member_systems_slice,
         };
         // Stance is read from the per-MidAgent state. Today every
@@ -773,6 +826,50 @@ pub fn npc_decision_tick(
         for cmd in commands {
             bus.0.emit_command(cmd);
         }
+
+        // PR2d: publish per-empire scratch for `run_short_agents`.
+        // We compute this after the Mid adapter has been constructed
+        // (and dropped) so we can move `context.unsurveyed_systems`
+        // out without cloning it twice. `idle_surveyors_by_fleet`
+        // partitions `context.ships` by `Ship.fleet` so a per-fleet
+        // ShortAgent can index its own slice without re-scanning.
+        let mut idle_surveyors_by_fleet: std::collections::HashMap<Entity, Vec<Entity>> =
+            std::collections::HashMap::new();
+        for ship in &context.ships {
+            if !(ship.is_idle && ship.can_survey) {
+                continue;
+            }
+            if let Some(fleet) = ship.fleet {
+                idle_surveyors_by_fleet
+                    .entry(fleet)
+                    .or_default()
+                    .push(ship.entity);
+            }
+        }
+        let fid = to_ai_faction(entity);
+        let metric_id = |base: &str| crate::ai::schema::ids::metric::for_faction(base, fid);
+        let free_building_slots = bus
+            .0
+            .current(&metric_id("free_building_slots"))
+            .unwrap_or(0.0);
+        let net_production_energy = bus
+            .0
+            .current(&metric_id("net_production_energy"))
+            .unwrap_or(0.0);
+        let net_production_food = bus
+            .0
+            .current(&metric_id("net_production_food"))
+            .unwrap_or(0.0);
+        short_inputs.per_empire.insert(
+            entity,
+            EmpireShortInputs {
+                idle_surveyors_by_fleet,
+                unsurveyed_targets: context.unsurveyed_systems.clone(),
+                free_building_slots,
+                net_production_energy,
+                net_production_food,
+            },
+        );
 
         #[cfg(feature = "ai-log")]
         if let Some(ref mut log) = log {

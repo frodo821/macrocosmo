@@ -2,11 +2,13 @@
 //! engine-agnostic Mid logic (#448).
 //!
 //! [`MidGameAdapter`] is the read-only interface
-//! [`super::mid_stance::MidStanceAgent`] consumes. All 8 decision
-//! rules (Rule 1 attack, 2 survey, 3 colonize, 4 research, 5a
-//! shipyard, 5b slot fill, 6 fleet composition, 7 retreat, 8
-//! fortify) are sourced from this trait — `npc_decision_tick` builds
-//! a [`BevyMidGameAdapter`] per empire per tick and hands it to
+//! [`super::mid_stance::MidStanceAgent`] consumes. After #449 PR2d
+//! the Mid layer owns Rules 1 (attack), 3 (colonize), 5a (shipyard),
+//! 6 (fleet composition), 7 (retreat), and 8 (fortify); Rules 2
+//! (survey) and 5b (slot fill) moved to
+//! [`super::short_stance::ShortStanceAgent`] (per-Fleet /
+//! per-ColonizedSystem `ShortAgent`). `npc_decision_tick` builds a
+//! [`BevyMidGameAdapter`] per `MidAgent` per tick and hands it to
 //! [`super::mid_stance::MidStanceAgent::decide`].
 //!
 //! The identity arbiter ([`arbitrate`]) strips [`Locality`] and
@@ -106,40 +108,15 @@ pub trait MidGameAdapter {
     /// method to match the legacy logic's reading order.
     fn has_colonizable_targets(&self) -> bool;
 
-    // ---- PR3a additions (Rule 2 — survey) ----
-
-    /// Survey candidate systems, ranked and already deduped against
-    /// in-flight `survey_system` work (`PendingAssignment` markers
-    /// **and** outbox-resident commands — Bug A union). Mirrors
-    /// `NpcContext.unsurveyed_systems`. Rule 2 zips this against
-    /// [`Self::idle_surveyors`] one-for-one. The adapter does not
-    /// re-dedup — `npc_decision_tick` populates `NpcContext` with the
-    /// final filtered list before the adapter is constructed.
-    fn unsurveyed_systems(&self) -> &[Entity];
-
-    /// Idle ship entities flagged as `can_survey`
-    /// (`s.is_idle && s.can_survey`), pre-computed in
-    /// `npc_decision_tick`'s Layered branch. Returned as a slice
-    /// (rather than `Vec`) so the adapter stays allocation-free per
-    /// call — matches the [`Self::colonizable_systems`] /
-    /// [`Self::hostile_systems`] pattern.
-    fn idle_surveyors(&self) -> &[Entity];
-
-    // ---- PR3b additions (Rule 5b — slot fill / building) ----
-
-    /// Empire-wide free building slot count (sum across all colonies).
-    /// Rule 5b's fire gate: `> 0.0` opens the rule, `0.0` keeps it
-    /// silent. Sourced from the `free_building_slots` per-faction
-    /// metric (emitted by the empire metrics emitter in `emitters.rs`).
-    fn free_building_slots(&self) -> f64;
-
-    /// Empire-wide net energy production (income − upkeep). Rule 5b's
-    /// power_plant branch fires when this is `< 0.0`.
-    fn net_production_energy(&self) -> f64;
-
-    /// Empire-wide net food production. Rule 5b's farm branch fires
-    /// when `net_production_energy >= 0.0` AND this is `< 0.0`.
-    fn net_production_food(&self) -> f64;
+    // ---- PR3a (Rule 2 survey) / PR3b (Rule 5b slot fill) -----------
+    //
+    // Removed in #449 PR2d: both rules now live on
+    // [`super::short_stance::ShortStanceAgent`] (per-Fleet /
+    // per-ColonizedSystem `ShortAgent`). The trait methods that
+    // sourced their inputs (`unsurveyed_systems`, `idle_surveyors`,
+    // `free_building_slots`, `net_production_energy`,
+    // `net_production_food`) are gone — the Short adapter
+    // [`super::short_adapter::ShortGameAdapter`] owns them now.
 
     /// Member systems of this Mid's region. Adapter implementations
     /// filter all per-system / per-ship lists they expose
@@ -184,10 +161,6 @@ pub struct BevyMidGameAdapter<'a> {
     /// caller (`npc_decision_tick`) so the adapter does not allocate
     /// per `idle_colonizers()` call.
     pub idle_colonizers: &'a [Entity],
-    /// Pre-computed `idle_surveyors` set — `s.is_idle && s.can_survey`
-    /// filtered over `context.ships`. Borrowed (not owned) for the
-    /// same reason `idle_colonizers` is.
-    pub idle_surveyors: &'a [Entity],
     /// Member systems of the Mid's `Region` (#449 PR2b). All
     /// per-system / per-ship lists exposed through the trait are
     /// intersected with this slice so a Mid sees only the systems in
@@ -295,47 +268,6 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
 
     fn has_colonizable_targets(&self) -> bool {
         !self.context.colonizable_systems.is_empty()
-    }
-
-    fn unsurveyed_systems(&self) -> &[Entity] {
-        // Already deduped upstream: `npc_decision_tick` builds
-        // `pending_survey_targets` from `PendingAssignment` ∪
-        // outbox-resident `survey_system` commands (Round 11 Bug A
-        // union, ~lines 590–611 of `npc_decision.rs`) and filters
-        // candidates by it before `rank_survey_targets`. So this slice
-        // is the *final* Rule 2 input — Mid does **not** re-dedup.
-        &self.context.unsurveyed_systems
-    }
-
-    fn idle_surveyors(&self) -> &[Entity] {
-        self.idle_surveyors
-    }
-
-    fn free_building_slots(&self) -> f64 {
-        self.bus
-            .current(&crate::ai::schema::ids::metric::for_faction(
-                "free_building_slots",
-                self.faction_id(),
-            ))
-            .unwrap_or(0.0)
-    }
-
-    fn net_production_energy(&self) -> f64 {
-        self.bus
-            .current(&crate::ai::schema::ids::metric::for_faction(
-                "net_production_energy",
-                self.faction_id(),
-            ))
-            .unwrap_or(0.0)
-    }
-
-    fn net_production_food(&self) -> f64 {
-        self.bus
-            .current(&crate::ai::schema::ids::metric::for_faction(
-                "net_production_food",
-                self.faction_id(),
-            ))
-            .unwrap_or(0.0)
     }
 
     fn member_systems(&self) -> &[Entity] {

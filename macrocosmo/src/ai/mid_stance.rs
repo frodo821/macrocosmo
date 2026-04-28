@@ -1,10 +1,15 @@
 //! Mid-layer rule logic — emits Proposals based on game adapter
-//! input and the current Stance. Implements Rules 1 (attack), 2
-//! (survey), 3 (colonize), 5a (shipyard), 5b (slot fill), 6
-//! (build_ship composition), 7 (retreat — early-return), and 8
-//! (fortify_system). Rule 4 (research_focus) is intentionally not
-//! handled here — research is empire-wide and best handled by a
-//! dedicated Mid track once we have one.
+//! input and the current Stance. Implements Rules 1 (attack), 3
+//! (colonize), 5a (shipyard), 6 (build_ship composition), 7 (retreat
+//! — early-return), and 8 (fortify_system). Rule 4 (research_focus)
+//! is intentionally not handled here — research is empire-wide and
+//! best handled by a dedicated Mid track once we have one.
+//!
+//! Rules 2 (survey) and 5b (slot fill) moved to
+//! [`super::short_stance::ShortStanceAgent`] in #449 PR2d (cutover):
+//! a `Fleet`-scope ShortAgent runs Rule 2 over its own ships, a
+//! `ColonizedSystem`-scope ShortAgent runs Rule 5b over its own
+//! colony. Mid no longer emits these.
 //!
 //! `MidStanceAgent` is parallel to `macrocosmo_ai::IntentDrivenMidTerm`
 //! by design (Plan agent micro-decision 3): different responsibility
@@ -83,27 +88,14 @@ impl MidStanceAgent {
             return proposals;
         }
 
-        // ----- Rule 2: Survey unsurveyed systems.
-        // Zips `idle_surveyors` against `unsurveyed_systems` (one
-        // ship per target, up to whichever runs out first), emits
-        // `survey_system` with `target_system` + `ship_count = 1` +
-        // `ship_0`. The adapter's `unsurveyed_systems` is the final
-        // Rule 2 input — `npc_decision_tick` already unioned
-        // `PendingAssignment` and outbox-resident commands (Round 11
-        // Bug A) into `pending_survey_targets` and filtered the
-        // candidate list before `rank_survey_targets`, so Mid does
-        // **not** re-dedup.
-        let idle_surveyors = adapter.idle_surveyors();
-        let unsurveyed = adapter.unsurveyed_systems();
-        if !unsurveyed.is_empty() && !idle_surveyors.is_empty() {
-            for (ship, &target) in idle_surveyors.iter().zip(unsurveyed.iter()) {
-                let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
-                    .with_param("target_system", CommandValue::System(to_ai_system(target)))
-                    .with_param("ship_count", CommandValue::I64(1))
-                    .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
-                proposals.push(Proposal::at_system(cmd, to_ai_system(target)));
-            }
-        }
+        // ----- Rule 2 (survey): MOVED to ShortStanceAgent (Fleet
+        // scope) in #449 PR2d. Per-fleet `ShortAgent` zips its own
+        // idle surveyors against the region's unsurveyed targets and
+        // emits the same `survey_system` Command shape. Bug A dedup
+        // (`pending_survey_targets` = `PendingAssignment` ∪
+        // outbox-resident commands) is still applied in
+        // `npc_decision_tick` upstream, so the per-fleet Short sees
+        // a pre-filtered target list.
 
         // ----- Rule 3: Colonize surveyed uncolonized systems.
         // Zips `idle_colonizers` against `colonizable_systems` (one
@@ -144,25 +136,12 @@ impl MidStanceAgent {
             proposals.push(Proposal::faction_wide(cmd));
         }
 
-        // ----- Rule 5b: Slot fill — pick a building based on net
-        // production deficits. Gated on `free_building_slots > 0.0`,
-        // then a three-branch priority (`net_production_energy < 0`
-        // → power_plant, else `net_production_food < 0` → farm, else
-        // → mine). The handler picks which colony gets the building,
-        // so the proposal is empire-wide — colony-locality lands
-        // with the Short-per-fleet migration (#449).
-        if adapter.free_building_slots() > 0.0 {
-            let building_id = if adapter.net_production_energy() < 0.0 {
-                "power_plant"
-            } else if adapter.net_production_food() < 0.0 {
-                "farm"
-            } else {
-                "mine"
-            };
-            let cmd = Command::new(cmd_ids::build_structure(), faction_id, now)
-                .with_param("building_id", CommandValue::Str(building_id.into()));
-            proposals.push(Proposal::faction_wide(cmd));
-        }
+        // ----- Rule 5b (slot fill): MOVED to ShortStanceAgent
+        // (ColonizedSystem scope) in #449 PR2d. Per-colonized-system
+        // `ShortAgent` runs the same three-branch priority
+        // (power_plant / farm / mine) and emits the same
+        // `Proposal::faction_wide(build_structure)` shape — handler
+        // routing is unchanged.
 
         // ----- Rule 6: Fleet composition gap → build_ship.
         // Gated on `can_build_ships >= 1.0`; then a three-branch
@@ -234,11 +213,6 @@ mod tests {
         fleet_composition: FleetComposition,
         has_unsurveyed_targets: bool,
         has_colonizable_targets: bool,
-        unsurveyed_systems: Vec<Entity>,
-        idle_surveyors: Vec<Entity>,
-        free_building_slots: f64,
-        net_production_energy: f64,
-        net_production_food: f64,
     }
 
     impl StubAdapter {
@@ -258,11 +232,6 @@ mod tests {
                 fleet_composition: FleetComposition::default(),
                 has_unsurveyed_targets: false,
                 has_colonizable_targets: false,
-                unsurveyed_systems: vec![],
-                idle_surveyors: vec![],
-                free_building_slots: 0.0,
-                net_production_energy: 0.0,
-                net_production_food: 0.0,
             }
         }
     }
@@ -309,21 +278,6 @@ mod tests {
         }
         fn has_colonizable_targets(&self) -> bool {
             self.has_colonizable_targets
-        }
-        fn unsurveyed_systems(&self) -> &[Entity] {
-            &self.unsurveyed_systems
-        }
-        fn idle_surveyors(&self) -> &[Entity] {
-            &self.idle_surveyors
-        }
-        fn free_building_slots(&self) -> f64 {
-            self.free_building_slots
-        }
-        fn net_production_energy(&self) -> f64 {
-            self.net_production_energy
-        }
-        fn net_production_food(&self) -> f64 {
-            self.net_production_food
         }
     }
 
@@ -453,136 +407,10 @@ mod tests {
     }
 
     // ---- Rule 2 (survey_system) ----
-
-    #[test]
-    fn rule_2_emits_one_per_zip_pair() {
-        // 2 unsurveyed targets + 2 idle surveyors → 2 emits, each
-        // with `ship_count = 1`. One ship per system, in slice
-        // order.
-        let target_a = Entity::from_raw_u32(50).unwrap();
-        let target_b = Entity::from_raw_u32(51).unwrap();
-        let surveyor_a = Entity::from_raw_u32(200).unwrap();
-        let surveyor_b = Entity::from_raw_u32(201).unwrap();
-        let stub = StubAdapter {
-            unsurveyed_systems: vec![target_a, target_b],
-            idle_surveyors: vec![surveyor_a, surveyor_b],
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        let surveys: Vec<_> = proposals
-            .iter()
-            .filter(|p| p.command.kind.as_str() == "survey_system")
-            .collect();
-        assert_eq!(surveys.len(), 2, "one survey_system per zip pair");
-        // Targets are emitted in slice order (zip iterates in lock-step).
-        match surveys[0].command.params.get("target_system") {
-            Some(CommandValue::System(sys_ref)) => assert_eq!(from_ai_system(*sys_ref), target_a),
-            _ => panic!("expected target_system param"),
-        }
-        match surveys[0].command.params.get("ship_count") {
-            Some(CommandValue::I64(n)) => assert_eq!(*n, 1),
-            _ => panic!("expected ship_count=1"),
-        }
-        match surveys[0].command.params.get("ship_0") {
-            Some(CommandValue::Entity(_)) => {}
-            _ => panic!("expected ship_0 entity"),
-        }
-        match surveys[1].command.params.get("target_system") {
-            Some(CommandValue::System(sys_ref)) => assert_eq!(from_ai_system(*sys_ref), target_b),
-            _ => panic!("expected target_system param"),
-        }
-    }
-
-    #[test]
-    fn rule_2_zip_min_when_more_targets_than_surveyors() {
-        // 3 targets, 1 surveyor → 1 emit. zip terminates at the
-        // shorter iterator.
-        let target_a = Entity::from_raw_u32(50).unwrap();
-        let target_b = Entity::from_raw_u32(51).unwrap();
-        let target_c = Entity::from_raw_u32(52).unwrap();
-        let surveyor = Entity::from_raw_u32(200).unwrap();
-        let stub = StubAdapter {
-            unsurveyed_systems: vec![target_a, target_b, target_c],
-            idle_surveyors: vec![surveyor],
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        let surveys: Vec<_> = proposals
-            .iter()
-            .filter(|p| p.command.kind.as_str() == "survey_system")
-            .collect();
-        assert_eq!(surveys.len(), 1, "min(targets, surveyors) emits");
-        match surveys[0].command.params.get("target_system") {
-            Some(CommandValue::System(sys_ref)) => assert_eq!(from_ai_system(*sys_ref), target_a),
-            _ => panic!("first target consumed first"),
-        }
-    }
-
-    #[test]
-    fn rule_2_silent_when_no_surveyors() {
-        let target = Entity::from_raw_u32(50).unwrap();
-        let stub = StubAdapter {
-            unsurveyed_systems: vec![target],
-            idle_surveyors: vec![],
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        assert!(
-            proposals
-                .iter()
-                .all(|p| p.command.kind.as_str() != "survey_system"),
-            "no idle surveyor → no survey emit",
-        );
-    }
-
-    #[test]
-    fn rule_2_silent_when_no_targets() {
-        let surveyor = Entity::from_raw_u32(200).unwrap();
-        let stub = StubAdapter {
-            unsurveyed_systems: vec![],
-            idle_surveyors: vec![surveyor],
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        assert!(
-            proposals
-                .iter()
-                .all(|p| p.command.kind.as_str() != "survey_system"),
-            "no unsurveyed system → no survey emit",
-        );
-    }
-
-    #[test]
-    fn rule_1_preempts_rule_2_via_early_return() {
-        // Rule 1 conditions hit + Rule 2 conditions hit. Rule 1
-        // returns immediately, so survey_system must NOT be emitted.
-        // Mirrors the `rule_1_preempts_rule_5a_via_early_return`
-        // shape.
-        let hostile = Entity::from_raw_u32(42).unwrap();
-        let combat_ship = Entity::from_raw_u32(100).unwrap();
-        let target = Entity::from_raw_u32(50).unwrap();
-        let surveyor = Entity::from_raw_u32(200).unwrap();
-        let stub = StubAdapter {
-            hostile_systems: vec![hostile],
-            idle_combat: vec![combat_ship],
-            unsurveyed_systems: vec![target],
-            idle_surveyors: vec![surveyor],
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        assert!(
-            proposals
-                .iter()
-                .all(|p| p.command.kind.as_str() != "survey_system"),
-            "Rule 1 must early-return before Rule 2 runs",
-        );
-        assert!(
-            proposals
-                .iter()
-                .any(|p| p.command.kind.as_str() == "attack_target"),
-            "Rule 1 still fires",
-        );
-    }
+    //
+    // Removed in #449 PR2d (cutover). Per-fleet `ShortStanceAgent`
+    // now owns survey emission; see `ai::short_stance::tests` and
+    // `tests/short_rules_cutover_sentinel.rs` for coverage.
 
     // ---- Rule 3 (colonize_system) ----
 
@@ -632,84 +460,11 @@ mod tests {
     }
 
     // ---- Rule 5b (slot fill / building) ----
-
-    #[test]
-    fn rule_5b_silent_when_free_slots_zero() {
-        // Default `free_building_slots == 0` → Rule 5b silent even
-        // when both deficits are present.
-        let stub = StubAdapter {
-            net_production_energy: -5.0,
-            net_production_food: -3.0,
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        assert!(
-            proposals
-                .iter()
-                .all(|p| p.command.kind.as_str() != "build_structure"),
-            "free_building_slots == 0 → no build_structure emit",
-        );
-    }
-
-    #[test]
-    fn rule_5b_picks_power_plant_when_energy_negative() {
-        // Energy negative beats food negative — power_plant has top
-        // priority in the legacy chain.
-        let stub = StubAdapter {
-            free_building_slots: 2.0,
-            net_production_energy: -5.0,
-            net_production_food: -3.0,
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        let build = proposals
-            .iter()
-            .find(|p| p.command.kind.as_str() == "build_structure")
-            .expect("Rule 5b must emit build_structure");
-        match build.command.params.get("building_id") {
-            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "power_plant"),
-            _ => panic!("expected building_id=power_plant"),
-        }
-    }
-
-    #[test]
-    fn rule_5b_picks_farm_when_only_food_negative() {
-        let stub = StubAdapter {
-            free_building_slots: 2.0,
-            net_production_energy: 5.0,
-            net_production_food: -3.0,
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        let build = proposals
-            .iter()
-            .find(|p| p.command.kind.as_str() == "build_structure")
-            .expect("Rule 5b must emit build_structure");
-        match build.command.params.get("building_id") {
-            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "farm"),
-            _ => panic!("expected building_id=farm"),
-        }
-    }
-
-    #[test]
-    fn rule_5b_falls_back_to_mine() {
-        // Both production rates non-negative + free slots → mine.
-        let stub = StubAdapter {
-            free_building_slots: 1.0,
-            net_production_energy: 5.0,
-            net_production_food: 5.0,
-            ..StubAdapter::empty()
-        };
-        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
-        let build = proposals
-            .iter()
-            .find(|p| p.command.kind.as_str() == "build_structure")
-            .expect("Rule 5b must emit build_structure");
-        match build.command.params.get("building_id") {
-            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "mine"),
-            _ => panic!("expected building_id=mine"),
-        }
-    }
+    //
+    // Removed in #449 PR2d (cutover). Per-colony `ShortStanceAgent`
+    // (`ColonizedSystem` scope) now owns slot-fill emission; see
+    // `ai::short_stance::tests` and
+    // `tests/short_rules_cutover_sentinel.rs` for coverage.
 
     // ---- Rule 6 (build_ship composition) ----
 
