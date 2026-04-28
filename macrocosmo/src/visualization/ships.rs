@@ -146,6 +146,125 @@ pub fn compute_own_ship_render_inputs(
     out
 }
 
+/// #478: One row of intended-trajectory data the renderer should draw on
+/// top of the (already-rendered) projected layer.
+///
+/// Produced by [`compute_intended_render_inputs`] when the dispatcher's
+/// projection has a divergent intended target (= a command is in flight to
+/// the ship, or the ship is in transit to the intended target).
+///
+/// `alpha` is precomputed by [`intended_layer_alpha`] so the same number is
+/// testable independently of gizmos. The dashed line is drawn from the
+/// projected position to the intended position.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IntendedRenderItem {
+    pub entity: Entity,
+    pub design_id: String,
+    pub projected_system: Option<Entity>,
+    pub intended_system: Option<Entity>,
+    pub alpha: f32,
+}
+
+/// #478: Compute the alpha for the intended-trajectory dashed overlay.
+///
+/// Curve:
+/// * Right at dispatch → ~0.8 (full divergence; "command just sent").
+/// * Linearly fades toward 0.4 across `[dispatched_at, takes_effect_at]`.
+/// * After the command has reached the ship (`now >= takes_effect_at`),
+///   the layer holds at 0.4 — the dashed line still shows the ship is
+///   *not yet at* the intended target, but is no longer "in flight to ship".
+/// * If the projection has no `intended_takes_effect_at`, falls back to
+///   the steady 0.4 value.
+pub fn intended_layer_alpha(projection: &ShipProjection, now: i64) -> f32 {
+    let Some(takes_effect_at) = projection.intended_takes_effect_at else {
+        return 0.4;
+    };
+    if now >= takes_effect_at {
+        return 0.4;
+    }
+    let span = takes_effect_at - projection.dispatched_at;
+    if span <= 0 {
+        return 0.8;
+    }
+    let remaining = (takes_effect_at - now) as f32;
+    let total = span as f32;
+    // fraction in [0, 1]: 1.0 at dispatch_tick, 0.0 at takes_effect_at
+    let fraction = (remaining / total).clamp(0.0, 1.0);
+    0.4 + fraction * 0.4
+}
+
+/// #478: Pure helper — given a viewing empire's [`KnowledgeStore`], a
+/// per-entity metadata lookup, and the current clock tick, compute the
+/// intended-trajectory rows the renderer should overlay on top of the
+/// projected layer.
+///
+/// Filtering rules (matches the [`compute_own_ship_render_inputs`] gates,
+/// plus the divergence requirement so we don't draw a zero-length line):
+/// * Skip ships with no realtime metadata (entity despawned).
+/// * Skip ships not owned by the viewing empire.
+/// * Skip stations.
+/// * Skip projections in terminal `Destroyed` / `Missing` states (the
+///   reconciler clears `intended_*` on these, but pin it explicitly).
+/// * Skip projections with `intended_system == None` (no in-flight intent).
+/// * Skip projections where `projected_system == intended_system` (already
+///   reconciled / converged — no divergence to draw).
+pub fn compute_intended_render_inputs(
+    store: &KnowledgeStore,
+    metadata: &HashMap<Entity, OwnShipMetadata>,
+    now: i64,
+) -> Vec<IntendedRenderItem> {
+    let mut out = Vec::new();
+    for (ship_entity, projection) in store.iter_projections() {
+        let Some(meta) = metadata.get(ship_entity) else {
+            continue;
+        };
+        if !meta.owned_by_viewing_empire {
+            continue;
+        }
+        if meta.is_station {
+            continue;
+        }
+        match &projection.projected_state {
+            ShipSnapshotState::Destroyed | ShipSnapshotState::Missing => {
+                continue;
+            }
+            _ => {}
+        }
+        if projection.intended_system.is_none() {
+            continue;
+        }
+        // Divergence: only draw when projected != intended. When equal the
+        // ship is at the intended target (reconciled) — the projected layer
+        // already covers it.
+        if projection.projected_system == projection.intended_system {
+            continue;
+        }
+        out.push(IntendedRenderItem {
+            entity: *ship_entity,
+            design_id: meta.design_id.clone(),
+            projected_system: projection.projected_system,
+            intended_system: projection.intended_system,
+            alpha: intended_layer_alpha(projection, now),
+        });
+    }
+    out
+}
+
+/// #478: Resolve the on-screen position of a system entity for the
+/// intended-trajectory overlay. Returns `None` if the system can't be
+/// resolved to a [`Position`].
+fn system_screen_pos(
+    system: Entity,
+    stars: &Query<&Position, With<StarSystem>>,
+    view_scale: f32,
+) -> Option<Vec2> {
+    let pos = stars.get(system).ok()?;
+    Some(Vec2::new(
+        pos.x as f32 * view_scale,
+        pos.y as f32 * view_scale,
+    ))
+}
+
 /// #477: Resolve the on-screen position implied by a [`ShipProjection`].
 ///
 /// `view_scale` is `GalaxyView.scale`. Returns `None` if the projection's
@@ -396,6 +515,40 @@ pub fn draw_ships(
             // Filled circle for 5+ ships
             gizmos.circle_2d(Vec2::new(badge_x, badge_y), 3.5, Color::WHITE);
         }
+    }
+
+    // #478: Intended-trajectory overlay. Drawn AFTER docked ships so the
+    // dashed line connects the ship marker to the player-commanded
+    // destination. Only emitted when the intended layer diverges from the
+    // projected layer (= a command is in flight to the ship, or the ship
+    // is locally believed to be moving toward the intended target but the
+    // reconciler hasn't confirmed arrival yet).
+    let intended_items = compute_intended_render_inputs(viewing_store, &metadata, clock.elapsed);
+    for item in &intended_items {
+        // Resolve start (projected) position. For ships in deep-space
+        // (Loitering / pre-arrival InTransit), `projected_system` is None
+        // — fall back to the projection's screen pos helper which handles
+        // the Loitering case via inline coordinates.
+        let start = match item.projected_system {
+            Some(sys) => system_screen_pos(sys, &stars, view.scale),
+            None => viewing_store
+                .get_projection(item.entity)
+                .and_then(|p| projection_screen_pos(p, &stars, view.scale)),
+        };
+        let Some(start) = start else {
+            continue;
+        };
+        let Some(intended_sys) = item.intended_system else {
+            continue;
+        };
+        let Some(end) = system_screen_pos(intended_sys, &stars, view.scale) else {
+            continue;
+        };
+        let (r, g, b) = ship_color_rgb(&item.design_id);
+        draw_dashed_line(&mut gizmos, start, end, Color::srgba(r, g, b, item.alpha));
+        // Subtle ring at the intended target so the player can see where
+        // the command will land even at low alpha.
+        gizmos.circle_2d(end, 4.5, Color::srgba(r, g, b, item.alpha * 0.7));
     }
 
     // #104 / #477: Command queue overlay for selected ship.

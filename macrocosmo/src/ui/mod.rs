@@ -2358,6 +2358,24 @@ fn draw_map_tooltips(
                     ShipState::Loitering { .. } => "Loitering",
                     ShipState::Scouting { .. } => "Scouting",
                 };
+                // #478: Surface intended-trajectory state so the player
+                // can see *why* the dashed overlay is drawn from this
+                // ship.
+                let projection = knowledge.and_then(|k| k.get_projection(ship_entity));
+                let in_flight_msg: Option<String> = projection.and_then(|p| {
+                    let projected = p.projected_system;
+                    let intended = p.intended_system?;
+                    if projected == Some(intended) {
+                        return None;
+                    }
+                    Some(match p.intended_takes_effect_at {
+                        Some(t) if t > clock.elapsed => {
+                            format!("Command in flight (reaches ship at tick {})", t)
+                        }
+                        Some(_) => "Command received — in transit".to_string(),
+                        None => "Command in flight".to_string(),
+                    })
+                });
                 egui::Tooltip::always_open(
                     ctx.clone(),
                     egui::LayerId::background(),
@@ -2370,6 +2388,13 @@ fn draw_map_tooltips(
                     ui.label(format!("Design: {}", design_name));
                     ui.label(format!("Status: {}", status));
                     ui.label(format!("HP: {:.0}/{:.0}", hp.hull, hp.hull_max));
+                    if let Some(msg) = in_flight_msg {
+                        ui.label(
+                            egui::RichText::new(msg)
+                                .italics()
+                                .color(egui::Color32::from_rgb(180, 180, 220)),
+                        );
+                    }
                 });
             }
             return;
