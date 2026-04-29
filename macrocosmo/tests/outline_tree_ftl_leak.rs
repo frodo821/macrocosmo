@@ -129,11 +129,13 @@ fn snapshot_knowledge(app: &App, empire: Entity) -> KnowledgeStore {
 /// Run a query against the world's ship table the same way `draw_outline`
 /// does, then call `compute_in_transit_entries`. Returns the produced
 /// entries.
-fn run_in_transit(
-    app: &mut App,
-    knowledge_owner: Option<Entity>,
-    is_observer: bool,
-) -> Vec<InTransitEntry> {
+///
+/// #491 (D-M-9): the legacy `is_observer` parameter was removed —
+/// observer mode is now expressed via `viewing_empire = Some(observed)`.
+/// Callers that previously passed `is_observer = true` with
+/// `viewing_empire = None` should pass the observed empire entity
+/// instead.
+fn run_in_transit(app: &mut App, knowledge_owner: Option<Entity>) -> Vec<InTransitEntry> {
     let knowledge_snap = knowledge_owner.map(|e| snapshot_knowledge(app, e));
     let mut state: bevy::ecs::system::SystemState<
         Query<(
@@ -146,12 +148,7 @@ fn run_in_transit(
         )>,
     > = bevy::ecs::system::SystemState::new(app.world_mut());
     let ships = state.get_mut(app.world_mut());
-    compute_in_transit_entries(
-        &ships,
-        knowledge_snap.as_ref(),
-        knowledge_owner,
-        is_observer,
-    )
+    compute_in_transit_entries(&ships, knowledge_snap.as_ref(), knowledge_owner)
 }
 
 /// Same shape as `run_in_transit` but for the per-ship `ship_outline_view`
@@ -160,7 +157,6 @@ fn run_outline_view(
     app: &mut App,
     ship: Entity,
     knowledge_owner: Option<Entity>,
-    is_observer: bool,
 ) -> Option<ShipOutlineView> {
     let knowledge_snap = knowledge_owner.map(|e| snapshot_knowledge(app, e));
     let ship_ref = app.world().entity(ship);
@@ -172,7 +168,6 @@ fn run_outline_view(
         state,
         knowledge_snap.as_ref(),
         knowledge_owner,
-        is_observer,
     )
 }
 
@@ -231,7 +226,7 @@ fn outline_in_transit_section_uses_projection_not_realtime() {
         },
     );
 
-    let entries = run_in_transit(&mut app, Some(empire), false);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert!(
         entries.is_empty(),
         "FTL leak regression: own-empire ship must NOT appear in 'In Transit' \
@@ -241,7 +236,7 @@ fn outline_in_transit_section_uses_projection_not_realtime() {
 
     // The same ship through `ship_outline_view` should report the
     // projected state (`InSystem`), not the realtime `InFTL`.
-    let view = run_outline_view(&mut app, ship, Some(empire), false).expect("view");
+    let view = run_outline_view(&mut app, ship, Some(empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::InSystem);
     assert_eq!(view.system, Some(home));
 }
@@ -299,12 +294,12 @@ fn outline_post_arrival_uses_projection() {
         },
     );
 
-    let entries = run_in_transit(&mut app, Some(empire), false);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert_eq!(entries.len(), 1, "ship must appear in 'In Transit'");
     assert_eq!(entries[0].entity, ship);
     assert_eq!(entries[0].status, "Surveying");
 
-    let view = run_outline_view(&mut app, ship, Some(empire), false).expect("view");
+    let view = run_outline_view(&mut app, ship, Some(empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::Surveying);
     assert_eq!(view.system, Some(frontier));
 }
@@ -346,7 +341,7 @@ fn outline_no_projection_handles_gracefully() {
         },
     );
 
-    let entries = run_in_transit(&mut app, Some(empire), false);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert!(
         entries.is_empty(),
         "without projection the ship must be skipped, not rendered with \
@@ -354,7 +349,7 @@ fn outline_no_projection_handles_gracefully() {
         entries
     );
 
-    let view = run_outline_view(&mut app, ship, Some(empire), false);
+    let view = run_outline_view(&mut app, ship, Some(empire));
     assert!(
         view.is_none(),
         "ship_outline_view returns None for own-ship without projection"
@@ -430,13 +425,13 @@ fn outline_foreign_ship_uses_snapshot() {
         ShipState::InSystem { system: home },
     );
 
-    let view = run_outline_view(&mut app, foreign_ship, Some(viewing_empire), false).expect("view");
+    let view = run_outline_view(&mut app, foreign_ship, Some(viewing_empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::Surveying);
     assert_eq!(view.system, Some(foreign_sys));
 
     // `compute_in_transit_entries` filters out foreign-empire ships
     // (they have their own UI surface, not the In Transit section).
-    let entries = run_in_transit(&mut app, Some(viewing_empire), false);
+    let entries = run_in_transit(&mut app, Some(viewing_empire));
     assert!(
         entries.iter().all(|e| e.entity != foreign_ship),
         "foreign ship must not appear in In Transit. Entries: {:?}",
@@ -502,12 +497,12 @@ fn outline_observer_mode_is_light_coherent_via_projection() {
 
     // Observer mode = empire-view, light-coherent: should report the
     // projected InSystem state, NOT the realtime Surveying.
-    let view = run_outline_view(&mut app, ship, Some(empire), true).expect("view");
+    let view = run_outline_view(&mut app, ship, Some(empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::InSystem);
     assert_eq!(view.system, Some(home));
 
     // Steady-state per projection => not in In-Transit section.
-    let entries = run_in_transit(&mut app, Some(empire), true);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert!(
         entries.is_empty(),
         "observer mode must hide realtime ECS state — In-Transit section must be empty when projection says InSystem"

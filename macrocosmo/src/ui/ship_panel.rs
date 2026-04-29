@@ -139,16 +139,10 @@ pub struct NearbyStructure {
     pub distance_ly: f64,
 }
 
-/// Resolve an Entity to a star system name, falling back to "Unknown".
-pub(super) fn system_name(
-    entity: Entity,
-    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-) -> String {
-    stars
-        .get(entity)
-        .map(|(_, s, _, _)| s.name.clone())
-        .unwrap_or_else(|_| "Unknown".to_string())
-}
+// #491 (D-H-7): `system_name` was consolidated into [`crate::ui::params`].
+// Re-exported here so existing private callers compile unchanged; new
+// callers should `use crate::ui::params::system_name;` directly.
+pub(super) use crate::ui::params::system_name;
 
 /// Collected status information for the ship panel UI.
 struct ShipStatusInfo {

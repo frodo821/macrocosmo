@@ -1,188 +1,50 @@
-//! #491: Shared ship-view helpers consumed by every UI panel.
+//! #491: Egui-adjacent helpers that turn a [`ShipView`] into the
+//! per-panel labels and progress data the UI panels render.
 //!
-//! `outline.rs` factored the original `ShipOutlineView` / `ship_outline_view`
-//! / `realtime_state_to_snapshot` trio in epic #473 / #487 to fix the FTL
-//! leak in the outline tree. The remaining 5 panels (`ship_panel`,
-//! `context_menu`, `situation_center::ship_ops_tab`, `system_panel`,
-//! `ui::mod`) still consume realtime ECS [`ShipState`] directly. Issue
-//! #491 rewires them all to consume the same projection-/snapshot-mediated
-//! view — but each panel needs slightly different output (status label,
-//! progress fraction, ETA). This module owns the shared data shape and
-//! helpers so the per-panel rewires (PR #2..#6) can share one definition.
+//! The data shape ([`ShipView`], [`ShipViewTiming`]) and the selection
+//! logic ([`ship_view`], [`realtime_state_to_snapshot`]) live in
+//! [`crate::knowledge::ship_view`] — they have no UI dependencies.
+//! This module owns the egui-adjacent formatters that take a `Query`
+//! over star systems plus a [`ShipView`] and produce the strings /
+//! progress structs the panels show.
 //!
-//! No behaviour change in this PR — only:
-//! * Renamed `ShipOutlineView` → [`ShipView`]; `ship_outline_view` →
-//!   [`ship_view`]. `outline.rs` continues to expose the old names as
-//!   `pub use` aliases for backward compatibility.
-//! * `realtime_state_to_snapshot` is now `pub` so non-outline panels can
-//!   reuse the realtime-→-snapshot collapse used in observer / startup
-//!   fallback paths.
-//! * New helpers: [`ship_view_status_label`], [`ship_view_eta`],
-//!   [`ship_view_progress`], [`ShipViewTiming`].
+//! Re-exports the data shape so callers that imported from the old
+//! `ui::ship_view` location continue to compile unchanged.
 
 use bevy::prelude::*;
 
 use crate::components::Position;
 use crate::galaxy::{StarSystem, SystemAttributes};
-use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
-use crate::ship::{Owner, Ship, ShipState};
+use crate::knowledge::ShipSnapshotState;
 use crate::time_system::GameClock;
+use crate::ui::params::system_name;
 
-/// #487 / #491: Light-coherent rendering of a ship.
-///
-/// `state` is a [`ShipSnapshotState`] derived from either the viewing
-/// empire's projection (own-empire ship) or `ship_snapshots` (foreign
-/// ship), or — when no `KnowledgeStore` is resolved (early Startup) —
-/// from the realtime ECS [`ShipState`] as a defensive fallback.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShipView {
-    pub state: ShipSnapshotState,
-    pub system: Option<Entity>,
-}
+// #491 (D-C-1): the data shape moved to `knowledge::ship_view`. Re-export
+// from this module so the existing `use crate::ui::ship_view::ShipView`
+// import sites keep working.
+pub use crate::knowledge::ship_view::{
+    ShipView, ShipViewTiming, realtime_state_to_snapshot, ship_view,
+};
 
-/// #491: Light-coherent timing data for [`ship_view_status_label`] and
-/// the progress / ETA accessors.
+/// #491 (D-M-12): Progress data for an in-flight or in-progress ship
+/// activity.
 ///
-/// For own-empire ships the panel rewires (PR #2..#6) populate this from
-/// [`crate::knowledge::ShipProjection`] — `started_at` from `dispatched_at`
-/// (or `intended_takes_effect_at` for in-flight commands) and
-/// `expected_at` from `expected_arrival_at` / `expected_return_at`. For
-/// foreign ships the timing comes from `ShipSnapshot::observed_at` plus
-/// any per-snapshot ETA the snapshot writer chooses to expose.
-///
-/// `None` everywhere means the panel cannot draw a progress bar — only
-/// a static status label is rendered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ShipViewTiming {
-    /// Tick at which the activity began (FTL departure, settle start, etc.).
-    pub started_at: i64,
-    /// Tick at which the activity is expected to complete. `None` for
-    /// open-ended states (e.g. loitering, no projected arrival).
-    pub expected_at: Option<i64>,
-}
-
-/// #491: Display data for the per-panel status section. Mirrors the
-/// shape of `ship_panel::build_status_info` (private today; PR #2 will
-/// rewire to consume this struct).
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShipStatusInfo {
-    pub label: String,
-    /// `(elapsed_hexadies, total_hexadies, fraction_0_1)` when the
-    /// activity has bounded timing. `None` for open-ended / steady-state
-    /// activities (`InSystem`, `Loitering`, `Destroyed`, `Missing`).
-    pub progress: Option<(i64, i64, f32)>,
-}
-
-/// #487 / #491: Convert a realtime [`ShipState`] to the corresponding
-/// [`ShipSnapshotState`] for observer-mode ground-truth rendering and
-/// the `viewing_knowledge.is_none()` fallback path.
-///
-/// Mirrors the conversion used at observation-recording time in the
-/// ship-snapshot writer. `SubLight`/`InFTL`/`Scouting` collapse into
-/// the coarser `InTransit`/`Surveying` snapshot variants — so observer
-/// mode and the projection-driven path render the same set of labels.
-pub fn realtime_state_to_snapshot(state: &ShipState) -> (ShipSnapshotState, Option<Entity>) {
-    match state {
-        ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
-        ShipState::SubLight { target_system, .. } => (ShipSnapshotState::InTransit, *target_system),
-        ShipState::InFTL {
-            destination_system, ..
-        } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-        ShipState::Surveying { target_system, .. } => {
-            (ShipSnapshotState::Surveying, Some(*target_system))
-        }
-        ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
-        ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
-        ShipState::Loitering { position } => (
-            ShipSnapshotState::Loitering {
-                position: *position,
-            },
-            None,
-        ),
-        ShipState::Scouting { target_system, .. } => {
-            (ShipSnapshotState::Surveying, Some(*target_system))
-        }
-    }
-}
-
-/// #487 / #491: Compute the light-coherent view of a ship, gated by the
-/// light-speed contract.
-///
-/// * **Own-empire ship** (in normal play): read the projected state from
-///   the viewing empire's `KnowledgeStore::projections`. The realtime ECS
-///   [`ShipState`] is intentionally ignored — that's the FTL leak fix
-///   (epic #473 / #487).
-/// * **Foreign ship** (in normal play): read the last-known state from
-///   the viewing empire's `KnowledgeStore::ship_snapshots`. Unchanged
-///   from the pre-#487 contract (it was already snapshot-mediated).
-/// * **Observer mode** (= empire-view, viewing as another empire):
-///   treated identically to own-empire normal play — projection /
-///   snapshot of the **viewing empire** (= the observed empire whose
-///   perspective the player is borrowing). Light-speed coherent. A
-///   separate omniscient (god-view) mode is the right way to expose
-///   realtime ground truth (#490, follow-up).
-/// * **No `KnowledgeStore` resolved** (early Startup frames before
-///   empires are wired): fall back to realtime ECS state — there's no
-///   light-coherent view to use yet.
-///
-/// Returns `None` when the ship has no entry in the viewing empire's
-/// knowledge — e.g. a freshly-spawned own-ship before its seed
-/// projection lands (#481), or a foreign ship the empire has never
-/// observed. The caller decides how to render the absence (skip /
-/// "Unknown").
-///
-/// `_is_observer` is preserved to keep the shape of the API stable
-/// while #497 separately removes it (it is currently unused inside the
-/// helper — the projection / snapshot routing already covers observer
-/// mode).
-pub fn ship_view(
-    ship_entity: Entity,
-    ship: &Ship,
-    realtime_state: &ShipState,
-    viewing_knowledge: Option<&KnowledgeStore>,
-    viewing_empire: Option<Entity>,
-    _is_observer: bool,
-) -> Option<ShipView> {
-    // No KnowledgeStore resolved (e.g. very early Startup frames before
-    // empires are wired). Fall back to realtime ECS as a defensive path.
-    // Observer mode (#440) is NOT a fall-through: it still uses the
-    // viewing empire's KnowledgeStore — that's the whole point of
-    // empire-view observer being light-coherent.
-    if viewing_knowledge.is_none() {
-        let (state, system) = realtime_state_to_snapshot(realtime_state);
-        return Some(ShipView { state, system });
-    }
-    let store = viewing_knowledge.unwrap();
-    if let Owner::Empire(owner) = ship.owner {
-        if Some(owner) == viewing_empire {
-            // Own ship: projection is the only legal source.
-            return store.get_projection(ship_entity).map(|p| ShipView {
-                state: p.projected_state.clone(),
-                system: p.projected_system,
-            });
-        }
-    }
-    // Foreign ship: snapshot is the only legal source.
-    store.get_ship(ship_entity).map(|s| ShipView {
-        state: s.last_known_state.clone(),
-        system: s.last_known_system,
-    })
-}
-
-/// Resolve an Entity to a star system name, falling back to "Unknown".
-///
-/// Local mirror of `ship_panel::system_name` — the two will be
-/// consolidated when the ship-panel rewire lands (PR #2 in the #491
-/// epic). Kept here so this module is self-contained and the unit
-/// tests below don't need to import from `ship_panel`.
-fn system_name(
-    entity: Entity,
-    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-) -> String {
-    stars
-        .get(entity)
-        .map(|(_, s, _, _)| s.name.clone())
-        .unwrap_or_else(|_| "Unknown".to_string())
+/// * `elapsed` is the **raw** delta since `origin_tick` — not clamped,
+///   so callers can detect overdue activity by checking
+///   `elapsed > total`.
+/// * `total` is `expected_tick - origin_tick`, clamped to `>= 1` to
+///   avoid division by zero on same-tick activities. Always non-negative.
+/// * `fraction` is `elapsed / total`, clamped to `[0.0, 1.0]` so a stale
+///   clock past `expected_tick` does not over-extrapolate progress bars.
+/// * `is_overdue` is `true` when the activity should already have
+///   completed (= the activity has run for longer than its expected
+///   duration). Useful for highlighting stuck ships.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ShipViewProgress {
+    pub elapsed: i64,
+    pub total: i64,
+    pub fraction: f32,
+    pub is_overdue: bool,
 }
 
 /// #491: ETA accessor — returns the projected / observed completion
@@ -193,52 +55,60 @@ fn system_name(
 /// adjustments (e.g. clamping foreign ETAs to the viewing empire's
 /// knowledge horizon) can land here without changing every call site.
 pub fn ship_view_eta(timing: Option<&ShipViewTiming>) -> Option<i64> {
-    timing.and_then(|t| t.expected_at)
+    timing.and_then(|t| t.expected_tick)
 }
 
-/// #491: Compute progress as `(elapsed, total, fraction)`.
+/// #491 (D-M-12 + B-NTF-1): Compute progress as a [`ShipViewProgress`].
 ///
-/// * `now < started_at` → `(0, total, 0.0)` (clamped — projection's
-///   `dispatched_at` can briefly lead the local clock during reconcile).
-/// * `now > expected_at` → `(total, total, 1.0)`.
-/// * Mid-flight → `((now - started_at), (expected_at - started_at),
-///   fraction)`.
-/// * `expected_at == None` → `None` (open-ended activity, no progress).
+/// * `now < origin_tick` → `elapsed = 0`, `fraction = 0.0`,
+///   `is_overdue = false`. (Projection's `dispatched_at` can briefly
+///   lead the local clock during reconcile.)
+/// * Mid-flight → `elapsed = now - origin_tick`,
+///   `fraction = elapsed / total`, `is_overdue = false`.
+/// * `now > expected_tick` → `elapsed = now - origin_tick` (raw),
+///   `fraction = 1.0` (clamped), `is_overdue = true`.
+/// * `expected_tick == None` → `None` (open-ended activity).
+/// * `timing == None` → `None`.
 ///
 /// `total` is clamped to `>= 1` to avoid division by zero when
-/// `started_at == expected_at` (= a same-tick activity).
-pub fn ship_view_progress(timing: Option<&ShipViewTiming>, now: i64) -> Option<(i64, i64, f32)> {
+/// `origin_tick == expected_tick` (= a same-tick activity). All
+/// arithmetic uses `saturating_sub` to handle sentinel ticks
+/// (`i64::MIN` / `i64::MAX`) without overflow.
+pub fn ship_view_progress(timing: Option<&ShipViewTiming>, now: i64) -> Option<ShipViewProgress> {
     let timing = timing?;
-    let expected = timing.expected_at?;
-    let total = (expected - timing.started_at).max(1);
-    let elapsed = (now - timing.started_at).clamp(0, total);
-    let pct = elapsed as f32 / total as f32;
-    Some((elapsed, total, pct))
+    let expected = timing.expected_tick?;
+    let total = expected.saturating_sub(timing.origin_tick).max(1);
+    let raw_elapsed = now.saturating_sub(timing.origin_tick).max(0);
+    // Fraction uses clamped elapsed so progress bars never over-extend.
+    let clamped = raw_elapsed.min(total);
+    let fraction = (clamped as f32 / total as f32).clamp(0.0, 1.0);
+    let is_overdue = expected.saturating_sub(now) <= 0 && now > timing.origin_tick;
+    Some(ShipViewProgress {
+        elapsed: raw_elapsed,
+        total,
+        fraction,
+        is_overdue,
+    })
 }
 
-/// #491: Light-coherent status label + progress for a [`ShipView`].
+/// #491: Light-coherent status label for a [`ShipView`].
 ///
-/// Replaces the per-panel `build_status_info` family by switching on
-/// `view.state` (= a [`ShipSnapshotState`]) instead of a realtime
-/// [`ShipState`]. The coarser snapshot variants mean some labels
-/// collapse — `SubLight` / `InFTL` both render as `"In Transit"`,
-/// `Scouting` collapses into `Surveying`. That's the design intent: the
-/// player can't tell `SubLight` from `InFTL` for a remote ship anyway
-/// (light-speed coherence).
+/// Switches on `view.state` (= a [`ShipSnapshotState`]) — the projection
+/// / snapshot collapse already happened upstream, so this function does
+/// not see realtime [`crate::ship::ShipState`] details. Per #491 (D-H-4)
+/// `InTransitSubLight` and `InTransitFTL` produce different labels
+/// because the player UI must surface the FTL/sublight distinction
+/// (FTL ships cannot be intercepted by game contract).
 ///
-/// `timing` carries the dispatch / arrival ticks the caller resolved
-/// from `ShipProjection` (own ships) or `ShipSnapshot` (foreign). When
-/// `None` the label shows no `(X/Y hd, Z%)` suffix — useful for snapshot
-/// states without committed ETAs.
-pub fn ship_view_status_label(
+/// `timing` is consumed by callers via [`ship_view_progress`] /
+/// [`ship_view_eta`] separately — the label itself does not include
+/// progress digits any more (#491 D-H-8 / D-M-10). Callers that want
+/// the legacy `"X/Y hd, Z%"` suffix concatenate the two themselves.
+pub fn ship_view_label(
     view: &ShipView,
-    timing: Option<ShipViewTiming>,
-    clock: &GameClock,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
-) -> ShipStatusInfo {
-    let progress = ship_view_progress(timing.as_ref(), clock.elapsed);
-
-    let label = match &view.state {
+) -> String {
+    match &view.state {
         ShipSnapshotState::InSystem => {
             let name = view
                 .system
@@ -246,36 +116,26 @@ pub fn ship_view_status_label(
                 .unwrap_or_else(|| "Unknown".to_string());
             format!("Docked at {}", name)
         }
-        ShipSnapshotState::InTransit => {
+        ShipSnapshotState::InTransitSubLight => {
             let name = view
                 .system
                 .map(|s| system_name(s, stars))
                 .unwrap_or_else(|| "deep space".to_string());
-            match progress {
-                Some((elapsed, total, pct)) => format!(
-                    "In Transit to {} ({}/{} hd, {:.0}%)",
-                    name,
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                None => format!("In Transit to {}", name),
-            }
+            format!("Moving to {}", name)
         }
-        ShipSnapshotState::Surveying => {
+        ShipSnapshotState::InTransitFTL => {
             let name = view
                 .system
                 .map(|s| system_name(s, stars))
-                .unwrap_or_else(|| "Unknown".to_string());
-            match progress {
-                Some((elapsed, total, pct)) => format!(
-                    "Surveying {} ({}/{} hd, {:.0}%)",
-                    name,
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                None => format!("Surveying {} ...", name),
+                .unwrap_or_else(|| "deep space".to_string());
+            format!("FTL to {}", name)
+        }
+        ShipSnapshotState::Surveying => {
+            // #491 (B-NTF-3): when system is None, surface that to the
+            // player rather than label the destination "Unknown".
+            match view.system {
+                Some(s) => format!("Surveying {}", system_name(s, stars)),
+                None => "Surveying (target unknown)".to_string(),
             }
         }
         ShipSnapshotState::Settling => {
@@ -283,32 +143,14 @@ pub fn ship_view_status_label(
                 .system
                 .map(|s| system_name(s, stars))
                 .unwrap_or_else(|| "Unknown".to_string());
-            match progress {
-                Some((elapsed, total, pct)) => format!(
-                    "Settling {} ({}/{} hd, {:.0}%)",
-                    name,
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                None => format!("Settling {} ...", name),
-            }
+            format!("Settling {}", name)
         }
         ShipSnapshotState::Refitting => {
             let name = view
                 .system
                 .map(|s| system_name(s, stars))
                 .unwrap_or_else(|| "Unknown".to_string());
-            match progress {
-                Some((elapsed, total, pct)) => format!(
-                    "Refitting at {} ({}/{} hd, {:.0}%)",
-                    name,
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                None => format!("Refitting at {} ...", name),
-            }
+            format!("Refitting at {}", name)
         }
         ShipSnapshotState::Loitering { position } => format!(
             "Loitering at ({:.2}, {:.2}, {:.2})",
@@ -316,9 +158,52 @@ pub fn ship_view_status_label(
         ),
         ShipSnapshotState::Destroyed => "Destroyed".to_string(),
         ShipSnapshotState::Missing => "Missing".to_string(),
-    };
+    }
+}
 
-    ShipStatusInfo { label, progress }
+/// #491 (B-NTF-4): Per-state predicate for "should the panel render
+/// progress data even if the caller passed timing?".
+///
+/// The progress bar is meaningful for activities with bounded duration
+/// — the transit / survey / settle / refit family. Steady-state and
+/// terminal variants (`InSystem`, `Loitering`, `Destroyed`, `Missing`)
+/// should never show progress, even if a stale [`ShipViewTiming`] is
+/// passed in alongside them.
+pub fn ship_view_state_supports_progress(state: &ShipSnapshotState) -> bool {
+    matches!(
+        state,
+        ShipSnapshotState::InTransitSubLight
+            | ShipSnapshotState::InTransitFTL
+            | ShipSnapshotState::Surveying
+            | ShipSnapshotState::Settling
+            | ShipSnapshotState::Refitting
+    )
+}
+
+/// #491 (D-H-8): Light-coherent status label + progress for a
+/// [`ShipView`].
+///
+/// Convenience wrapper that calls [`ship_view_label`] and conditionally
+/// [`ship_view_progress`] (gated on
+/// [`ship_view_state_supports_progress`]). Callers that only need one
+/// of the two should call the underlying helper directly — this
+/// function exists for the per-panel "label + progress bar" pattern
+/// that several panels share (#491 PR #2..#6).
+pub fn ship_view_status_label(
+    view: &ShipView,
+    timing: Option<ShipViewTiming>,
+    clock: &GameClock,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+) -> (String, Option<ShipViewProgress>) {
+    let label = ship_view_label(view, stars);
+    let progress = if ship_view_state_supports_progress(&view.state) {
+        ship_view_progress(timing.as_ref(), clock.elapsed)
+    } else {
+        // #491 (B-NTF-4): force None even when caller passed stale
+        // timing — non-transit states never show a progress bar.
+        None
+    };
+    (label, progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -330,14 +215,8 @@ mod tests {
     use super::*;
     use crate::components::Position;
     use crate::galaxy::StarSystem;
-    use crate::knowledge::{ObservationSource, ShipProjection, ShipSnapshot};
-    use crate::ship::Owner;
     use bevy::ecs::system::SystemState;
 
-    /// Spawn a minimal star system entity with just the components
-    /// `system_name` consumes (no Sovereignty / TechKnowledge / etc.,
-    /// which the `tests/common::spawn_test_system` helper would pull
-    /// in). Unit tests don't need the full bundle.
     fn spawn_star(world: &mut World, name: &str, pos: [f64; 3]) -> Entity {
         world
             .spawn((
@@ -352,373 +231,12 @@ mod tests {
             .id()
     }
 
-    /// Build a minimal `Ship` Component with sane defaults, owned by
-    /// the given empire entity. Unit tests don't need fleets / cargo /
-    /// hp because `ship_view` only reads `Ship.owner`.
-    fn make_ship(name: &str, owner: Entity, home: Entity) -> Ship {
-        Ship {
-            name: name.into(),
-            design_id: "explorer_mk1".into(),
-            hull_id: "frigate".into(),
-            modules: Vec::new(),
-            owner: Owner::Empire(owner),
-            sublight_speed: 1.0,
-            ftl_range: 5.0,
-            ruler_aboard: false,
-            home_port: home,
-            design_revision: 0,
-            fleet: None,
-        }
-    }
-
-    // -----------------------------------------------------------------
-    // realtime_state_to_snapshot — all 8 variants
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn realtime_state_to_snapshot_in_system() {
-        let mut world = World::new();
-        let sys = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::InSystem { system: sys });
-        assert_eq!(s, ShipSnapshotState::InSystem);
-        assert_eq!(sys_e, Some(sys));
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_sublight() {
-        let mut world = World::new();
-        let target = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::SubLight {
-            origin: [0.0, 0.0, 0.0],
-            destination: [50.0, 0.0, 0.0],
-            target_system: Some(target),
-            departed_at: 0,
-            arrival_at: 5,
-        });
-        assert_eq!(s, ShipSnapshotState::InTransit);
-        assert_eq!(sys_e, Some(target));
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_sublight_open_target() {
-        // SubLight to a deep-space coordinate — no target system.
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::SubLight {
-            origin: [0.0, 0.0, 0.0],
-            destination: [50.0, 0.0, 0.0],
-            target_system: None,
-            departed_at: 0,
-            arrival_at: 5,
-        });
-        assert_eq!(s, ShipSnapshotState::InTransit);
-        assert_eq!(sys_e, None);
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_inftl() {
-        let mut world = World::new();
-        let dest = world.spawn_empty().id();
-        let origin = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::InFTL {
-            origin_system: origin,
-            destination_system: dest,
-            departed_at: 0,
-            arrival_at: 5,
-        });
-        assert_eq!(s, ShipSnapshotState::InTransit);
-        assert_eq!(sys_e, Some(dest));
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_surveying() {
-        let mut world = World::new();
-        let target = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::Surveying {
-            target_system: target,
-            started_at: 0,
-            completes_at: 10,
-        });
-        assert_eq!(s, ShipSnapshotState::Surveying);
-        assert_eq!(sys_e, Some(target));
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_settling() {
-        let mut world = World::new();
-        let sys = world.spawn_empty().id();
-        let planet = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::Settling {
-            system: sys,
-            planet: Some(planet),
-            started_at: 0,
-            completes_at: 20,
-        });
-        assert_eq!(s, ShipSnapshotState::Settling);
-        assert_eq!(sys_e, Some(sys));
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_refitting() {
-        let mut world = World::new();
-        let sys = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::Refitting {
-            system: sys,
-            started_at: 0,
-            completes_at: 5,
-            new_modules: Vec::new(),
-            target_revision: 1,
-        });
-        assert_eq!(s, ShipSnapshotState::Refitting);
-        assert_eq!(sys_e, Some(sys));
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_loitering() {
-        let pos = [10.5, -3.0, 7.25];
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::Loitering { position: pos });
-        assert_eq!(s, ShipSnapshotState::Loitering { position: pos });
-        assert_eq!(sys_e, None);
-    }
-
-    #[test]
-    fn realtime_state_to_snapshot_scouting() {
-        use crate::ship::ReportMode;
-        let mut world = World::new();
-        let target = world.spawn_empty().id();
-        let origin = world.spawn_empty().id();
-        let (s, sys_e) = realtime_state_to_snapshot(&ShipState::Scouting {
-            target_system: target,
-            origin_system: origin,
-            started_at: 0,
-            completes_at: 10,
-            report_mode: ReportMode::Return,
-        });
-        // Scouting collapses into Surveying at snapshot granularity.
-        assert_eq!(s, ShipSnapshotState::Surveying);
-        assert_eq!(sys_e, Some(target));
-    }
-
-    // -----------------------------------------------------------------
-    // ship_view — own / foreign / no-projection / no-store paths
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn ship_view_own_empire_uses_projection() {
-        let mut world = World::new();
-        let empire = world.spawn_empty().id();
-        let home = world.spawn_empty().id();
-        let frontier = world.spawn_empty().id();
-        let ship_entity = world.spawn_empty().id();
-        let ship = make_ship("Explorer", empire, home);
-        // Realtime says InFTL — the projection-driven path must ignore it.
-        let realtime = ShipState::InFTL {
-            origin_system: home,
-            destination_system: frontier,
-            departed_at: 0,
-            arrival_at: 5,
-        };
-        let mut store = KnowledgeStore::default();
-        store.update_projection(ShipProjection {
-            entity: ship_entity,
-            dispatched_at: 0,
-            expected_arrival_at: Some(10),
-            expected_return_at: None,
-            projected_state: ShipSnapshotState::InSystem,
-            projected_system: Some(home),
-            intended_state: Some(ShipSnapshotState::Surveying),
-            intended_system: Some(frontier),
-            intended_takes_effect_at: Some(5),
-        });
-
-        let view = ship_view(
-            ship_entity,
-            &ship,
-            &realtime,
-            Some(&store),
-            Some(empire),
-            false,
-        )
-        .expect("own-ship projection must produce a view");
-        assert_eq!(view.state, ShipSnapshotState::InSystem);
-        assert_eq!(view.system, Some(home));
-    }
-
-    #[test]
-    fn ship_view_foreign_uses_snapshot() {
-        let mut world = World::new();
-        let viewing_empire = world.spawn_empty().id();
-        let foreign_empire = world.spawn_empty().id();
-        let foreign_sys = world.spawn_empty().id();
-        let ship_entity = world.spawn_empty().id();
-        let ship = make_ship("EnemyScout", foreign_empire, foreign_sys);
-        let realtime = ShipState::InSystem {
-            system: foreign_sys,
-        };
-        let mut store = KnowledgeStore::default();
-        store.update_ship(ShipSnapshot {
-            entity: ship_entity,
-            name: "EnemyScout".into(),
-            design_id: "explorer_mk1".into(),
-            last_known_state: ShipSnapshotState::Surveying,
-            last_known_system: Some(foreign_sys),
-            observed_at: 0,
-            hp: 100.0,
-            hp_max: 100.0,
-            source: ObservationSource::Direct,
-        });
-
-        let view = ship_view(
-            ship_entity,
-            &ship,
-            &realtime,
-            Some(&store),
-            Some(viewing_empire),
-            false,
-        )
-        .expect("foreign snapshot must produce a view");
-        assert_eq!(view.state, ShipSnapshotState::Surveying);
-        assert_eq!(view.system, Some(foreign_sys));
-    }
-
-    #[test]
-    fn ship_view_own_empire_no_projection_returns_none() {
-        let mut world = World::new();
-        let empire = world.spawn_empty().id();
-        let home = world.spawn_empty().id();
-        let ship_entity = world.spawn_empty().id();
-        let ship = make_ship("Explorer", empire, home);
-        let realtime = ShipState::InSystem { system: home };
-        // Empty store — no projection populated.
-        let store = KnowledgeStore::default();
-        let view = ship_view(
-            ship_entity,
-            &ship,
-            &realtime,
-            Some(&store),
-            Some(empire),
-            false,
-        );
-        assert!(
-            view.is_none(),
-            "ship_view returns None for own-ship without projection (caller skips)"
-        );
-    }
-
-    #[test]
-    fn ship_view_no_knowledge_store_falls_back_to_realtime() {
-        let mut world = World::new();
-        let empire = world.spawn_empty().id();
-        let home = world.spawn_empty().id();
-        let frontier = world.spawn_empty().id();
-        let ship_entity = world.spawn_empty().id();
-        let ship = make_ship("Explorer", empire, home);
-        let realtime = ShipState::InFTL {
-            origin_system: home,
-            destination_system: frontier,
-            departed_at: 0,
-            arrival_at: 5,
-        };
-
-        let view = ship_view(ship_entity, &ship, &realtime, None, Some(empire), false)
-            .expect("startup fallback must produce a view");
-        // No KnowledgeStore = realtime read => InTransit (collapsed from InFTL).
-        assert_eq!(view.state, ShipSnapshotState::InTransit);
-        assert_eq!(view.system, Some(frontier));
-    }
-
-    // -----------------------------------------------------------------
-    // ship_view_progress — boundary / mid-flight / open-ended
-    // -----------------------------------------------------------------
-
-    #[test]
-    fn ship_view_progress_before_start_is_zero() {
-        let timing = ShipViewTiming {
-            started_at: 5,
-            expected_at: Some(15),
-        };
-        let p = ship_view_progress(Some(&timing), 3).expect("bounded => Some");
-        assert_eq!(p, (0, 10, 0.0));
-    }
-
-    #[test]
-    fn ship_view_progress_after_expected_is_one() {
-        let timing = ShipViewTiming {
-            started_at: 0,
-            expected_at: Some(10),
-        };
-        let p = ship_view_progress(Some(&timing), 25).expect("bounded => Some");
-        assert_eq!(p, (10, 10, 1.0));
-    }
-
-    #[test]
-    fn ship_view_progress_mid_flight_is_fractional() {
-        let timing = ShipViewTiming {
-            started_at: 0,
-            expected_at: Some(10),
-        };
-        let p = ship_view_progress(Some(&timing), 3).expect("bounded => Some");
-        assert_eq!(p.0, 3);
-        assert_eq!(p.1, 10);
-        assert!(
-            (p.2 - 0.3).abs() < 1e-6,
-            "fraction = 3/10 = 0.3, got {}",
-            p.2
-        );
-    }
-
-    #[test]
-    fn ship_view_progress_no_expected_is_none() {
-        let timing = ShipViewTiming {
-            started_at: 0,
-            expected_at: None,
-        };
-        assert_eq!(ship_view_progress(Some(&timing), 5), None);
-    }
-
-    #[test]
-    fn ship_view_progress_no_timing_is_none() {
-        assert_eq!(ship_view_progress(None, 5), None);
-    }
-
-    #[test]
-    fn ship_view_progress_same_tick_total_clamped_to_one() {
-        // started_at == expected_at — `total` clamps to 1 to avoid div-by-zero.
-        let timing = ShipViewTiming {
-            started_at: 5,
-            expected_at: Some(5),
-        };
-        let p = ship_view_progress(Some(&timing), 5).expect("bounded => Some");
-        // elapsed = (5 - 5) clamped to [0, 1] = 0; total = max(0, 1) = 1.
-        assert_eq!(p, (0, 1, 0.0));
-    }
-
-    #[test]
-    fn ship_view_eta_returns_expected_at() {
-        let timing = ShipViewTiming {
-            started_at: 0,
-            expected_at: Some(42),
-        };
-        assert_eq!(ship_view_eta(Some(&timing)), Some(42));
-        assert_eq!(ship_view_eta(None), None);
-        let timing_open = ShipViewTiming {
-            started_at: 0,
-            expected_at: None,
-        };
-        assert_eq!(ship_view_eta(Some(&timing_open)), None);
-    }
-
-    // -----------------------------------------------------------------
-    // ship_view_status_label — label shape per variant
-    // -----------------------------------------------------------------
-
-    /// Build a (`SystemState`, `clock`) pair suitable for invoking
-    /// `ship_view_status_label`. Returns the world plus a `SystemState`
-    /// that resolves the `stars` query — caller drives via `get(world)`.
     fn label_for(
         view: ShipView,
         timing: Option<ShipViewTiming>,
         clock: GameClock,
         world: &mut World,
-    ) -> ShipStatusInfo {
+    ) -> (String, Option<ShipViewProgress>) {
         let mut state: SystemState<
             Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
         > = SystemState::new(world);
@@ -726,11 +244,126 @@ mod tests {
         ship_view_status_label(&view, timing, &clock, &stars)
     }
 
+    // -----------------------------------------------------------------
+    // ship_view_progress — boundary / mid-flight / open-ended +
+    // sentinel + overdue (D-M-12, B-NTF-1)
+    // -----------------------------------------------------------------
+
     #[test]
-    fn ship_view_status_label_in_system() {
+    fn progress_before_start_is_zero() {
+        let timing = ShipViewTiming {
+            origin_tick: 5,
+            expected_tick: Some(15),
+        };
+        let p = ship_view_progress(Some(&timing), 3).expect("bounded => Some");
+        assert_eq!(p.elapsed, 0);
+        assert_eq!(p.total, 10);
+        assert!((p.fraction - 0.0).abs() < 1e-6);
+        assert!(!p.is_overdue);
+    }
+
+    #[test]
+    fn progress_mid_flight_is_fractional() {
+        let timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let p = ship_view_progress(Some(&timing), 3).expect("bounded => Some");
+        assert_eq!(p.elapsed, 3);
+        assert_eq!(p.total, 10);
+        assert!((p.fraction - 0.3).abs() < 1e-6);
+        assert!(!p.is_overdue);
+    }
+
+    #[test]
+    fn progress_flags_overdue_when_now_exceeds_expected() {
+        let timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let p = ship_view_progress(Some(&timing), 25).expect("bounded => Some");
+        assert!(p.is_overdue, "now=25 past expected=10 should be overdue");
+        // fraction clamped, raw elapsed retained
+        assert!((p.fraction - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn progress_returns_raw_elapsed_for_overdue() {
+        let timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let p = ship_view_progress(Some(&timing), 25).expect("bounded => Some");
+        // Raw elapsed: caller can detect "stuck" by checking elapsed > total.
+        assert_eq!(p.elapsed, 25);
+        assert_eq!(p.total, 10);
+        assert!(p.elapsed > p.total);
+    }
+
+    #[test]
+    fn progress_no_expected_is_none() {
+        let timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: None,
+        };
+        assert_eq!(ship_view_progress(Some(&timing), 5), None);
+    }
+
+    #[test]
+    fn progress_no_timing_is_none() {
+        assert_eq!(ship_view_progress(None, 5), None);
+    }
+
+    #[test]
+    fn progress_same_tick_total_clamped_to_one() {
+        let timing = ShipViewTiming {
+            origin_tick: 5,
+            expected_tick: Some(5),
+        };
+        let p = ship_view_progress(Some(&timing), 5).expect("bounded => Some");
+        assert_eq!(p.elapsed, 0);
+        assert_eq!(p.total, 1);
+        assert!(!p.is_overdue);
+    }
+
+    #[test]
+    fn progress_handles_sentinel_ticks() {
+        // B-NTF-1: extreme i64 inputs must not panic via overflow.
+        let timing = ShipViewTiming {
+            origin_tick: i64::MIN,
+            expected_tick: Some(i64::MAX),
+        };
+        // Should not panic.
+        let p = ship_view_progress(Some(&timing), 0).expect("bounded => Some");
+        assert!(p.total >= 1);
+        assert!(p.fraction >= 0.0 && p.fraction <= 1.0);
+    }
+
+    #[test]
+    fn eta_returns_expected_tick() {
+        let timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(42),
+        };
+        assert_eq!(ship_view_eta(Some(&timing)), Some(42));
+        assert_eq!(ship_view_eta(None), None);
+        let timing_open = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: None,
+        };
+        assert_eq!(ship_view_eta(Some(&timing_open)), None);
+    }
+
+    // -----------------------------------------------------------------
+    // ship_view_status_label — structural assertions per variant
+    // (D-M-10)
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn status_label_in_system_docked() {
         let mut world = World::new();
         let sys = spawn_star(&mut world, "Sol", [0.0, 0.0, 0.0]);
-        let info = label_for(
+        let (label, progress) = label_for(
             ShipView {
                 state: ShipSnapshotState::InSystem,
                 system: Some(sys),
@@ -739,71 +372,125 @@ mod tests {
             GameClock::new(0),
             &mut world,
         );
-        assert_eq!(info.label, "Docked at Sol");
-        assert_eq!(info.progress, None);
+        assert!(label.contains("Docked"));
+        assert!(label.contains("Sol"));
+        assert_eq!(progress, None);
     }
 
     #[test]
-    fn ship_view_status_label_in_transit_with_timing() {
+    fn status_label_in_transit_sublight_with_timing() {
         let mut world = World::new();
         let dest = spawn_star(&mut world, "Frontier", [50.0, 0.0, 0.0]);
-        let info = label_for(
+        let (label, progress) = label_for(
             ShipView {
-                state: ShipSnapshotState::InTransit,
+                state: ShipSnapshotState::InTransitSubLight,
                 system: Some(dest),
             },
             Some(ShipViewTiming {
-                started_at: 0,
-                expected_at: Some(10),
+                origin_tick: 0,
+                expected_tick: Some(10),
             }),
             GameClock::new(5),
             &mut world,
         );
-        assert_eq!(info.label, "In Transit to Frontier (5/10 hd, 50%)");
-        assert_eq!(info.progress, Some((5, 10, 0.5)));
+        assert!(label.contains("Moving") || label.contains("Transit"));
+        assert!(label.contains("Frontier"));
+        // Critical FTL leak invariant — the label must not say "FTL"
+        // for a sublight ship (#491 D-H-4).
+        assert!(
+            !label.contains("FTL"),
+            "sublight transit must never render the 'FTL' marker"
+        );
+        let p = progress.expect("transit must produce progress");
+        assert_eq!(p.elapsed, 5);
+        assert_eq!(p.total, 10);
+        assert!((p.fraction - 0.5).abs() < 1e-6);
     }
 
     #[test]
-    fn ship_view_status_label_in_transit_without_timing() {
+    fn status_label_in_transit_ftl_with_timing() {
         let mut world = World::new();
         let dest = spawn_star(&mut world, "Frontier", [50.0, 0.0, 0.0]);
-        let info = label_for(
+        let (label, progress) = label_for(
             ShipView {
-                state: ShipSnapshotState::InTransit,
+                state: ShipSnapshotState::InTransitFTL,
+                system: Some(dest),
+            },
+            Some(ShipViewTiming {
+                origin_tick: 0,
+                expected_tick: Some(10),
+            }),
+            GameClock::new(3),
+            &mut world,
+        );
+        assert!(label.contains("FTL"));
+        assert!(label.contains("Frontier"));
+        assert!(progress.is_some());
+    }
+
+    #[test]
+    fn status_label_in_transit_without_timing() {
+        let mut world = World::new();
+        let dest = spawn_star(&mut world, "Frontier", [50.0, 0.0, 0.0]);
+        let (label, progress) = label_for(
+            ShipView {
+                state: ShipSnapshotState::InTransitSubLight,
                 system: Some(dest),
             },
             None,
             GameClock::new(5),
             &mut world,
         );
-        assert_eq!(info.label, "In Transit to Frontier");
-        assert_eq!(info.progress, None);
+        assert!(label.contains("Frontier"));
+        assert_eq!(progress, None);
     }
 
     #[test]
-    fn ship_view_status_label_surveying_with_timing() {
+    fn status_label_surveying_with_timing() {
         let mut world = World::new();
         let target = spawn_star(&mut world, "Frontier", [50.0, 0.0, 0.0]);
-        let info = label_for(
+        let (label, progress) = label_for(
             ShipView {
                 state: ShipSnapshotState::Surveying,
                 system: Some(target),
             },
             Some(ShipViewTiming {
-                started_at: 0,
-                expected_at: Some(10),
+                origin_tick: 0,
+                expected_tick: Some(10),
             }),
             GameClock::new(3),
             &mut world,
         );
-        assert_eq!(info.label, "Surveying Frontier (3/10 hd, 30%)");
-        assert!(info.progress.is_some());
+        assert!(label.contains("Surveying"));
+        assert!(label.contains("Frontier"));
+        assert!(progress.is_some());
     }
 
     #[test]
-    fn ship_view_status_label_loitering() {
+    fn status_label_surveying_with_none_system() {
+        // B-NTF-3: explicit signal that the target is unknown rather
+        // than literal "Unknown".
         let mut world = World::new();
-        let info = label_for(
+        let (label, _) = label_for(
+            ShipView {
+                state: ShipSnapshotState::Surveying,
+                system: None,
+            },
+            None,
+            GameClock::new(0),
+            &mut world,
+        );
+        assert!(label.contains("Surveying"));
+        assert!(
+            label.contains("unknown") || label.contains("Unknown"),
+            "label should signal that the survey target is unknown: got {label:?}"
+        );
+    }
+
+    #[test]
+    fn status_label_loitering() {
+        let mut world = World::new();
+        let (label, progress) = label_for(
             ShipView {
                 state: ShipSnapshotState::Loitering {
                     position: [1.5, 2.5, 3.5],
@@ -814,14 +501,14 @@ mod tests {
             GameClock::new(0),
             &mut world,
         );
-        assert_eq!(info.label, "Loitering at (1.50, 2.50, 3.50)");
-        assert_eq!(info.progress, None);
+        assert!(label.contains("Loitering"));
+        assert_eq!(progress, None);
     }
 
     #[test]
-    fn ship_view_status_label_destroyed() {
+    fn status_label_destroyed() {
         let mut world = World::new();
-        let info = label_for(
+        let (label, progress) = label_for(
             ShipView {
                 state: ShipSnapshotState::Destroyed,
                 system: None,
@@ -830,7 +517,112 @@ mod tests {
             GameClock::new(0),
             &mut world,
         );
-        assert_eq!(info.label, "Destroyed");
-        assert_eq!(info.progress, None);
+        assert_eq!(label, "Destroyed");
+        assert_eq!(progress, None);
+    }
+
+    #[test]
+    fn status_label_missing() {
+        let mut world = World::new();
+        let (label, progress) = label_for(
+            ShipView {
+                state: ShipSnapshotState::Missing,
+                system: None,
+            },
+            None,
+            GameClock::new(0),
+            &mut world,
+        );
+        assert_eq!(label, "Missing");
+        assert_eq!(progress, None);
+    }
+
+    // -----------------------------------------------------------------
+    // B-NTF-4: stale timing is ignored for non-transit states
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn destroyed_with_stale_timing_yields_none_progress() {
+        let mut world = World::new();
+        let stale_timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let (_, progress) = label_for(
+            ShipView {
+                state: ShipSnapshotState::Destroyed,
+                system: None,
+            },
+            Some(stale_timing),
+            GameClock::new(5),
+            &mut world,
+        );
+        assert_eq!(
+            progress, None,
+            "Destroyed must never surface progress even with stale timing"
+        );
+    }
+
+    #[test]
+    fn missing_with_stale_timing_yields_none_progress() {
+        let mut world = World::new();
+        let stale_timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let (_, progress) = label_for(
+            ShipView {
+                state: ShipSnapshotState::Missing,
+                system: None,
+            },
+            Some(stale_timing),
+            GameClock::new(5),
+            &mut world,
+        );
+        assert_eq!(progress, None);
+    }
+
+    #[test]
+    fn in_system_with_stale_timing_yields_none_progress() {
+        let mut world = World::new();
+        let sys = spawn_star(&mut world, "Sol", [0.0, 0.0, 0.0]);
+        let stale_timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let (_, progress) = label_for(
+            ShipView {
+                state: ShipSnapshotState::InSystem,
+                system: Some(sys),
+            },
+            Some(stale_timing),
+            GameClock::new(5),
+            &mut world,
+        );
+        assert_eq!(
+            progress, None,
+            "InSystem must never surface progress (steady-state)"
+        );
+    }
+
+    #[test]
+    fn loitering_with_stale_timing_yields_none_progress() {
+        let mut world = World::new();
+        let stale_timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+        let (_, progress) = label_for(
+            ShipView {
+                state: ShipSnapshotState::Loitering {
+                    position: [0.0, 0.0, 0.0],
+                },
+                system: None,
+            },
+            Some(stale_timing),
+            GameClock::new(5),
+            &mut world,
+        );
+        assert_eq!(progress, None);
     }
 }
