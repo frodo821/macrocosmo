@@ -1719,6 +1719,12 @@ fn draw_main_panels_system(
         selection.ui_registry.as_mut().map(|r| &mut **r),
         &target_harbours,
         ship_is_docked_at_harbour,
+        // #491 (PR-3): Pass the viewing empire's KnowledgeStore so the
+        // context menu's ship-state reads flow through the projection
+        // (own ship) / snapshot (foreign ship) helper, mirroring the
+        // outline-tree fix #487 / #491 PR #2.
+        Some(knowledge),
+        Some(empire_entity),
     );
     // #389: Handle dock action from context menu
     if let Some((ship_entity, harbour_entity)) = ctx_menu_actions.dock_at {
