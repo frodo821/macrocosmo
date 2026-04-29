@@ -86,7 +86,7 @@ pub fn dispatch_queued_commands(
             continue;
         }
 
-        // #488: defensive `ShipProjection` write for the **direct
+        // #488 / #493: defensive `ShipProjection` write for the **direct
         // CommandQueue append** path (BRP `world.mutate_components`,
         // future plugins, tests, etc.). The 3 civilised dispatch sites
         // (AI outbox / Lua `request_command` / player UI) write their
@@ -101,15 +101,15 @@ pub fn dispatch_queued_commands(
         // canonical case), we leave it alone — the caller's
         // dispatch-time light-delay numbers are strictly better than
         // anything we can recompute here.
-        maybe_write_dispatcher_projection(
-            ship_entity,
-            ship,
-            &queue.commands[0],
-            ship_pos.as_array(),
-            docked_system,
-            clock.elapsed,
-            &mut projection_params,
-        );
+        //
+        // #493: the projection write is moved **inside** each per-variant
+        // validation block so it only fires after validation passes (=
+        // just before `queue.commands.remove(0)` for the dispatched
+        // command). Pre-#493 the write fired before validation, leaking
+        // a stale `intended_*` projection whenever the head command was
+        // dropped (target gone, immobile ship, no-op same-system MoveTo,
+        // ...) — the renderer would keep dashing toward a phantom target
+        // until the reconciler eventually cleared it.
 
         // Peek the head command. We only mutate the queue if this command
         // is a Phase-1 migrated variant AND passes dispatcher validation.
@@ -148,7 +148,17 @@ pub fn dispatch_queued_commands(
                     continue;
                 }
 
-                // Validation passed → emit and pop.
+                // Validation passed → write the defensive projection
+                // (#493) and emit the request.
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id: CommandId = next_id.allocate();
                 queue.commands.remove(0);
                 move_req.write(MoveRequested {
@@ -182,6 +192,16 @@ pub fn dispatch_queued_commands(
                     continue;
                 }
 
+                // Validation passed → defensive projection write (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 move_xy_req.write(MoveToCoordinatesRequested {
@@ -211,6 +231,18 @@ pub fn dispatch_queued_commands(
             } => {
                 let system = *system;
                 let stockpile_index = *stockpile_index;
+                // No per-variant validation drops; defensive projection
+                // write (#493) is a no-op for spatial-less commands but
+                // the call is uniform across variants.
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 load_req.write(LoadDeliverableRequested {
@@ -238,6 +270,16 @@ pub fn dispatch_queued_commands(
             } => {
                 let position = *position;
                 let item_index = *item_index;
+                // Spatial-less, projection write is a no-op (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 deploy_req.write(DeployDeliverableRequested {
@@ -270,6 +312,16 @@ pub fn dispatch_queued_commands(
                 let structure = *structure;
                 let minerals = *minerals;
                 let energy = *energy;
+                // Spatial-less, projection write is a no-op (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 transfer_req.write(TransferToStructureRequested {
@@ -300,6 +352,16 @@ pub fn dispatch_queued_commands(
             }
             QueuedCommand::LoadFromScrapyard { structure } => {
                 let structure = *structure;
+                // Spatial-less, projection write is a no-op (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 scrap_req.write(LoadFromScrapyardRequested {
@@ -322,6 +384,16 @@ pub fn dispatch_queued_commands(
             }
             QueuedCommand::Survey { system: target } => {
                 let target = *target;
+                // No per-variant validation; defensive projection write (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 survey_req.write(SurveyRequested {
@@ -348,6 +420,16 @@ pub fn dispatch_queued_commands(
             } => {
                 let target = *target;
                 let planet = *planet;
+                // No per-variant validation; defensive projection write (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 colonize_req.write(ColonizeRequested {
@@ -377,6 +459,16 @@ pub fn dispatch_queued_commands(
                 let target_system = *target_system;
                 let observation_duration = *observation_duration;
                 let report_mode = *report_mode;
+                // No per-variant validation; defensive projection write (#493).
+                maybe_write_dispatcher_projection(
+                    ship_entity,
+                    ship,
+                    &queue.commands[0],
+                    ship_pos.as_array(),
+                    docked_system,
+                    clock.elapsed,
+                    &mut projection_params,
+                );
                 let command_id = next_id.allocate();
                 queue.commands.remove(0);
                 scout_req.write(ScoutRequested {
@@ -437,20 +529,18 @@ pub struct ProjectionWriteParams<'w, 's> {
     /// ship entity via [`positions`].
     pub rulers:
         Query<'w, 's, (Option<&'static StationedAt>, Option<&'static AboardShip>), With<Ruler>>,
-    /// Per-system positions used for `target_system_pos` and as the
-    /// fallback for `ship_pos` (when no `ShipSnapshot` exists). The
+    /// Per-system positions used for `target_system_pos`, the fallback
+    /// for `ship_pos` (when no `ShipSnapshot` exists), AND the Ruler's
+    /// `StationedAt` lookup in [`resolve_dispatcher_pos`]. The
     /// `Without<Ship>` guard avoids overlap with the dispatcher's
-    /// mutable ship query.
+    /// mutable ship query. In practice the Ruler's location is a
+    /// `StarSystem` entity (StationedAt) or a Ship entity (AboardShip);
+    /// for `AboardShip` we fall through to `dispatcher_pos = ship_pos`
+    /// since reading a ship's `Position` here would conflict with the
+    /// dispatcher's mutable query. (#497: previously a separate
+    /// `ruler_system_positions` query of identical type — collapsed
+    /// for hygiene.)
     pub star_positions: Query<'w, 's, &'static Position, (With<StarSystem>, Without<Ship>)>,
-    /// Ruler reference position — read off whichever entity the Ruler
-    /// is stationed at / aboard. Constrained to entities **without**
-    /// `Ship` mutation locks, so we share the same `Without<Ship>`
-    /// filter as `star_positions`. In practice the Ruler's location
-    /// is a `StarSystem` entity (StationedAt) or a Ship entity
-    /// (AboardShip); for `AboardShip` we fall through to `dispatcher_pos
-    /// = ship_pos` since reading a ship's `Position` here would
-    /// conflict with the dispatcher's mutable query.
-    pub ruler_system_positions: Query<'w, 's, &'static Position, (With<StarSystem>, Without<Ship>)>,
     /// Per-empire `KnowledgeStore` — read for snapshot lookup +
     /// projection idempotency check, and mutated for the actual
     /// projection write.
@@ -696,7 +786,7 @@ fn resolve_dispatcher_pos(
         return ship_pos_arr;
     };
     if let Some(stationed) = stationed {
-        if let Ok(pos) = params.ruler_system_positions.get(stationed.system) {
+        if let Ok(pos) = params.star_positions.get(stationed.system) {
             return pos.as_array();
         }
     }
