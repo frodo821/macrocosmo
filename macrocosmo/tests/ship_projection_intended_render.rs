@@ -536,3 +536,101 @@ fn dash_pattern_varies_with_clock() {
         dash_settled
     );
 }
+
+// ---------------------------------------------------------------------------
+// #496: saturation guard — `intended_takes_effect_at` close to `i64::MAX`
+// (= release-build slip-through past the producer's `debug_assert!` in
+// `compute_ship_projection`) must NOT pin the alpha curve at the
+// dispatch-fresh ceiling forever. The renderer-side guard short-circuits
+// to the steady-state floor / settled dash pattern.
+// ---------------------------------------------------------------------------
+
+fn saturated_projection(now: i64) -> ShipProjection {
+    ShipProjection {
+        entity: Entity::PLACEHOLDER,
+        dispatched_at: now,
+        expected_arrival_at: Some(i64::MAX),
+        expected_return_at: None,
+        projected_state: ShipSnapshotState::InTransitSubLight,
+        projected_system: None,
+        intended_state: Some(ShipSnapshotState::InTransitSubLight),
+        intended_system: None,
+        intended_takes_effect_at: Some(i64::MAX),
+    }
+}
+
+#[test]
+fn intended_layer_alpha_floors_at_saturation() {
+    let proj = saturated_projection(0);
+    // Without the #496 guard, `(i64::MAX - 0) as f32` would yield
+    // ~9.22e18, the clamp would pin `fraction = 1.0`, and alpha would
+    // come back at the dispatch ceiling forever.
+    let alpha = intended_layer_alpha(&proj, 0);
+    // INTENDED_ALPHA_FLOOR is 0.3 (private to ships.rs, so reproduce
+    // the contract here): the steady-state value the helper falls
+    // back to when no in-flight curve can be computed.
+    assert!(
+        (alpha - 0.3).abs() < 1e-6,
+        "saturated takes_effect_at must collapse to floor 0.3, got {}",
+        alpha
+    );
+
+    // Same after the clock has advanced — must still be the floor, not
+    // a slowly diverging curve.
+    let alpha_later = intended_layer_alpha(&proj, 10_000);
+    assert!(
+        (alpha_later - 0.3).abs() < 1e-6,
+        "saturated takes_effect_at must remain at floor 0.3 even after clock advance, got {}",
+        alpha_later
+    );
+}
+
+#[test]
+fn intended_layer_dash_pattern_settles_at_saturation() {
+    let proj = saturated_projection(0);
+    // Without the #496 guard, the helper would produce the urgent
+    // dispatch pattern (4.0, 2.0) forever.
+    let pattern = intended_layer_dash_pattern(&proj, 0);
+    // INTENDED_DASH_AFTER_TAKES_EFFECT is (8.0, 4.0).
+    assert!(
+        (pattern.0 - 8.0).abs() < 1e-6 && (pattern.1 - 4.0).abs() < 1e-6,
+        "saturated takes_effect_at must collapse to settled (8.0, 4.0), got ({}, {})",
+        pattern.0,
+        pattern.1
+    );
+
+    let pattern_later = intended_layer_dash_pattern(&proj, 10_000);
+    assert!(
+        (pattern_later.0 - 8.0).abs() < 1e-6 && (pattern_later.1 - 4.0).abs() < 1e-6,
+        "saturated takes_effect_at must remain at settled (8.0, 4.0) after clock advance, got ({}, {})",
+        pattern_later.0,
+        pattern_later.1
+    );
+}
+
+#[test]
+fn intended_layer_helpers_unaffected_by_normal_far_future_takes_effect() {
+    // Sanity guard: a takes_effect_at well below `i64::MAX / 2` (= the
+    // saturation threshold) must NOT trigger the short-circuit — the
+    // normal interpolation curve still applies. Pick a value 100x the
+    // typical galactic light-delay (~6000 hexadies for 100 ly) but
+    // still tiny vs `i64::MAX / 2 ≈ 4.6e18`.
+    let proj = ShipProjection {
+        entity: Entity::PLACEHOLDER,
+        dispatched_at: 0,
+        expected_arrival_at: Some(1_000_000),
+        expected_return_at: None,
+        projected_state: ShipSnapshotState::InTransitSubLight,
+        projected_system: None,
+        intended_state: Some(ShipSnapshotState::InTransitSubLight),
+        intended_system: None,
+        intended_takes_effect_at: Some(600_000),
+    };
+    let alpha = intended_layer_alpha(&proj, 0);
+    // Right at dispatch should be at/near the ceiling 1.0, not floor.
+    assert!(
+        alpha > 0.9,
+        "non-saturated dispatch-tick alpha must be near ceiling 1.0, got {}",
+        alpha
+    );
+}
