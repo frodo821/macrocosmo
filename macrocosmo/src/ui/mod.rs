@@ -29,7 +29,7 @@ use crate::condition::ScopedFlags;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
 use crate::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemAttributes};
-use crate::knowledge::KnowledgeStore;
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
 use crate::modifier::ModifiedValue;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::observer::{ObserverMode, ObserverView};
@@ -1004,6 +1004,9 @@ fn draw_outline_and_tooltips_system(
         knowledge,
         player_system,
         home_system_entity,
+        // #491 PR-6: pass the viewing empire so the ship tooltip status
+        // flows through `ShipView` (own=projection, foreign=snapshot).
+        empire_entity,
     );
 }
 
@@ -1253,20 +1256,47 @@ fn draw_main_panels_system(
     const NEARBY_STRUCTURE_RADIUS_LY: f64 = 2.0;
     let nearby_structures: Vec<ship_panel::NearbyStructure> = match selection.selected_ship.0 {
         Some(ship_e) => {
+            // #491 PR-6: Route ship_pos derivation through `ShipView` so the
+            // camera centers on the projection-mediated location (own =
+            // projection, foreign = snapshot). For in-transit ships,
+            // `view.system` is the destination — semantically equivalent to
+            // the previous realtime read which used `target_system` for the
+            // Surveying / Settling branches and the in-system anchor for
+            // InSystem. Loitering coordinates flow through
+            // `ShipView::position()`.
+            //
+            // #491 PR-6 follow-up: in observer mode we want ground truth
+            // (= realtime ECS) so the omniscient view's camera centers on
+            // where the ship *actually* is, not where the player empire
+            // believes it is. Mirrors the gate pattern used in the
+            // outline-tree (#487) and ship-panel (#491 PR-2)
+            // observer-mode passes.
+            let ship_view_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
+                None
+            } else {
+                Some(knowledge)
+            };
+            let ship_view_empire: Option<Entity> = if selection.observer_mode.enabled {
+                None
+            } else {
+                Some(empire_entity)
+            };
             let ship_pos = ships_query
                 .get(ship_e)
                 .ok()
-                .and_then(|(_, _, state, _, _, _)| match &*state {
-                    ShipState::InSystem { system } => world.positions.get(*system).ok().copied(),
-                    ShipState::Loitering { position } => {
-                        Some(crate::components::Position::from(*position))
+                .and_then(|(_, ship, state, _, _, _)| {
+                    let view = crate::ui::ship_view::ship_view(
+                        ship_e,
+                        ship,
+                        &state,
+                        ship_view_knowledge,
+                        ship_view_empire,
+                    )?;
+                    if let Some(pos) = view.position() {
+                        return Some(Position::from(pos));
                     }
-                    ShipState::Surveying { target_system, .. }
-                    | ShipState::Settling {
-                        system: target_system,
-                        ..
-                    } => world.positions.get(*target_system).ok().copied(),
-                    _ => None,
+                    view.system
+                        .and_then(|sys| world.positions.get(sys).ok().copied())
                 });
             match ship_pos {
                 Some(sp) => {
@@ -2293,6 +2323,9 @@ fn draw_map_tooltips(
     knowledge: Option<&KnowledgeStore>,
     player_system: Option<Entity>,
     home_system_entity: Option<Entity>,
+    // #491 PR-6: viewing empire so the ship tooltip status can flow
+    // through `ShipView` (own=projection, foreign=snapshot).
+    viewing_empire: Option<Entity>,
 ) {
     // Don't show map tooltips if pointer is over an egui area (panel, overlay, etc.)
     if ctx.is_pointer_over_area() {
@@ -2399,16 +2432,28 @@ fn draw_map_tooltips(
                     .get(&ship.design_id)
                     .map(|d| d.name.as_str())
                     .unwrap_or(&ship.design_id);
-                let status = match &*state {
-                    ShipState::InSystem { .. } => "Docked",
-                    ShipState::SubLight { .. } => "Sub-light",
-                    ShipState::InFTL { .. } => "In FTL",
-                    ShipState::Surveying { .. } => "Surveying",
-                    ShipState::Settling { .. } => "Settling",
-                    ShipState::Refitting { .. } => "Refitting",
-                    ShipState::Loitering { .. } => "Loitering",
-                    ShipState::Scouting { .. } => "Scouting",
-                };
+                // #491 PR-6: Status word flows through `ShipView` so the
+                // tooltip is light-coherent (own=projection, foreign=
+                // snapshot). The `Sub-light` / `In FTL` distinction is
+                // preserved via `ShipSnapshotState::InTransit{SubLight,FTL}`.
+                //
+                // #491 PR-6 follow-up: use the canonical
+                // `tooltip_status_word` helper so production and the
+                // regression tests in
+                // `tests/ui_mod_map_tooltip_ftl_leak.rs` share one
+                // mapping. The two used to drift — that drift is a
+                // known FTL-leak source.
+                let view = crate::ui::ship_view::ship_view(
+                    ship_entity,
+                    ship,
+                    &state,
+                    knowledge,
+                    viewing_empire,
+                );
+                let status = view
+                    .as_ref()
+                    .map(|v| crate::ui::ship_view::tooltip_status_word(&v.state))
+                    .unwrap_or("Unknown");
                 // #478: Surface intended-trajectory state so the player
                 // can see *why* the dashed overlay is drawn from this
                 // ship.
