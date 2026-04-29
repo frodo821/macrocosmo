@@ -13,14 +13,14 @@ use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
 use crate::modifier::ModifiedValue;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
-    Cargo, CommandQueue, CourierMode, CourierRoute, DockedAt, Owner, PendingShipCommand,
-    QueuedCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, ShipStats,
-    SurveyData,
+    Cargo, CommandQueue, CourierMode, CourierRoute, DockedAt, PendingShipCommand, QueuedCommand,
+    RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, ShipStats, SurveyData,
 };
 use crate::ship_design::{HullRegistry, ShipDesignRegistry};
 use crate::time_system::GameClock;
 use crate::ui::ship_view::{
     ShipView, ShipViewProgress, ShipViewTiming, ship_view, ship_view_status_label,
+    ship_view_with_timing,
 };
 use crate::ui::{draw_modifier_breakdown, modified_value_label_with_tooltip};
 use crate::visualization::{SelectedShip, SelectedShips};
@@ -162,112 +162,6 @@ pub struct ShipStatusInfo {
     /// `ProgressBar` overlay; `fraction` is clamped to `[0.0, 1.0]` so
     /// stale clocks past `expected_tick` do not over-extend the bar.
     pub progress: Option<(i64, i64, f32)>,
-}
-
-/// #491 PR-2: Derive [`ShipViewTiming`] from a ship's projection /
-/// snapshot / realtime ECS, gated by the same own-empire / foreign /
-/// no-store ladder as [`ship_view`].
-///
-/// * **Own ship + KnowledgeStore present** → projection's
-///   `dispatched_at` / `expected_arrival_at`.
-/// * **Foreign ship + KnowledgeStore present** → snapshot's
-///   `observed_at`; `expected_tick` is `None` (snapshots don't carry
-///   remote ETAs), so progress collapses for foreign ships in transit.
-/// * **No KnowledgeStore** (early Startup) → realtime ECS departed/started
-///   tick + arrival/completion tick, matched against the view variant.
-///
-/// Mirrors the contract `ship_view` enforces — callers MUST drive
-/// `ShipView` and `ShipViewTiming` through the same data path.
-fn ship_panel_view_timing(
-    ship_entity: Entity,
-    ship: &Ship,
-    state: &ShipState,
-    view: &ShipView,
-    viewing_knowledge: Option<&KnowledgeStore>,
-    viewing_empire: Option<Entity>,
-) -> Option<ShipViewTiming> {
-    if let (Some(store), Some(viewing)) = (viewing_knowledge, viewing_empire) {
-        if let Owner::Empire(owner) = ship.owner {
-            if owner == viewing {
-                let p = store.get_projection(ship_entity)?;
-                return Some(ShipViewTiming {
-                    origin_tick: p.dispatched_at,
-                    expected_tick: p.expected_arrival_at,
-                });
-            }
-        }
-        // Foreign-ship snapshot path. `expected_tick` is unknown — the
-        // helper layer's progress gate already returns `None` when the
-        // expected tick is missing.
-        let snap = store.get_ship(ship_entity)?;
-        return Some(ShipViewTiming {
-            origin_tick: snap.observed_at,
-            expected_tick: None,
-        });
-    }
-    // Realtime ECS fallback (= no KnowledgeStore resolved). Match against
-    // the view variant so the right ECS field pair is selected.
-    match (&view.state, state) {
-        (
-            ShipSnapshotState::InTransitSubLight,
-            ShipState::SubLight {
-                departed_at,
-                arrival_at,
-                ..
-            },
-        )
-        | (
-            ShipSnapshotState::InTransitFTL,
-            ShipState::InFTL {
-                departed_at,
-                arrival_at,
-                ..
-            },
-        ) => Some(ShipViewTiming {
-            origin_tick: *departed_at,
-            expected_tick: Some(*arrival_at),
-        }),
-        (
-            ShipSnapshotState::Surveying,
-            ShipState::Surveying {
-                started_at,
-                completes_at,
-                ..
-            }
-            | ShipState::Scouting {
-                started_at,
-                completes_at,
-                ..
-            },
-        ) => Some(ShipViewTiming {
-            origin_tick: *started_at,
-            expected_tick: Some(*completes_at),
-        }),
-        (
-            ShipSnapshotState::Settling,
-            ShipState::Settling {
-                started_at,
-                completes_at,
-                ..
-            },
-        ) => Some(ShipViewTiming {
-            origin_tick: *started_at,
-            expected_tick: Some(*completes_at),
-        }),
-        (
-            ShipSnapshotState::Refitting,
-            ShipState::Refitting {
-                started_at,
-                completes_at,
-                ..
-            },
-        ) => Some(ShipViewTiming {
-            origin_tick: *started_at,
-            expected_tick: Some(*completes_at),
-        }),
-        // Steady-state / terminal — no progress timing.
-        _ => None,
-    }
 }
 
 /// #491 PR-2: Build status info from a [`ShipView`] + [`ShipViewTiming`].
@@ -678,21 +572,20 @@ pub fn draw_ship_panel(
         // empire has no entry for this ship at all" (e.g. own-ship before
         // its seed projection lands per #481), which we treat the same
         // way the outline tree does: skip the panel entirely.
-        let view = ship_view(
+        // #491 follow-up: replaced the local per-panel ladder
+        // (resolve view → resolve timing source → build timing) with the
+        // hoisted [`ship_view_with_timing`] helper. Same source-selection
+        // contract as before (own → projection, foreign → snapshot,
+        // no-store → realtime ECS), centralized in
+        // [`crate::knowledge::ship_view`].
+        let (view, view_timing_resolved) = ship_view_with_timing(
             ship_entity,
             &ship,
             &state,
             viewing_knowledge,
             viewing_empire,
         )?;
-        let view_timing = ship_panel_view_timing(
-            ship_entity,
-            &ship,
-            &state,
-            &view,
-            viewing_knowledge,
-            viewing_empire,
-        );
+        let view_timing: Option<ShipViewTiming> = Some(view_timing_resolved);
         let docked_system = if matches!(view.state, ShipSnapshotState::InSystem) {
             view.system
         } else {
@@ -730,16 +623,24 @@ pub fn draw_ship_panel(
                 }
             })
         });
+        // #491 follow-up: Master action gate. Terminal projection states
+        // ([`ShipSnapshotState::Destroyed`] / [`ShipSnapshotState::Missing`])
+        // must not surface ScrapShip / SetHomePort / Refit / Cancel actions —
+        // the player should not be able to act on a ship the empire already
+        // believes is gone. Mirrors the gate pattern used in `context_menu`
+        // (PR-3) and uses the canonical [`ShipView::is_actionable`] predicate.
+        let is_actionable = view.is_actionable();
         // #491 PR-2: Cancellation is gated on the player's *belief*
         // (= projection state). The cancel command itself still travels
         // light-delayed to the ship; this guard only decides whether the
         // button is shown. Reading realtime ECS would let the player see
         // a "Cancel" button before the projection has caught up — that's
         // the FTL leak this PR closes.
-        let is_cancellable = matches!(
-            view.state,
-            ShipSnapshotState::Surveying | ShipSnapshotState::Settling
-        );
+        let is_cancellable = is_actionable
+            && matches!(
+                view.state,
+                ShipSnapshotState::Surveying | ShipSnapshotState::Settling
+            );
         // #103: Check if ship carries unreported survey data
         let has_survey_data = survey_data.is_some();
         let survey_data_system = survey_data.map(|sd| sd.system_name.clone());
@@ -760,31 +661,47 @@ pub fn draw_ship_panel(
         // #123: Pre-compute design-based refit eligibility / cost / time so the
         // panel can present a one-button "Apply Refit" once the design has
         // moved ahead of the ship.
-        let refit_info: Option<RefitInfo> = (|| {
-            let design = design_registry.get(&ship.design_id)?;
-            if design.revision <= ship.design_revision {
-                return None;
-            }
-            let hull = hull_registry.get(&ship.hull_id)?;
-            let (cost_m, cost_e, time) = crate::ship_design::refit_cost_to_design(
-                &ship.modules,
-                design,
-                hull,
-                module_registry,
-            );
-            Some(RefitInfo {
-                target_revision: design.revision,
-                current_revision: ship.design_revision,
-                design_name: design.name.clone(),
-                cost_minerals: cost_m,
-                cost_energy: cost_e,
-                refit_time: time,
-            })
-        })();
+        //
+        // #491 follow-up: Gate computation on `is_actionable` so a terminal
+        // projection (Destroyed / Missing) skips the entire refit pipeline.
+        let refit_info: Option<RefitInfo> = if !is_actionable {
+            None
+        } else {
+            (|| {
+                let design = design_registry.get(&ship.design_id)?;
+                if design.revision <= ship.design_revision {
+                    return None;
+                }
+                let hull = hull_registry.get(&ship.hull_id)?;
+                let (cost_m, cost_e, time) = crate::ship_design::refit_cost_to_design(
+                    &ship.modules,
+                    design,
+                    hull,
+                    module_registry,
+                );
+                Some(RefitInfo {
+                    target_revision: design.revision,
+                    current_revision: ship.design_revision,
+                    design_name: design.name.clone(),
+                    cost_minerals: cost_m,
+                    cost_energy: cost_e,
+                    refit_time: time,
+                })
+            })()
+        };
         // #123: Fleet membership + per-fleet refit summary (if applicable).
         // #287 (γ-1): membership is read from `Ship.fleet` and the peer
         // `FleetMembers` component on the fleet entity.
-        let fleet_refit_summary: Option<FleetRefitSummary> = ship.fleet.and_then(|fleet_entity| {
+        //
+        // #491 follow-up: gated on `is_actionable` — a destroyed/missing
+        // flagship's panel should not present a "Refit Fleet" button even
+        // if surviving members are docked. If the player wants to refit
+        // the surviving members, they can open one of those members'
+        // panels directly.
+        let fleet_refit_summary: Option<FleetRefitSummary> = (is_actionable
+            .then_some(()))
+        .and_then(|()| ship.fleet)
+        .and_then(|fleet_entity| {
             let fleet = fleets.get(fleet_entity).ok()?;
             let members = fleet_members.get(fleet_entity).ok()?;
             let mut eligible = 0usize;

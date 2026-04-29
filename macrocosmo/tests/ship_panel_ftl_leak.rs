@@ -588,3 +588,242 @@ fn ship_panel_foreign_ship_uses_snapshot() {
         "foreign-ship snapshot has no expected_tick — progress must be None"
     );
 }
+
+// ---------------------------------------------------------------------------
+// 6. Refitting projection drives ship-panel UX (FTL-leak parity)
+// ---------------------------------------------------------------------------
+
+/// Right after dispatching a Refit command the realtime ECS may already
+/// be in `Refitting`, but the player's *belief* (= projection) still
+/// says `InSystem` until the dispatcher reconciles. The ship panel's
+/// `is_refitting` predicate (which gates the "Refitting in progress…"
+/// banner and hides the "Apply Refit" button) must read the projection,
+/// not the realtime ECS — the same FTL-leak semantics #491 closes for
+/// status-label / docked-system / cancellable.
+#[test]
+fn ship_panel_is_refitting_uses_projection() {
+    let mut app = test_app();
+    let empire = spawn_minimal_empire(&mut app);
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let ship = spawn_test_ship(app.world_mut(), "Explorer-1", empire, home);
+
+    // Pre-reconcile: projection still says InSystem (player believes ship
+    // is docked; refit hasn't visibly started yet).
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: Some(8),
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: Some(ShipSnapshotState::Refitting),
+            intended_system: Some(home),
+            intended_takes_effect_at: Some(2),
+        });
+    }
+    // Realtime advances ahead — refit has begun.
+    set_ship_state(
+        app.world_mut(),
+        ship,
+        ShipState::Refitting {
+            system: home,
+            started_at: 0,
+            completes_at: 8,
+            new_modules: Vec::new(),
+            target_revision: 1,
+        },
+    );
+
+    fn is_refitting_now(app: &App, ship: Entity, empire: Entity) -> bool {
+        let store = snapshot_knowledge(app, empire);
+        let ship_ref = app.world().entity(ship);
+        let ship_comp = ship_ref.get::<Ship>().expect("Ship");
+        let state = ship_ref.get::<ShipState>().expect("ShipState");
+        let view = ship_view(ship, ship_comp, state, Some(&store), Some(empire)).expect("view");
+        matches!(view.state, ShipSnapshotState::Refitting)
+    }
+
+    assert!(
+        !is_refitting_now(&app, ship, empire),
+        "FTL-leak regression: 'Refitting in progress' banner must not show \
+         while projection still says InSystem"
+    );
+
+    // Once the projection reconciles to Refitting, the panel switches over.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: Some(8),
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::Refitting,
+            projected_system: Some(home),
+            intended_state: Some(ShipSnapshotState::Refitting),
+            intended_system: Some(home),
+            intended_takes_effect_at: Some(2),
+        });
+    }
+    assert!(
+        is_refitting_now(&app, ship, empire),
+        "Refitting banner must appear once projection reconciles to Refitting"
+    );
+
+    // While in Refitting, the status label says "Refitting at <home>" with
+    // a meaningful progress bar driven by the projection's dispatch /
+    // arrival ticks.
+    let store = snapshot_knowledge(&app, empire);
+    let ship_ref = app.world().entity(ship);
+    let ship_comp = ship_ref.get::<Ship>().expect("Ship").clone();
+    let state = ship_ref.get::<ShipState>().expect("ShipState").clone();
+    let view = ship_view(ship, &ship_comp, &state, Some(&store), Some(empire)).expect("view");
+    let timing = {
+        let p = store.get_projection(ship).expect("projection");
+        macrocosmo::ui::ship_view::ShipViewTiming {
+            origin_tick: p.dispatched_at,
+            expected_tick: p.expected_arrival_at,
+        }
+    };
+    let info = run_status_label(&mut app, &view, Some(timing), 4);
+    assert!(
+        info.label.contains("Refitting"),
+        "label must reflect Refitting state. Got: {:?}",
+        info.label
+    );
+    assert!(
+        info.label.contains("Home"),
+        "label must name the refit system. Got: {:?}",
+        info.label
+    );
+    let progress = info.progress.expect("Refitting must produce progress");
+    assert_eq!(progress.0, 4, "elapsed = clock(4) - dispatched_at(0)");
+    assert_eq!(progress.1, 8, "total = expected_arrival(8) - dispatched_at(0)");
+    assert!(
+        (progress.2 - 0.5).abs() < 1e-6,
+        "fraction = elapsed / total = 0.5"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 7. Terminal-state actionable guard via ShipView::is_actionable
+// ---------------------------------------------------------------------------
+
+/// A ship whose own-empire projection has collapsed to `Destroyed` must
+/// not surface ScrapShip / SetHomePort / Refit / Cancel actions —
+/// `ShipView::is_actionable()` is the canonical predicate panels gate
+/// on. This test pins that the projection-driven view returns `false`
+/// from `is_actionable` for terminal states, which is the one input
+/// `ship_panel` reads to disable the entire actions block.
+#[test]
+fn ship_panel_destroyed_projection_is_not_actionable() {
+    let mut app = test_app();
+    let empire = spawn_minimal_empire(&mut app);
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let ship = spawn_test_ship(app.world_mut(), "Explorer-1", empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::Destroyed,
+            projected_system: None,
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+    // Realtime ECS state is irrelevant — the projection drives the gate.
+    set_ship_state(app.world_mut(), ship, ShipState::InSystem { system: home });
+
+    let store = snapshot_knowledge(&app, empire);
+    let ship_ref = app.world().entity(ship);
+    let ship_comp = ship_ref.get::<Ship>().expect("Ship").clone();
+    let state = ship_ref.get::<ShipState>().expect("ShipState").clone();
+    let view =
+        ship_view(ship, &ship_comp, &state, Some(&store), Some(empire)).expect("Destroyed view");
+
+    assert!(
+        !view.is_actionable(),
+        "Destroyed projection must report is_actionable() == false; \
+         ship_panel uses this to skip ScrapShip / SetHomePort / Refit / \
+         Cancel buttons."
+    );
+}
+
+#[test]
+fn ship_panel_missing_projection_is_not_actionable() {
+    let mut app = test_app();
+    let empire = spawn_minimal_empire(&mut app);
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let ship = spawn_test_ship(app.world_mut(), "Explorer-1", empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::Missing,
+            projected_system: None,
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+    let store = snapshot_knowledge(&app, empire);
+    let ship_ref = app.world().entity(ship);
+    let ship_comp = ship_ref.get::<Ship>().expect("Ship").clone();
+    let state = ship_ref.get::<ShipState>().expect("ShipState").clone();
+    let view = ship_view(ship, &ship_comp, &state, Some(&store), Some(empire)).expect("view");
+
+    assert!(
+        !view.is_actionable(),
+        "Missing projection must report is_actionable() == false"
+    );
+}
+
+/// Sanity: a healthy `InSystem` projection IS actionable — the panel
+/// must surface ScrapShip / SetHomePort / Refit / Cancel as usual.
+#[test]
+fn ship_panel_in_system_projection_is_actionable() {
+    let mut app = test_app();
+    let empire = spawn_minimal_empire(&mut app);
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let ship = spawn_test_ship(app.world_mut(), "Explorer-1", empire, home);
+
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+    let store = snapshot_knowledge(&app, empire);
+    let ship_ref = app.world().entity(ship);
+    let ship_comp = ship_ref.get::<Ship>().expect("Ship").clone();
+    let state = ship_ref.get::<ShipState>().expect("ShipState").clone();
+    let view = ship_view(ship, &ship_comp, &state, Some(&store), Some(empire)).expect("view");
+
+    assert!(
+        view.is_actionable(),
+        "InSystem projection must report is_actionable() == true"
+    );
+}
