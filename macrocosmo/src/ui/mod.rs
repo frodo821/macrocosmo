@@ -1697,6 +1697,19 @@ fn draw_main_panels_system(
     if !selected_ship_is_own {
         selection.context_menu.open = false;
     }
+    // #491 (PR-3) Stage-2: Light-coherent ShipView routing — pass the
+    // viewing empire's `KnowledgeStore` (own ship → projection, foreign
+    // ship → snapshot) and entity to the context menu. Observer mode
+    // currently passes `None` for the store to fall through to realtime
+    // ECS (= ground truth); see #499 for the staged migration to
+    // empire-view-as-light-coherent. Mirrors the gate pattern used in
+    // `draw_outline_and_tooltips_system` and the ship-panel sub-PR
+    // (#491 PR-2).
+    let context_menu_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
+        None
+    } else {
+        Some(knowledge)
+    };
     let ctx_menu_actions = context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,
@@ -1723,7 +1736,7 @@ fn draw_main_panels_system(
         // context menu's ship-state reads flow through the projection
         // (own ship) / snapshot (foreign ship) helper, mirroring the
         // outline-tree fix #487 / #491 PR #2.
-        Some(knowledge),
+        context_menu_knowledge,
         Some(empire_entity),
     );
     // #389: Handle dock action from context menu

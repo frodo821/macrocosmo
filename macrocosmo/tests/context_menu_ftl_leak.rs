@@ -414,3 +414,139 @@ fn context_menu_foreign_ship_uses_snapshot() {
     // remaining_travel is 0 — projection-mediated only.
     assert_eq!(data.remaining_travel, 0);
 }
+
+// ---------------------------------------------------------------------------
+// #491 Stage-2 follow-up: terminal-state guard via ShipView::is_actionable
+// ---------------------------------------------------------------------------
+
+/// Own-ship whose projection has collapsed to `Destroyed` must not surface
+/// a context menu — the player should not be able to dispatch MoveTo /
+/// Survey / Colonize against a ship the empire already believes is gone.
+/// `compute_context_menu_ship_data` returns `None` for terminal projection
+/// states, mirroring the missing-projection contract (= caller closes
+/// the menu).
+#[test]
+fn context_menu_destroyed_ship_returns_none() {
+    let mut world = World::new();
+    let empire = world.spawn_empty().id();
+    let home = world.spawn_empty().id();
+    let ship_entity = world.spawn_empty().id();
+    let ship = make_ship("Explorer-1", empire, home);
+
+    // Realtime ECS state is irrelevant — projection drives the gate.
+    let realtime = ShipState::InSystem { system: home };
+
+    let mut store = KnowledgeStore::default();
+    store.update_projection(ShipProjection {
+        entity: ship_entity,
+        dispatched_at: 0,
+        expected_arrival_at: None,
+        expected_return_at: None,
+        projected_state: ShipSnapshotState::Destroyed,
+        projected_system: None,
+        intended_state: None,
+        intended_system: None,
+        intended_takes_effect_at: None,
+    });
+
+    let clock = GameClock::new(5);
+    let data = compute_context_menu_ship_data(
+        ship_entity,
+        &ship,
+        &realtime,
+        &clock,
+        Some(&store),
+        Some(empire),
+    );
+
+    assert!(
+        data.is_none(),
+        "Destroyed projection must close the context menu (None), not \
+         surface a dispatchable target"
+    );
+}
+
+/// Same contract for `Missing` — the other terminal `ShipSnapshotState`
+/// variant. Covers the case where a ship has been lost from the empire's
+/// observation horizon (e.g. observation timed out).
+#[test]
+fn context_menu_missing_ship_returns_none() {
+    let mut world = World::new();
+    let empire = world.spawn_empty().id();
+    let home = world.spawn_empty().id();
+    let ship_entity = world.spawn_empty().id();
+    let ship = make_ship("Explorer-1", empire, home);
+
+    let realtime = ShipState::InSystem { system: home };
+
+    let mut store = KnowledgeStore::default();
+    store.update_projection(ShipProjection {
+        entity: ship_entity,
+        dispatched_at: 0,
+        expected_arrival_at: None,
+        expected_return_at: None,
+        projected_state: ShipSnapshotState::Missing,
+        projected_system: None,
+        intended_state: None,
+        intended_system: None,
+        intended_takes_effect_at: None,
+    });
+
+    let clock = GameClock::new(5);
+    let data = compute_context_menu_ship_data(
+        ship_entity,
+        &ship,
+        &realtime,
+        &clock,
+        Some(&store),
+        Some(empire),
+    );
+
+    assert!(
+        data.is_none(),
+        "Missing projection must close the context menu (None)"
+    );
+}
+
+/// Foreign ship whose snapshot has collapsed to `Destroyed` (= the
+/// viewing empire observed the ship's destruction). Same guard.
+#[test]
+fn context_menu_foreign_destroyed_ship_returns_none() {
+    let mut world = World::new();
+    let viewing_empire = world.spawn_empty().id();
+    let foreign_empire = world.spawn_empty().id();
+    let foreign_sys = world.spawn_empty().id();
+    let ship_entity = world.spawn_empty().id();
+    let ship = make_ship("EnemyScout", foreign_empire, foreign_sys);
+
+    let realtime = ShipState::InSystem {
+        system: foreign_sys,
+    };
+    let mut store = KnowledgeStore::default();
+    store.update_ship(ShipSnapshot {
+        entity: ship_entity,
+        name: "EnemyScout".into(),
+        design_id: "explorer_mk1".into(),
+        last_known_state: ShipSnapshotState::Destroyed,
+        last_known_system: None,
+        observed_at: 1,
+        hp: 0.0,
+        hp_max: 100.0,
+        source: ObservationSource::Direct,
+    });
+
+    let clock = GameClock::new(2);
+    let data = compute_context_menu_ship_data(
+        ship_entity,
+        &ship,
+        &realtime,
+        &clock,
+        Some(&store),
+        Some(viewing_empire),
+    );
+
+    assert!(
+        data.is_none(),
+        "Foreign-ship Destroyed snapshot must close the context menu"
+    );
+}

@@ -114,6 +114,15 @@ pub fn compute_context_menu_ship_data(
         viewing_knowledge,
         viewing_empire,
     )?;
+    // #491 Stage-2 follow-up: terminal projections (Destroyed / Missing)
+    // must not surface a context menu — the player should not be able to
+    // dispatch MoveTo / Survey / Colonize against a ship the empire
+    // already believes is gone. Return `None` so the caller closes the
+    // menu, the same outcome as a missing projection (= "menu has no
+    // valid target, bail").
+    if !view.is_actionable() {
+        return None;
+    }
     let docked_system = match view.state {
         ShipSnapshotState::InSystem => view.system,
         _ => None,
