@@ -15,9 +15,9 @@ use bevy::prelude::*;
 use macrocosmo::empire::CommsParams;
 use macrocosmo::knowledge::{
     KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PendingProjectionWrite,
-    PerceivedFact, ShipProjection, ShipProjectionWriteQueue, ShipSnapshotState,
-    SystemVisibilityMap, SystemVisibilityTier, compute_ship_projection,
-    flush_ship_projection_writes, reconcile_ship_projections,
+    PerceivedFact, SEED_DISPATCHED_AT_SENTINEL, ShipProjection, ShipProjectionWriteQueue,
+    ShipSnapshotState, SystemVisibilityMap, SystemVisibilityTier, compute_ship_projection,
+    flush_ship_projection_writes, reconcile_ship_projections, seed_own_ship_projections,
 };
 use macrocosmo::physics::light_delay_hexadies;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
@@ -602,5 +602,135 @@ fn normal_galactic_distance_does_not_saturate() {
     assert!(
         projection.expected_return_at.unwrap() < saturation_threshold,
         "500 ly must not saturate expected_return_at"
+    );
+}
+
+// ===========================================================================
+// #497 — `seed_own_ship_projections` must use the sentinel
+// `SEED_DISPATCHED_AT_SENTINEL` (= `i64::MIN`) for `dispatched_at`, NOT
+// the current `clock.elapsed`. The sentinel encodes "this projection has
+// never been dispatched against — accept any reconcile signal." Without
+// it, a post-load `Added<Ship>` re-fire would install a fresh seed with
+// `dispatched_at = clock.elapsed`, and the #484 staleness gate would
+// silently filter pre-load in-flight facts.
+// ===========================================================================
+
+#[test]
+fn seed_dispatched_at_uses_sentinel() {
+    use bevy::ecs::schedule::Schedule;
+    use macrocosmo::ship::Owner;
+
+    let mut app = test_app();
+    let s = setup_scenario(&mut app, 2.0);
+
+    // Bump the clock so we can detect "seed captured clock.elapsed"
+    // failures clearly. Pre-#497 this would have been the seed value.
+    app.world_mut().resource_mut::<GameClock>().elapsed = 1_000;
+
+    // Spawn a fresh ship — `Added<Ship>` filter will fire on the next
+    // run of `seed_own_ship_projections`.
+    let ship_b = common::spawn_test_ship(
+        app.world_mut(),
+        "Scout-B",
+        "explorer_mk1",
+        s.home,
+        [0.0, 0.0, 0.0],
+    );
+    app.world_mut()
+        .entity_mut(ship_b)
+        .get_mut::<Ship>()
+        .unwrap()
+        .owner = Owner::Empire(s.empire);
+
+    // Run the seed system in isolation so this test does not depend on
+    // any unrelated systems test_app may register.
+    let mut schedule = Schedule::default();
+    schedule.add_systems(seed_own_ship_projections);
+    schedule.run(app.world_mut());
+
+    let store = app
+        .world()
+        .entity(s.empire)
+        .get::<KnowledgeStore>()
+        .unwrap();
+    let p = store
+        .get_projection(ship_b)
+        .expect("seed must install a projection for own-empire ship");
+    assert_eq!(
+        p.dispatched_at, SEED_DISPATCHED_AT_SENTINEL,
+        "seed must use the sentinel (i64::MIN), not clock.elapsed"
+    );
+    assert_ne!(
+        p.dispatched_at, 1_000,
+        "seed must NOT capture the current clock tick (= pre-#497 behaviour)"
+    );
+}
+
+#[test]
+fn reconciler_accepts_pre_load_fact_against_seeded_projection() {
+    // Exercises the defense-in-depth angle: a seed projection's
+    // sentinel `dispatched_at` ensures the #484 staleness gate
+    // (`fact_observed_at >= projection.dispatched_at`) trivially holds
+    // for any real fact, so an in-flight fact whose `observed_at`
+    // pre-dates the load is still applied.
+    let mut app = test_app();
+    let s = setup_scenario(&mut app, 2.0);
+
+    // Install a sentinel-seeded projection with `intended_state =
+    // Surveying` so the reconciler's clear branch can fire on a
+    // matching fact.
+    {
+        let mut em = app.world_mut().entity_mut(s.empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: s.ship,
+            dispatched_at: SEED_DISPATCHED_AT_SENTINEL,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(s.home),
+            intended_state: Some(ShipSnapshotState::Surveying),
+            intended_system: Some(s.frontier),
+            intended_takes_effect_at: Some(0),
+        });
+    }
+
+    // Push a fact with `observed_at = 1` (= a "pre-load" tick — would
+    // be filtered as stale if the seed had captured a higher
+    // `dispatched_at`). The clock advances past the per-empire
+    // arrival window (= observed_at + light_delay) so the reconciler's
+    // arrival gate doesn't independently skip the fact.
+    let frontier_pos = [2.0, 0.0, 0.0];
+    push_fact(
+        &mut app,
+        KnowledgeFact::SurveyComplete {
+            event_id: None,
+            system: s.frontier,
+            system_name: "Frontier".into(),
+            detail: "pre-load fact".into(),
+            ship: s.ship,
+        },
+        frontier_pos,
+        1,
+    );
+    app.world_mut().resource_mut::<GameClock>().elapsed = 1 + light_delay_hexadies(2.0) + 50;
+    run_reconciler(&mut app);
+
+    let store = app
+        .world()
+        .entity(s.empire)
+        .get::<KnowledgeStore>()
+        .unwrap();
+    let p = store.get_projection(s.ship).unwrap();
+    // The clear-intended branch fired because the sentinel made the
+    // gate trivially true.
+    assert!(
+        p.intended_state.is_none() && p.intended_system.is_none(),
+        "sentinel seed must let the reconciler's clear branch fire on pre-load fact"
+    );
+    // Reconciler bumped dispatched_at to the fact's observed_at.
+    assert_eq!(
+        p.dispatched_at, 1,
+        "post-reconcile, seed sentinel is replaced by fact_observed_at"
     );
 }

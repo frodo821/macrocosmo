@@ -630,6 +630,27 @@ pub struct ShipProjection {
     pub intended_takes_effect_at: Option<i64>,
 }
 
+/// #497: Sentinel `dispatched_at` value used by
+/// [`seed_own_ship_projections`] to mark a projection as "never
+/// dispatched against, accept any reconcile signal".
+///
+/// Background: the #484 staleness gate in [`apply_reconciliation`]
+/// drops `intended_*` cleared from a fact only when
+/// `fact_observed_at >= projection.dispatched_at`. If a post-load
+/// `Added<Ship>` re-fire installs a fresh seed projection with
+/// `dispatched_at = clock.elapsed`, an in-flight fact whose
+/// `observed_at` pre-dates the load (= deferred PendingFactQueue
+/// entry, save-load race) would be silently filtered. The sentinel
+/// (= `i64::MIN`) makes the gate's comparison trivially true so the
+/// reconciler never rejects an old fact against a never-dispatched
+/// seed.
+///
+/// The reconciler bumps `dispatched_at` to the fact's `observed_at`
+/// after applying the reconciliation, so a seed only acts as the
+/// sentinel until the first fact lands; after that the projection
+/// behaves like any caller-written one.
+pub const SEED_DISPATCHED_AT_SENTINEL: i64 = i64::MIN;
+
 #[derive(Resource, Component, Default, Reflect)]
 #[reflect(Component, Resource)]
 pub struct KnowledgeStore {
@@ -1016,11 +1037,24 @@ pub fn flush_ship_projection_writes(
 /// `StarSystem` (test scenarios that hand-spawn detached ships), the
 /// seed is omitted silently. The first real dispatch will populate
 /// the projection with full per-command data.
+///
+/// #497: `dispatched_at` is set to [`SEED_DISPATCHED_AT_SENTINEL`]
+/// (= `i64::MIN`) rather than `clock.elapsed`. The sentinel encodes
+/// "this projection has never been dispatched against — accept any
+/// reconcile signal". Without it, a post-load `Added<Ship>` re-fire
+/// (cross-save EntityMap gap, Owner change, ...) could install a
+/// fresh seed with `dispatched_at = clock.elapsed`, which the #484
+/// staleness gate (`fact_observed_at >= dispatched_at`) would then
+/// use to silently filter out genuine in-flight facts that pre-date
+/// the load. Today the seed has `intended_state: None` so the gate
+/// short-circuits anyway, but defense-in-depth: if the seed shape
+/// ever grows an `intended_state`, the sentinel ensures the gate
+/// never spuriously rejects.
 pub fn seed_own_ship_projections(
     new_ships: Query<(Entity, &Ship), Added<Ship>>,
     star_systems: Query<(), With<StarSystem>>,
     mut empires: Query<&mut KnowledgeStore, With<Empire>>,
-    clock: Res<GameClock>,
+    _clock: Res<GameClock>,
 ) {
     if new_ships.is_empty() {
         return;
@@ -1053,7 +1087,8 @@ pub fn seed_own_ship_projections(
         }
         store.update_projection(ShipProjection {
             entity: ship_entity,
-            dispatched_at: clock.elapsed,
+            // #497: sentinel — see `SEED_DISPATCHED_AT_SENTINEL`.
+            dispatched_at: SEED_DISPATCHED_AT_SENTINEL,
             expected_arrival_at: None,
             expected_return_at: None,
             projected_state: ShipSnapshotState::InSystem,
