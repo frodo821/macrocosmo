@@ -10,6 +10,32 @@
 //!
 //! Re-exports the data shape so callers that imported from the old
 //! `ui::ship_view` location continue to compile unchanged.
+//!
+//! ## Production callers
+//!
+//! As of #491 (this prep PR), the egui-adjacent formatter helpers in
+//! this module ([`ship_view_label`], [`ship_view_progress`],
+//! [`ship_view_eta`], [`ship_view_state_supports_progress`],
+//! [`ship_view_status_label`]) have **no production callers** —
+//! they are intentionally landed ahead of the consumer panels:
+//!
+//! * PR #2 — `ship_panel`
+//! * PR #3 — `context_menu`
+//! * PR #4 — `situation_center`
+//! * PR #5 — `system_panel`
+//! * PR #6 — `ui::mod` map tooltip
+//!
+//! All current outline-tree formatting flows through the existing
+//! `outline.rs` private helpers (`snapshot_status_in_transit_label` /
+//! `snapshot_status_tooltip_label`); those will be migrated alongside
+//! the panel rewires above. Unit tests below cover the helpers
+//! exhaustively so the API freezes at a sensible shape — if PR #2..#6
+//! surface design pressure, the helpers may need to widen, at which
+//! point the consumer-side change should land in the same PR as the
+//! helper modification (do **not** post-hoc widen the API in this
+//! prep PR).
+//!
+//! Reviewers: this is *intentional* pre-landing, not dead code.
 
 use bevy::prelude::*;
 
@@ -47,6 +73,9 @@ pub struct ShipViewProgress {
     pub is_overdue: bool,
 }
 
+/// **PR #491 prep**: no production caller as of this PR; consumers land in
+/// #491 PR #2..#6.
+///
 /// #491: ETA accessor — returns the projected / observed completion
 /// tick when the panel has timing data, or `None` for open-ended /
 /// steady-state activities.
@@ -58,6 +87,9 @@ pub fn ship_view_eta(timing: Option<&ShipViewTiming>) -> Option<i64> {
     timing.and_then(|t| t.expected_tick)
 }
 
+/// **PR #491 prep**: no production caller as of this PR; consumers land in
+/// #491 PR #2..#6.
+///
 /// #491 (D-M-12 + B-NTF-1): Compute progress as a [`ShipViewProgress`].
 ///
 /// * `now < origin_tick` → `elapsed = 0`, `fraction = 0.0`,
@@ -65,6 +97,8 @@ pub fn ship_view_eta(timing: Option<&ShipViewTiming>) -> Option<i64> {
 ///   lead the local clock during reconcile.)
 /// * Mid-flight → `elapsed = now - origin_tick`,
 ///   `fraction = elapsed / total`, `is_overdue = false`.
+/// * `now == expected_tick` → just-completed: `fraction = 1.0`,
+///   `is_overdue = false` (the activity finished exactly on schedule).
 /// * `now > expected_tick` → `elapsed = now - origin_tick` (raw),
 ///   `fraction = 1.0` (clamped), `is_overdue = true`.
 /// * `expected_tick == None` → `None` (open-ended activity).
@@ -82,7 +116,10 @@ pub fn ship_view_progress(timing: Option<&ShipViewTiming>, now: i64) -> Option<S
     // Fraction uses clamped elapsed so progress bars never over-extend.
     let clamped = raw_elapsed.min(total);
     let fraction = (clamped as f32 / total as f32).clamp(0.0, 1.0);
-    let is_overdue = expected.saturating_sub(now) <= 0 && now > timing.origin_tick;
+    // #491 boundary fix: `now == expected_tick` is "just completed" —
+    // not overdue. Strict `now > expected` means the next tick after
+    // completion is the first one flagged as overdue.
+    let is_overdue = now > expected;
     Some(ShipViewProgress {
         elapsed: raw_elapsed,
         total,
@@ -91,6 +128,9 @@ pub fn ship_view_progress(timing: Option<&ShipViewTiming>, now: i64) -> Option<S
     })
 }
 
+/// **PR #491 prep**: no production caller as of this PR; consumers land in
+/// #491 PR #2..#6.
+///
 /// #491: Light-coherent status label for a [`ShipView`].
 ///
 /// Switches on `view.state` (= a [`ShipSnapshotState`]) — the projection
@@ -161,6 +201,9 @@ pub fn ship_view_label(
     }
 }
 
+/// **PR #491 prep**: no production caller as of this PR; consumers land in
+/// #491 PR #2..#6.
+///
 /// #491 (B-NTF-4): Per-state predicate for "should the panel render
 /// progress data even if the caller passed timing?".
 ///
@@ -180,6 +223,9 @@ pub fn ship_view_state_supports_progress(state: &ShipSnapshotState) -> bool {
     )
 }
 
+/// **PR #491 prep**: no production caller as of this PR; consumers land in
+/// #491 PR #2..#6.
+///
 /// #491 (D-H-8): Light-coherent status label + progress for a
 /// [`ShipView`].
 ///
@@ -285,6 +331,34 @@ mod tests {
         assert!(p.is_overdue, "now=25 past expected=10 should be overdue");
         // fraction clamped, raw elapsed retained
         assert!((p.fraction - 1.0).abs() < 1e-6);
+    }
+
+    /// #491 boundary fix: strict `now > expected` semantics. `now ==
+    /// expected` is "just completed" (not overdue); the first overdue
+    /// tick is `now == expected + 1`. Pins the off-by-one regression
+    /// flagged in adversarial review.
+    #[test]
+    fn progress_is_overdue_only_when_now_strictly_exceeds_expected() {
+        let timing = ShipViewTiming {
+            origin_tick: 0,
+            expected_tick: Some(10),
+        };
+
+        // now == expected → just completed, NOT overdue.
+        let p = ship_view_progress(Some(&timing), 10).expect("bounded => Some");
+        assert!(
+            !p.is_overdue,
+            "now == expected_tick is just-completed, must not be overdue"
+        );
+        // Fraction is 1.0 — the activity is at completion.
+        assert!((p.fraction - 1.0).abs() < 1e-6);
+
+        // now == expected + 1 → first overdue tick.
+        let p = ship_view_progress(Some(&timing), 11).expect("bounded => Some");
+        assert!(
+            p.is_overdue,
+            "now == expected_tick + 1 must flag as overdue"
+        );
     }
 
     #[test]
