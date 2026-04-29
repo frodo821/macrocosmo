@@ -153,12 +153,23 @@ pub fn realtime_state_to_snapshot(state: &ShipState) -> (ShipSnapshotState, Opti
 /// * **Foreign ship** (in normal play): read the last-known state from
 ///   the viewing empire's [`KnowledgeStore::ship_snapshots`]. Unchanged
 ///   from the pre-#487 contract (it was already snapshot-mediated).
-/// * **Observer mode** (= empire-view, viewing as another empire):
-///   identical to own-empire normal play — projection / snapshot of the
-///   **viewing empire** (= the observed empire whose perspective the
-///   player is borrowing). The caller passes the observed empire as
-///   `viewing_empire`. A separate omniscient (god-view) mode is the
-///   right way to expose realtime ground truth (#490, follow-up).
+/// * **Observer mode** (= empire-view, viewing as another empire): the
+///   *intended* contract is "treat identically to own-empire normal
+///   play — projection / snapshot of the **viewing empire**" (= the
+///   observed empire whose perspective the player is borrowing). The
+///   caller would pass the observed empire as `viewing_empire`. A
+///   separate omniscient (god-view) mode is the right way to expose
+///   realtime ground truth (#490, follow-up).
+///
+///   **Production drift**: the current `ui::mod::draw_outline_and_tooltips_system`
+///   caller passes `viewing_knowledge = None` whenever observer mode is
+///   active, which falls through to the realtime ECS path below
+///   (= ground-truth, not the empire-view contract above). This is
+///   tracked as a follow-up to #440 (observer mode design); the helper
+///   itself supports both contracts via the no-store fallback, so
+///   migrating the call site is a one-line change once the design is
+///   finalised. Tests that pin the empire-view contract still pass
+///   because they construct `viewing_knowledge = Some(...)` explicitly.
 /// * **No `KnowledgeStore` resolved** (early Startup frames before
 ///   empires are wired): fall back to realtime ECS state — there's no
 ///   light-coherent view to use yet.
