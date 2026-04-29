@@ -48,8 +48,12 @@ use crate::ui::params::system_name;
 // #491 (D-C-1): the data shape moved to `knowledge::ship_view`. Re-export
 // from this module so the existing `use crate::ui::ship_view::ShipView`
 // import sites keep working.
+//
+// #491 follow-up: also re-export `ship_view_with_timing` so panel callers
+// can drop their per-panel `(ShipView, ShipViewTiming)` ladders in favour
+// of the hoisted helper (#491 PR-2 / PR-4).
 pub use crate::knowledge::ship_view::{
-    ShipView, ShipViewTiming, realtime_state_to_snapshot, ship_view,
+    ShipView, ShipViewTiming, realtime_state_to_snapshot, ship_view, ship_view_with_timing,
 };
 
 /// #491 (D-M-12): Progress data for an in-flight or in-progress ship

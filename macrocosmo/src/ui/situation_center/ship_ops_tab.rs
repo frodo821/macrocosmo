@@ -34,11 +34,12 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use crate::galaxy::{AtSystem, Hostile, StarSystem};
-use crate::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshot, ShipSnapshotState};
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
+use crate::observer::ObserverMode;
 use crate::player::PlayerEmpire;
-use crate::ship::{Owner, Ship, ShipState};
+use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
-use crate::ui::ship_view::{ShipView, ShipViewTiming, ship_view};
+use crate::ui::ship_view::{ShipView, ShipViewTiming, ship_view_with_timing};
 
 use super::tab::{OngoingTab, TabBadge, TabMeta};
 use super::types::{Event, EventKind, EventSource, Severity};
@@ -147,113 +148,34 @@ fn resolve_player_empire(world: &World) -> Option<Entity> {
     q.iter(world).next().map(|(e, _)| e)
 }
 
-/// Build a `ShipViewTiming` from an own-empire `ShipProjection`.
-///
-/// `origin_tick = projection.dispatched_at` (= dispatcher's command
-/// tick, light-coherent with the player UI). `expected_tick =
-/// projection.expected_arrival_at`.
-fn timing_from_projection(projection: &ShipProjection) -> ShipViewTiming {
-    ShipViewTiming {
-        origin_tick: projection.dispatched_at,
-        expected_tick: projection.expected_arrival_at,
-    }
+/// #491 PR-4 follow-up: source-resolved viewing context. The
+/// situation_center collects events from the player empire's
+/// perspective by default; in observer mode we want ground truth
+/// (= realtime ECS), so we pass `None` for both the `KnowledgeStore`
+/// and the viewing empire — `ship_view_with_timing` then falls
+/// through to `realtime_state_to_snapshot`.
+struct ViewingContext<'a> {
+    knowledge: Option<&'a KnowledgeStore>,
+    empire: Option<Entity>,
 }
 
-/// Build a `ShipViewTiming` from a foreign-empire `ShipSnapshot`.
-///
-/// `origin_tick = snapshot.observed_at` (= the tick at which the
-/// viewing empire first / last learned of this state). `ShipSnapshot`
-/// does not carry an explicit ETA today; the foreign-ship progress
-/// bar therefore stays open-ended (`expected_tick = None`). When a
-/// future light-coherent ETA propagation lands this is the helper to
-/// update.
-fn timing_from_snapshot(snapshot: &ShipSnapshot) -> ShipViewTiming {
-    ShipViewTiming {
-        origin_tick: snapshot.observed_at,
-        expected_tick: None,
+fn resolve_viewing_context(world: &World) -> ViewingContext<'_> {
+    let observer_mode_enabled = world
+        .get_resource::<ObserverMode>()
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+    if observer_mode_enabled {
+        // Observer mode: omniscient view = realtime ECS = ground truth.
+        // Mirrors the gate pattern in outline-tree (#487), ship-panel
+        // (#491 PR-2), and map tooltip (#491 PR-6) observer paths.
+        return ViewingContext {
+            knowledge: None,
+            empire: None,
+        };
     }
-}
-
-/// Build a `ShipViewTiming` from the realtime ECS `ShipState` for the
-/// no-`KnowledgeStore` fallback path (early Startup before empires are
-/// wired). Equivalent to the pre-#491 behaviour.
-fn timing_from_realtime(state: &ShipState) -> ShipViewTiming {
-    match state {
-        ShipState::SubLight {
-            departed_at,
-            arrival_at,
-            ..
-        }
-        | ShipState::InFTL {
-            departed_at,
-            arrival_at,
-            ..
-        } => ShipViewTiming {
-            origin_tick: *departed_at,
-            expected_tick: Some(*arrival_at),
-        },
-        ShipState::Surveying {
-            started_at,
-            completes_at,
-            ..
-        }
-        | ShipState::Scouting {
-            started_at,
-            completes_at,
-            ..
-        }
-        | ShipState::Settling {
-            started_at,
-            completes_at,
-            ..
-        }
-        | ShipState::Refitting {
-            started_at,
-            completes_at,
-            ..
-        } => ShipViewTiming {
-            origin_tick: *started_at,
-            expected_tick: Some(*completes_at),
-        },
-        ShipState::InSystem { .. } | ShipState::Loitering { .. } => ShipViewTiming {
-            origin_tick: 0,
-            expected_tick: None,
-        },
-    }
-}
-
-/// Resolve the timing for a ship from its ShipView source path.
-///
-/// * Own ship + projection present → `timing_from_projection`
-/// * Foreign ship + snapshot present → `timing_from_snapshot`
-/// * No `KnowledgeStore` (early Startup) → `timing_from_realtime`
-///
-/// Returns `None` only when the projection / snapshot is absent in a
-/// path that should have one (caller already filters those via
-/// `ship_view` returning `None`); callers can default to "no ETA"
-/// when this happens.
-fn ship_view_timing(
-    ship_entity: Entity,
-    ship: &Ship,
-    state: &ShipState,
-    viewing_knowledge: Option<&KnowledgeStore>,
-    viewing_empire: Option<Entity>,
-) -> ShipViewTiming {
-    let Some(store) = viewing_knowledge else {
-        return timing_from_realtime(state);
-    };
-    if let Owner::Empire(owner) = ship.owner
-        && Some(owner) == viewing_empire
-    {
-        return store
-            .get_projection(ship_entity)
-            .map(timing_from_projection)
-            .unwrap_or_else(|| timing_from_realtime(state));
-    }
-    store
-        .get_ship(ship_entity)
-        .map(timing_from_snapshot)
-        .unwrap_or_else(|| timing_from_realtime(state))
+    let empire = resolve_player_empire(world);
+    let knowledge = empire.and_then(|e| world.entity(e).get::<KnowledgeStore>());
+    ViewingContext { knowledge, empire }
 }
 
 fn collect_ship_events(world: &World) -> Vec<Event> {
@@ -261,8 +183,7 @@ fn collect_ship_events(world: &World) -> Vec<Event> {
     let now = clock.elapsed;
     let hostiles = hostile_systems(world);
 
-    let viewing_empire = resolve_player_empire(world);
-    let viewing_knowledge = viewing_empire.and_then(|e| world.entity(e).get::<KnowledgeStore>());
+    let ctx = resolve_viewing_context(world);
 
     let mut buckets: HashMap<Category, Vec<Event>> = HashMap::new();
 
@@ -276,16 +197,20 @@ fn collect_ship_events(world: &World) -> Vec<Event> {
             // #491 PR-4: route the ship through the viewing empire's
             // KnowledgeStore. Own = projection, foreign = snapshot,
             // no-store = realtime fallback.
-            let Some(view) = ship_view(ship_entity, ship, state, viewing_knowledge, viewing_empire)
+            //
+            // #491 PR-4 follow-up: replaced the local
+            // `(ship_view + ship_view_timing)` two-step with the
+            // hoisted `ship_view_with_timing` helper so the ladder
+            // cannot drift from the canonical implementation in
+            // `crate::knowledge::ship_view`.
+            let Some((view, timing)) =
+                ship_view_with_timing(ship_entity, ship, state, ctx.knowledge, ctx.empire)
             else {
                 // No projection / snapshot for this ship — skip rather
                 // than render stale realtime ECS state. Mirrors the
                 // outline-tree contract (#487).
                 continue;
             };
-
-            let timing =
-                ship_view_timing(ship_entity, ship, state, viewing_knowledge, viewing_empire);
 
             let Some((category, state_label, eta, started_at)) =
                 classify_view(&view, &timing, &hostiles, now)
@@ -345,8 +270,7 @@ fn summarise_ships(world: &World) -> ShipSummary {
     let clock = world.resource::<GameClock>();
     let now = clock.elapsed;
 
-    let viewing_empire = resolve_player_empire(world);
-    let viewing_knowledge = viewing_empire.and_then(|e| world.entity(e).get::<KnowledgeStore>());
+    let ctx = resolve_viewing_context(world);
 
     if let Some(mut q) = world.try_query::<(Entity, &Ship, &ShipState)>() {
         for (ship_entity, ship, state) in q.iter(world) {
@@ -355,13 +279,14 @@ fn summarise_ships(world: &World) -> ShipSummary {
                 continue;
             }
 
-            let Some(view) = ship_view(ship_entity, ship, state, viewing_knowledge, viewing_empire)
+            // #491 PR-4 follow-up: same hoisted-helper rewire as
+            // `collect_ship_events` so the badge count and the tree
+            // contents cannot drift.
+            let Some((view, timing)) =
+                ship_view_with_timing(ship_entity, ship, state, ctx.knowledge, ctx.empire)
             else {
                 continue;
             };
-
-            let timing =
-                ship_view_timing(ship_entity, ship, state, viewing_knowledge, viewing_empire);
 
             let Some((category, _, _, _)) = classify_view(&view, &timing, &hostiles, now) else {
                 continue;

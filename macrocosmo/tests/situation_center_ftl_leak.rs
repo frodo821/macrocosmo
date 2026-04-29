@@ -536,3 +536,106 @@ fn ship_ops_tab_summary_reflects_projection() {
     let badge = tab.badge(app.world()).expect("badge");
     assert_eq!(badge.count, 3);
 }
+
+// ---------------------------------------------------------------------------
+// 6. Observer mode — ground truth (= realtime ECS) drives the classifier
+// ---------------------------------------------------------------------------
+
+/// In observer mode the player has omniscient view: the situation_center
+/// must classify ships from the realtime ECS state (ground truth), NOT
+/// the player empire's lagging projection. Mirrors the gate pattern in
+/// the outline tree (#487), ship-panel (#491 PR-2), and map tooltip
+/// (#491 PR-6) observer paths.
+///
+/// Setup: own ship dispatched to a remote system. Projection still says
+/// `InSystem`; realtime ECS already has `InFTL`. With observer mode
+/// **disabled** the tab shows "docked" (= projection); with observer
+/// mode **enabled** the tab shows "in FTL" (= realtime).
+#[test]
+fn ship_ops_tab_observer_mode_uses_realtime() {
+    use macrocosmo::observer::ObserverMode;
+
+    let mut app = test_app();
+    let empire = spawn_minimal_player_empire(&mut app);
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [50.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    let ship = spawn_test_ship(app.world_mut(), "Explorer-1", empire, home);
+
+    // Lagging projection: still believed at home.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: Some(10),
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+
+    // Realtime: ship has actually entered FTL.
+    set_ship_state(
+        app.world_mut(),
+        ship,
+        ShipState::InFTL {
+            origin_system: home,
+            destination_system: frontier,
+            departed_at: 0,
+            arrival_at: 5,
+        },
+    );
+
+    let tab = ShipOperationsTab;
+
+    // 1) Observer mode disabled (default = absent resource): classifier
+    //    follows projection. Ship is "docked" (Other), not "in FTL"
+    //    (Travel).
+    {
+        let leaves = flatten_ship_leaves(&tab.collect(app.world()));
+        let kinds: Vec<EventKind> = leaves.iter().map(|(_, k)| *k).collect();
+        assert!(
+            kinds.contains(&EventKind::Other),
+            "player-mode classifier must surface projection (Other / docked). Got: {:?}",
+            leaves
+        );
+        assert!(
+            !kinds.contains(&EventKind::Travel),
+            "player-mode classifier must NOT surface realtime FTL. Got: {:?}",
+            leaves
+        );
+    }
+
+    // 2) Observer mode enabled: classifier falls through to realtime
+    //    ECS. Ship is "in FTL" (Travel), not "docked" (Other).
+    app.world_mut().insert_resource(ObserverMode {
+        enabled: true,
+        ..Default::default()
+    });
+    {
+        let leaves = flatten_ship_leaves(&tab.collect(app.world()));
+        let kinds: Vec<EventKind> = leaves.iter().map(|(_, k)| *k).collect();
+        assert!(
+            kinds.contains(&EventKind::Travel),
+            "observer-mode classifier must surface realtime FTL (Travel / 'in FTL'). Got: {:?}",
+            leaves
+        );
+        assert!(
+            !kinds.contains(&EventKind::Other),
+            "observer-mode classifier must NOT use the lagging projection. Got: {:?}",
+            leaves
+        );
+    }
+}
