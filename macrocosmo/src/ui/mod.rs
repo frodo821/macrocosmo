@@ -1264,6 +1264,23 @@ fn draw_main_panels_system(
             // Surveying / Settling branches and the in-system anchor for
             // InSystem. Loitering coordinates flow through
             // `ShipView::position()`.
+            //
+            // #491 PR-6 follow-up: in observer mode we want ground truth
+            // (= realtime ECS) so the omniscient view's camera centers on
+            // where the ship *actually* is, not where the player empire
+            // believes it is. Mirrors the gate pattern used in the
+            // outline-tree (#487) and ship-panel (#491 PR-2)
+            // observer-mode passes.
+            let ship_view_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
+                None
+            } else {
+                Some(knowledge)
+            };
+            let ship_view_empire: Option<Entity> = if selection.observer_mode.enabled {
+                None
+            } else {
+                Some(empire_entity)
+            };
             let ship_pos = ships_query
                 .get(ship_e)
                 .ok()
@@ -1272,8 +1289,8 @@ fn draw_main_panels_system(
                         ship_e,
                         ship,
                         &state,
-                        Some(knowledge),
-                        Some(empire_entity),
+                        ship_view_knowledge,
+                        ship_view_empire,
                     )?;
                     if let Some(pos) = view.position() {
                         return Some(Position::from(pos));
@@ -2384,6 +2401,13 @@ fn draw_map_tooltips(
                 // tooltip is light-coherent (own=projection, foreign=
                 // snapshot). The `Sub-light` / `In FTL` distinction is
                 // preserved via `ShipSnapshotState::InTransit{SubLight,FTL}`.
+                //
+                // #491 PR-6 follow-up: use the canonical
+                // `tooltip_status_word` helper so production and the
+                // regression tests in
+                // `tests/ui_mod_map_tooltip_ftl_leak.rs` share one
+                // mapping. The two used to drift — that drift is a
+                // known FTL-leak source.
                 let view = crate::ui::ship_view::ship_view(
                     ship_entity,
                     ship,
@@ -2393,17 +2417,7 @@ fn draw_map_tooltips(
                 );
                 let status = view
                     .as_ref()
-                    .map(|v| match &v.state {
-                        ShipSnapshotState::InSystem => "Docked",
-                        ShipSnapshotState::InTransitSubLight => "Sub-light",
-                        ShipSnapshotState::InTransitFTL => "In FTL",
-                        ShipSnapshotState::Surveying => "Surveying",
-                        ShipSnapshotState::Settling => "Settling",
-                        ShipSnapshotState::Refitting => "Refitting",
-                        ShipSnapshotState::Loitering { .. } => "Loitering",
-                        ShipSnapshotState::Destroyed => "Destroyed",
-                        ShipSnapshotState::Missing => "Missing",
-                    })
+                    .map(|v| crate::ui::ship_view::tooltip_status_word(&v.state))
                     .unwrap_or("Unknown");
                 // #478: Surface intended-trajectory state so the player
                 // can see *why* the dashed overlay is drawn from this

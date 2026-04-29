@@ -13,29 +13,21 @@
 //!
 //! ## Production callers
 //!
-//! As of #491 (this prep PR), the egui-adjacent formatter helpers in
-//! this module ([`ship_view_label`], [`ship_view_progress`],
-//! [`ship_view_eta`], [`ship_view_state_supports_progress`],
-//! [`ship_view_status_label`]) have **no production callers** —
-//! they are intentionally landed ahead of the consumer panels:
+//! The egui-adjacent formatter helpers in this module are wired up by
+//! the consumer panels in the #491 sub-PR series:
 //!
-//! * PR #2 — `ship_panel`
-//! * PR #3 — `context_menu`
-//! * PR #4 — `situation_center`
-//! * PR #5 — `system_panel`
-//! * PR #6 — `ui::mod` map tooltip
+//! * #491 PR-2 (`ship_panel`) — `ship_view_status_label`
+//! * #491 PR-3 (`context_menu`) — `ShipView` projection routing for
+//!   docked / destination / loitering data
+//! * #491 PR-4 (`situation_center`) — ship-ops classifier reads through
+//!   `ship_view`
+//! * #491 PR-5 (`system_panel`) — pending sub-PR
+//! * #491 PR-6 (`ui::mod` map tooltip) — `tooltip_status_word`
 //!
-//! All current outline-tree formatting flows through the existing
-//! `outline.rs` private helpers (`snapshot_status_in_transit_label` /
-//! `snapshot_status_tooltip_label`); those will be migrated alongside
-//! the panel rewires above. Unit tests below cover the helpers
-//! exhaustively so the API freezes at a sensible shape — if PR #2..#6
-//! surface design pressure, the helpers may need to widen, at which
-//! point the consumer-side change should land in the same PR as the
-//! helper modification (do **not** post-hoc widen the API in this
-//! prep PR).
-//!
-//! Reviewers: this is *intentional* pre-landing, not dead code.
+//! `outline.rs` formatting still uses its own private helpers
+//! (`snapshot_status_in_transit_label` / `snapshot_status_tooltip_label`)
+//! pending its own consolidation pass; the helpers in this module are
+//! the canonical home for all *new* per-state UX strings.
 
 use bevy::prelude::*;
 
@@ -73,9 +65,6 @@ pub struct ShipViewProgress {
     pub is_overdue: bool,
 }
 
-/// **PR #491 prep**: no production caller as of this PR; consumers land in
-/// #491 PR #2..#6.
-///
 /// #491: ETA accessor — returns the projected / observed completion
 /// tick when the panel has timing data, or `None` for open-ended /
 /// steady-state activities.
@@ -87,9 +76,6 @@ pub fn ship_view_eta(timing: Option<&ShipViewTiming>) -> Option<i64> {
     timing.and_then(|t| t.expected_tick)
 }
 
-/// **PR #491 prep**: no production caller as of this PR; consumers land in
-/// #491 PR #2..#6.
-///
 /// #491 (D-M-12 + B-NTF-1): Compute progress as a [`ShipViewProgress`].
 ///
 /// * `now < origin_tick` → `elapsed = 0`, `fraction = 0.0`,
@@ -128,9 +114,6 @@ pub fn ship_view_progress(timing: Option<&ShipViewTiming>, now: i64) -> Option<S
     })
 }
 
-/// **PR #491 prep**: no production caller as of this PR; consumers land in
-/// #491 PR #2..#6.
-///
 /// #491: Light-coherent status label for a [`ShipView`].
 ///
 /// Switches on `view.state` (= a [`ShipSnapshotState`]) — the projection
@@ -201,9 +184,6 @@ pub fn ship_view_label(
     }
 }
 
-/// **PR #491 prep**: no production caller as of this PR; consumers land in
-/// #491 PR #2..#6.
-///
 /// #491 (B-NTF-4): Per-state predicate for "should the panel render
 /// progress data even if the caller passed timing?".
 ///
@@ -223,9 +203,6 @@ pub fn ship_view_state_supports_progress(state: &ShipSnapshotState) -> bool {
     )
 }
 
-/// **PR #491 prep**: no production caller as of this PR; consumers land in
-/// #491 PR #2..#6.
-///
 /// #491 (D-H-8): Light-coherent status label + progress for a
 /// [`ShipView`].
 ///
@@ -250,6 +227,34 @@ pub fn ship_view_status_label(
         None
     };
     (label, progress)
+}
+
+/// #491 PR-6 follow-up: Compact one-word status for the map tooltip.
+///
+/// Returns a stable string per [`ShipSnapshotState`] variant suitable for
+/// the galaxy-map ship tooltip's `Status: ...` line. `InTransitSubLight`
+/// and `InTransitFTL` resolve to different words because the player UX
+/// must surface the FTL/sublight distinction (#491 D-H-4 — FTL ships
+/// cannot be intercepted by game contract). Loitering coordinates and
+/// other in-transit details belong in the longer
+/// [`ship_view_status_label`] / [`ship_view_label`] strings; this helper
+/// is intentionally just one word so it fits the tooltip's status line.
+///
+/// Centralized here so the production tooltip in `ui::mod` and the
+/// regression tests in `tests/ui_mod_map_tooltip_ftl_leak.rs` share one
+/// canonical mapping — drift between them is a known FTL-leak source.
+pub fn tooltip_status_word(state: &ShipSnapshotState) -> &'static str {
+    match state {
+        ShipSnapshotState::InSystem => "Docked",
+        ShipSnapshotState::InTransitSubLight => "Sub-light",
+        ShipSnapshotState::InTransitFTL => "In FTL",
+        ShipSnapshotState::Surveying => "Surveying",
+        ShipSnapshotState::Settling => "Settling",
+        ShipSnapshotState::Refitting => "Refitting",
+        ShipSnapshotState::Loitering { .. } => "Loitering",
+        ShipSnapshotState::Destroyed => "Destroyed",
+        ShipSnapshotState::Missing => "Missing",
+    }
 }
 
 // ---------------------------------------------------------------------------

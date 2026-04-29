@@ -120,23 +120,13 @@ fn snapshot_knowledge(app: &App, empire: Entity) -> KnowledgeStore {
     out
 }
 
-/// Reproduce the `ui::mod` map tooltip status string mapping (the inline
-/// match in `draw_map_tooltips`). Pins the contract that
-/// `InTransitSubLight` and `InTransitFTL` produce different tooltip
-/// words.
-fn tooltip_status_word(state: &ShipSnapshotState) -> &'static str {
-    match state {
-        ShipSnapshotState::InSystem => "Docked",
-        ShipSnapshotState::InTransitSubLight => "Sub-light",
-        ShipSnapshotState::InTransitFTL => "In FTL",
-        ShipSnapshotState::Surveying => "Surveying",
-        ShipSnapshotState::Settling => "Settling",
-        ShipSnapshotState::Refitting => "Refitting",
-        ShipSnapshotState::Loitering { .. } => "Loitering",
-        ShipSnapshotState::Destroyed => "Destroyed",
-        ShipSnapshotState::Missing => "Missing",
-    }
-}
+/// #491 PR-6 follow-up: the tooltip status mapping was extracted into
+/// the canonical `ui::ship_view::tooltip_status_word` helper so
+/// production and tests share one source of truth. This re-export is a
+/// thin alias so the rest of the file (and any future tests) can keep
+/// reading like the local helper without drifting from the production
+/// mapping.
+use macrocosmo::ui::ship_view::tooltip_status_word;
 
 // ---------------------------------------------------------------------------
 // 1. Map tooltip — projection-mediated for own ships
@@ -574,5 +564,93 @@ fn ship_pos_loitering_uses_position_accessor() {
         tooltip_status_word(&view.state),
         "Loitering",
         "Loitering tooltip word"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 6. Observer-mode camera centering uses realtime ECS (= ground truth)
+// ---------------------------------------------------------------------------
+
+/// In observer mode the player has omniscient view = ground truth.
+/// `ship_pos` for camera centering must therefore fall through to
+/// realtime ECS (= passing `None` for `KnowledgeStore`), not the player
+/// empire's projection. Mirrors the gate pattern used in the outline
+/// (#487) and ship-panel (#491 PR-2) observer-mode passes.
+///
+/// This pins the contract that calling `ship_view` with
+/// `viewing_knowledge = None` falls through to `realtime_state_to_snapshot`
+/// — the helper used by the observer-mode branch in `ui::mod`'s
+/// `ship_pos` derivation.
+#[test]
+fn ship_pos_observer_mode_uses_realtime_fallback() {
+    let mut app = test_app();
+    let empire = spawn_minimal_empire(&mut app);
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [50.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let ship = spawn_test_ship(app.world_mut(), "Explorer-1", empire, home);
+
+    // Projection: lagging belief — still says InSystem.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 0,
+            expected_arrival_at: Some(10),
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+    // Realtime: ship has actually entered FTL toward Frontier.
+    set_ship_state(
+        app.world_mut(),
+        ship,
+        ShipState::InFTL {
+            origin_system: home,
+            destination_system: frontier,
+            departed_at: 0,
+            arrival_at: 5,
+        },
+    );
+
+    let ship_ref = app.world().entity(ship);
+    let ship_comp = ship_ref.get::<Ship>().expect("Ship").clone();
+    let state = ship_ref.get::<ShipState>().expect("ShipState").clone();
+
+    // Player-mode (= projection): should anchor at home (= the lagging
+    // belief — what the player sees).
+    let player_view =
+        ship_view(ship, &ship_comp, &state, Some(&snapshot_knowledge(&app, empire)), Some(empire))
+            .expect("player view");
+    assert_eq!(
+        player_view.system,
+        Some(home),
+        "player-mode camera anchors on the projection's InSystem (= belief)"
+    );
+
+    // Observer-mode (= None for store): falls through to realtime ECS,
+    // anchors on the actual FTL destination.
+    let observer_view = ship_view(ship, &ship_comp, &state, None, None)
+        .expect("observer-mode realtime fallback produces a view");
+    assert_eq!(
+        observer_view.state,
+        ShipSnapshotState::InTransitFTL,
+        "observer-mode collapses realtime ECS InFTL to InTransitFTL"
+    );
+    assert_eq!(
+        observer_view.system,
+        Some(frontier),
+        "observer-mode camera anchors on the realtime FTL destination, not the projection's home"
     );
 }
