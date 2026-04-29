@@ -508,3 +508,113 @@ fn outline_observer_mode_is_light_coherent_via_projection() {
         "observer mode must hide realtime ECS state — In-Transit section must be empty when projection says InSystem"
     );
 }
+
+/// #491 / #495 sibling: the existing
+/// `outline_observer_mode_is_light_coherent_via_projection` test only
+/// exercises `viewing_empire == ship.owner` (= observer is looking at
+/// their own ship), which collapses to the own-ship projection path
+/// and degenerates the foreign-ship branch. This test pins the
+/// *foreign-ship-as-observer* contract: an observer that is NOT the
+/// ship's owner must read the snapshot side, ignoring realtime ECS
+/// ground truth.
+#[test]
+fn outline_observer_mode_foreign_ship_uses_snapshot() {
+    let mut app = test_app();
+
+    // Viewing empire — the empire whose KnowledgeStore we read.
+    let viewing_empire = spawn_minimal_empire(&mut app);
+
+    // Foreign empire — owns the ship under test. Spawned as a separate
+    // entity (does not need PlayerEmpire / SystemVisibilityMap on the
+    // observer-side path; we only read the viewing empire's store).
+    let foreign_empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Foreign".into(),
+            },
+            Faction {
+                id: "foreign".into(),
+                name: "Foreign".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            macrocosmo::knowledge::SystemVisibilityMap::default(),
+        ))
+        .id();
+
+    let last_known_sys = spawn_test_system(
+        app.world_mut(),
+        "LastKnownSys",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let realtime_dest = spawn_test_system(
+        app.world_mut(),
+        "RealtimeDest",
+        [200.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    let ship = spawn_test_ship(app.world_mut(), "EnemyShip", foreign_empire, last_known_sys);
+
+    // Viewing empire's snapshot of the foreign ship: last seen at
+    // sub-light transit (= light-delayed observation of an earlier
+    // command). The realtime ECS will then advance to FTL — observer
+    // mode must NOT see that.
+    {
+        let mut em = app.world_mut().entity_mut(viewing_empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_ship(ShipSnapshot {
+            entity: ship,
+            name: "EnemyShip".into(),
+            design_id: "explorer_mk1".into(),
+            last_known_state: ShipSnapshotState::InTransitSubLight,
+            last_known_system: Some(last_known_sys),
+            observed_at: 0,
+            hp: 100.0,
+            hp_max: 100.0,
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // Realtime: the ship has actually entered FTL (post-snapshot
+    // ground truth). The observer-as-foreign path must hide this.
+    set_ship_state(
+        app.world_mut(),
+        ship,
+        ShipState::InFTL {
+            origin_system: last_known_sys,
+            destination_system: realtime_dest,
+            departed_at: 1,
+            arrival_at: 5,
+        },
+    );
+
+    // Observer: viewing as `viewing_empire`, looking at a ship owned
+    // by `foreign_empire`. Must read the snapshot path, NOT realtime.
+    let view = run_outline_view(&mut app, ship, Some(viewing_empire))
+        .expect("foreign-ship-as-observer must produce a view via snapshot");
+    assert_eq!(
+        view.state,
+        ShipSnapshotState::InTransitSubLight,
+        "foreign-ship observer view must reflect snapshot (sublight), \
+         not realtime FTL ground truth"
+    );
+    assert_eq!(view.system, Some(last_known_sys));
+
+    // Foreign ships are filtered out of the In-Transit section by
+    // design (they have their own UI surface) — keep the existing
+    // contract from `outline_foreign_ship_uses_snapshot`.
+    let entries = run_in_transit(&mut app, Some(viewing_empire));
+    assert!(
+        entries.iter().all(|e| e.entity != ship),
+        "foreign ship must not appear in In-Transit (observer mode). Entries: {:?}",
+        entries
+    );
+}
