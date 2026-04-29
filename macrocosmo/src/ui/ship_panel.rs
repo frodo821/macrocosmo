@@ -9,15 +9,19 @@ use crate::colony::{
 };
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
 use crate::modifier::ModifiedValue;
-use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
-    Cargo, CommandQueue, CourierMode, CourierRoute, DockedAt, PendingShipCommand, QueuedCommand,
-    RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, ShipStats, SurveyData,
+    Cargo, CommandQueue, CourierMode, CourierRoute, DockedAt, Owner, PendingShipCommand,
+    QueuedCommand, RulesOfEngagement, Ship, ShipHitpoints, ShipModifiers, ShipState, ShipStats,
+    SurveyData,
 };
 use crate::ship_design::{HullRegistry, ShipDesignRegistry};
 use crate::time_system::GameClock;
+use crate::ui::ship_view::{
+    ShipView, ShipViewProgress, ShipViewTiming, ship_view, ship_view_status_label,
+};
 use crate::ui::{draw_modifier_breakdown, modified_value_label_with_tooltip};
 use crate::visualization::{SelectedShip, SelectedShips};
 
@@ -145,154 +149,147 @@ pub struct NearbyStructure {
 pub(super) use crate::ui::params::system_name;
 
 /// Collected status information for the ship panel UI.
-struct ShipStatusInfo {
-    label: String,
-    /// Progress fraction 0.0..=1.0, if applicable.
-    progress: Option<(i64, i64, f32)>, // (elapsed, total, fraction)
+///
+/// #491 PR-2: Public-in-crate so the FTL-leak regression tests can read
+/// the extracted label / progress without driving the egui pipeline.
+#[derive(Clone, Debug)]
+pub struct ShipStatusInfo {
+    pub label: String,
+    /// Progress (elapsed, total, fraction). `None` for steady-state /
+    /// terminal states (InSystem / Loitering / Destroyed / Missing).
+    ///
+    /// `elapsed` and `total` are surfaced in raw form for the egui
+    /// `ProgressBar` overlay; `fraction` is clamped to `[0.0, 1.0]` so
+    /// stale clocks past `expected_tick` do not over-extend the bar.
+    pub progress: Option<(i64, i64, f32)>,
 }
 
-/// Build a detailed status string (and optional progress) from a ShipState.
-fn build_status_info(
+/// #491 PR-2: Derive [`ShipViewTiming`] from a ship's projection /
+/// snapshot / realtime ECS, gated by the same own-empire / foreign /
+/// no-store ladder as [`ship_view`].
+///
+/// * **Own ship + KnowledgeStore present** → projection's
+///   `dispatched_at` / `expected_arrival_at`.
+/// * **Foreign ship + KnowledgeStore present** → snapshot's
+///   `observed_at`; `expected_tick` is `None` (snapshots don't carry
+///   remote ETAs), so progress collapses for foreign ships in transit.
+/// * **No KnowledgeStore** (early Startup) → realtime ECS departed/started
+///   tick + arrival/completion tick, matched against the view variant.
+///
+/// Mirrors the contract `ship_view` enforces — callers MUST drive
+/// `ShipView` and `ShipViewTiming` through the same data path.
+fn ship_panel_view_timing(
+    ship_entity: Entity,
+    ship: &Ship,
     state: &ShipState,
+    view: &ShipView,
+    viewing_knowledge: Option<&KnowledgeStore>,
+    viewing_empire: Option<Entity>,
+) -> Option<ShipViewTiming> {
+    if let (Some(store), Some(viewing)) = (viewing_knowledge, viewing_empire) {
+        if let Owner::Empire(owner) = ship.owner {
+            if owner == viewing {
+                let p = store.get_projection(ship_entity)?;
+                return Some(ShipViewTiming {
+                    origin_tick: p.dispatched_at,
+                    expected_tick: p.expected_arrival_at,
+                });
+            }
+        }
+        // Foreign-ship snapshot path. `expected_tick` is unknown — the
+        // helper layer's progress gate already returns `None` when the
+        // expected tick is missing.
+        let snap = store.get_ship(ship_entity)?;
+        return Some(ShipViewTiming {
+            origin_tick: snap.observed_at,
+            expected_tick: None,
+        });
+    }
+    // Realtime ECS fallback (= no KnowledgeStore resolved). Match against
+    // the view variant so the right ECS field pair is selected.
+    match (&view.state, state) {
+        (
+            ShipSnapshotState::InTransitSubLight,
+            ShipState::SubLight {
+                departed_at,
+                arrival_at,
+                ..
+            },
+        )
+        | (
+            ShipSnapshotState::InTransitFTL,
+            ShipState::InFTL {
+                departed_at,
+                arrival_at,
+                ..
+            },
+        ) => Some(ShipViewTiming {
+            origin_tick: *departed_at,
+            expected_tick: Some(*arrival_at),
+        }),
+        (
+            ShipSnapshotState::Surveying,
+            ShipState::Surveying {
+                started_at,
+                completes_at,
+                ..
+            }
+            | ShipState::Scouting {
+                started_at,
+                completes_at,
+                ..
+            },
+        ) => Some(ShipViewTiming {
+            origin_tick: *started_at,
+            expected_tick: Some(*completes_at),
+        }),
+        (
+            ShipSnapshotState::Settling,
+            ShipState::Settling {
+                started_at,
+                completes_at,
+                ..
+            },
+        ) => Some(ShipViewTiming {
+            origin_tick: *started_at,
+            expected_tick: Some(*completes_at),
+        }),
+        (
+            ShipSnapshotState::Refitting,
+            ShipState::Refitting {
+                started_at,
+                completes_at,
+                ..
+            },
+        ) => Some(ShipViewTiming {
+            origin_tick: *started_at,
+            expected_tick: Some(*completes_at),
+        }),
+        // Steady-state / terminal — no progress timing.
+        _ => None,
+    }
+}
+
+/// #491 PR-2: Build status info from a [`ShipView`] + [`ShipViewTiming`].
+///
+/// Replaces the legacy `build_status_info`'s realtime [`ShipState`]
+/// match with the projection-mediated `ship_view_status_label` helper.
+/// The label no longer carries the legacy `(a/b hd, p%)` suffix —
+/// progress digits are rendered exclusively by the egui
+/// `ProgressBar`'s `text(...)` overlay (#491 D-H-8 / D-M-10).
+///
+/// Visible to crate-internal tests so the FTL-leak regression suite can
+/// assert label / progress without driving the egui pipeline.
+pub fn build_status_info_from_view(
+    view: &ShipView,
+    timing: Option<ShipViewTiming>,
     clock: &GameClock,
     stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
 ) -> ShipStatusInfo {
-    match state {
-        ShipState::InSystem { system } => ShipStatusInfo {
-            label: format!("Docked at {}", system_name(*system, stars)),
-            progress: None,
-        },
-        ShipState::SubLight {
-            target_system,
-            departed_at,
-            arrival_at,
-            ..
-        } => {
-            let total = (arrival_at - departed_at).max(1);
-            let elapsed = (clock.elapsed - departed_at).clamp(0, total);
-            let pct = elapsed as f32 / total as f32;
-            let dest_name = target_system
-                .map(|e| system_name(e, stars))
-                .unwrap_or_else(|| "deep space".to_string());
-            ShipStatusInfo {
-                label: format!(
-                    "Moving to {} ({}/{} hd, {:.0}%)",
-                    dest_name,
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                progress: Some((elapsed, total, pct)),
-            }
-        }
-        ShipState::InFTL {
-            destination_system,
-            departed_at,
-            arrival_at,
-            ..
-        } => {
-            let total = (arrival_at - departed_at).max(1);
-            let elapsed = (clock.elapsed - departed_at).clamp(0, total);
-            let pct = elapsed as f32 / total as f32;
-            ShipStatusInfo {
-                label: format!(
-                    "FTL to {} ({}/{} hd, {:.0}%)",
-                    system_name(*destination_system, stars),
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                progress: Some((elapsed, total, pct)),
-            }
-        }
-        ShipState::Surveying {
-            target_system,
-            started_at,
-            completes_at,
-        } => {
-            let total = (completes_at - started_at).max(1);
-            let elapsed = (clock.elapsed - started_at).clamp(0, total);
-            let pct = elapsed as f32 / total as f32;
-            ShipStatusInfo {
-                label: format!(
-                    "Surveying {} ({}/{} hd, {:.0}%)",
-                    system_name(*target_system, stars),
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                progress: Some((elapsed, total, pct)),
-            }
-        }
-        ShipState::Settling {
-            system,
-            started_at,
-            completes_at,
-            ..
-        } => {
-            let total = (completes_at - started_at).max(1);
-            let elapsed = (clock.elapsed - started_at).clamp(0, total);
-            let pct = elapsed as f32 / total as f32;
-            ShipStatusInfo {
-                label: format!(
-                    "Settling {} ({}/{} hd, {:.0}%)",
-                    system_name(*system, stars),
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                progress: Some((elapsed, total, pct)),
-            }
-        }
-        ShipState::Refitting {
-            system,
-            started_at,
-            completes_at,
-            ..
-        } => {
-            let total = (completes_at - started_at).max(1);
-            let elapsed = (clock.elapsed - started_at).clamp(0, total);
-            let pct = elapsed as f32 / total as f32;
-            ShipStatusInfo {
-                label: format!(
-                    "Refitting at {} ({}/{} hd, {:.0}%)",
-                    system_name(*system, stars),
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                progress: Some((elapsed, total, pct)),
-            }
-        }
-        // #185: Loitering at deep-space coordinates.
-        ShipState::Loitering { position } => ShipStatusInfo {
-            label: format!(
-                "Loitering at ({:.2}, {:.2}, {:.2})",
-                position[0], position[1], position[2]
-            ),
-            progress: None,
-        },
-        // #217: Scouting — display like Surveying but labelled "Scouting".
-        ShipState::Scouting {
-            target_system,
-            started_at,
-            completes_at,
-            ..
-        } => {
-            let total = (completes_at - started_at).max(1);
-            let elapsed = (clock.elapsed - started_at).clamp(0, total);
-            let pct = elapsed as f32 / total as f32;
-            ShipStatusInfo {
-                label: format!(
-                    "Scouting {} ({}/{} hd, {:.0}%)",
-                    system_name(*target_system, stars),
-                    elapsed,
-                    total,
-                    pct * 100.0
-                ),
-                progress: Some((elapsed, total, pct)),
-            }
-        }
+    let (label, progress) = ship_view_status_label(view, timing, clock, stars);
+    ShipStatusInfo {
+        label,
+        progress: progress.map(|p: ShipViewProgress| (p.elapsed, p.total, p.fraction)),
     }
 }
 
@@ -645,6 +642,13 @@ pub fn draw_ship_panel(
     ship_modifiers_query: &Query<&ShipModifiers>,
     // #432: When `false`, command buttons are suppressed (foreign ship).
     is_own_ship: bool,
+    // #491 PR-2: Light-coherent rendering — own-empire ships flow through
+    // the viewing empire's projection table, foreign ships through
+    // snapshots, and the no-store fallback (early Startup) reads realtime
+    // ECS. `viewing_knowledge` / `viewing_empire` form the same
+    // (store, empire) pair that `outline.rs` already routes through.
+    viewing_knowledge: Option<&KnowledgeStore>,
+    viewing_empire: Option<Entity>,
 ) -> ShipPanelActions {
     // #407: Multi-select panel — when 2+ ships selected, show aggregate view
     // instead of individual ship details.
@@ -662,8 +666,35 @@ pub fn draw_ship_panel(
     // Collect ship data into locals first, then draw UI, then apply mutations
     let ship_data = selected_ship.0.and_then(|ship_entity| {
         let (_, ship, state, cargo, ship_hp, survey_data) = ships_query.get(ship_entity).ok()?;
-        let docked_system = if let ShipState::InSystem { system } = &*state {
-            Some(*system)
+        // #491 PR-2: Resolve the light-coherent view of the ship up front.
+        // All downstream `docked_system` / `is_cancellable` / `is_refitting`
+        // / fleet refit gating reads through this view rather than the
+        // realtime ECS [`ShipState`], closing the FTL-leak window in the
+        // ship panel (epic #473 / sibling fixes #477 + #487).
+        //
+        // Falls back to a realtime collapse when no projection / snapshot
+        // exists — the `ship_view` helper handles that case via
+        // `realtime_state_to_snapshot`. `None` here means "the viewing
+        // empire has no entry for this ship at all" (e.g. own-ship before
+        // its seed projection lands per #481), which we treat the same
+        // way the outline tree does: skip the panel entirely.
+        let view = ship_view(
+            ship_entity,
+            &ship,
+            &state,
+            viewing_knowledge,
+            viewing_empire,
+        )?;
+        let view_timing = ship_panel_view_timing(
+            ship_entity,
+            &ship,
+            &state,
+            &view,
+            viewing_knowledge,
+            viewing_empire,
+        );
+        let docked_system = if matches!(view.state, ShipSnapshotState::InSystem) {
+            view.system
         } else {
             None
         };
@@ -672,7 +703,7 @@ pub fn draw_ship_panel(
         // item without re-borrowing cargo mutably.
         let cargo_items: Vec<crate::ship::CargoItem> =
             cargo.map(|c| c.items.clone()).unwrap_or_default();
-        let status_info = build_status_info(&state, clock, stars);
+        let status_info = build_status_info_from_view(&view, view_timing, clock, stars);
         let queued_cmds: Vec<String> = command_queues
             .get(ship_entity)
             .ok()
@@ -699,10 +730,15 @@ pub fn draw_ship_panel(
                 }
             })
         });
-        // Check if ship is in a cancellable state (surveying or settling)
+        // #491 PR-2: Cancellation is gated on the player's *belief*
+        // (= projection state). The cancel command itself still travels
+        // light-delayed to the ship; this guard only decides whether the
+        // button is shown. Reading realtime ECS would let the player see
+        // a "Cancel" button before the projection has caught up — that's
+        // the FTL leak this PR closes.
         let is_cancellable = matches!(
-            &*state,
-            ShipState::Surveying { .. } | ShipState::Settling { .. }
+            view.state,
+            ShipSnapshotState::Surveying | ShipSnapshotState::Settling
         );
         // #103: Check if ship carries unreported survey data
         let has_survey_data = survey_data.is_some();
@@ -717,7 +753,10 @@ pub fn draw_ship_panel(
         let ship_hull_id = ship.hull_id.clone();
         let ship_modules: Vec<crate::ship::EquippedModule> = ship.modules.clone();
         // #98: Is the ship refitting?
-        let is_refitting = matches!(&*state, ShipState::Refitting { .. });
+        // #491 PR-2: Routed through the view (= projection / snapshot) so
+        // the "Refitting in progress" UX matches what the player believes
+        // is happening, not the realtime ECS.
+        let is_refitting = matches!(view.state, ShipSnapshotState::Refitting);
         // #123: Pre-compute design-based refit eligibility / cost / time so the
         // panel can present a one-button "Apply Refit" once the design has
         // moved ahead of the ship.
@@ -762,7 +801,21 @@ pub fn draw_ship_panel(
                 if m_design.revision <= m_ship.design_revision {
                     continue;
                 }
-                if !matches!(&*m_state, ShipState::InSystem { .. }) {
+                // #491 PR-2: Per-member docked filter routed through the
+                // projection view — own-ship eligibility is decided on
+                // the player's belief, not realtime ECS. A member with no
+                // projection / snapshot is skipped (mirrors the outline
+                // tree's no-store / pre-seed handling).
+                let Some(m_view) = ship_view(
+                    *member,
+                    &m_ship,
+                    &m_state,
+                    viewing_knowledge,
+                    viewing_empire,
+                ) else {
+                    continue;
+                };
+                if !matches!(m_view.state, ShipSnapshotState::InSystem) {
                     continue;
                 }
                 let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {
@@ -792,18 +845,24 @@ pub fn draw_ship_panel(
         });
         // #57: Current ROE
         let current_roe = roe_query.get(ship_entity).copied().unwrap_or_default();
-        // #57: Command delay for ROE changes
+        // #57: Command delay for ROE changes.
+        //
+        // #491 PR-2: The ship's location is taken from the view —
+        // `view.system` covers both docked (= InSystem.system) and
+        // in-flight (= destination from projection's `projected_system` /
+        // snapshot's `last_known_system`) cases. Loitering / unknown
+        // collapses to `None`, matching the legacy fallback's `_ => None`.
+        //
+        // TODO (#491 follow-up): For in-flight own ships, an
+        // `estimated_position(timing, clock, origin, dest)` lerp would
+        // give a tighter light-delay estimate than treating the ship as
+        // already-at-destination. The helper is in
+        // `ShipView::estimated_position`; wiring it here requires looking
+        // up the projection's origin system (or `ship.home_port` as a
+        // proxy) and is out of scope for the panel rewire. The current
+        // semantics match the pre-rewire behaviour.
         let roe_command_delay: i64 = {
-            // Determine the system the ship is at (or heading to)
-            let ship_system = docked_system.or_else(|| match &*state {
-                ShipState::SubLight { target_system, .. } => *target_system,
-                ShipState::InFTL {
-                    destination_system, ..
-                } => Some(*destination_system),
-                ShipState::Surveying { target_system, .. } => Some(*target_system),
-                ShipState::Settling { system, .. } => Some(*system),
-                _ => None,
-            });
+            let ship_system = view.system;
             player_stationed
                 .and_then(|player_sys| {
                     let player_pos = positions.get(player_sys).ok()?;
