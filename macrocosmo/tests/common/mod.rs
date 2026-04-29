@@ -3,6 +3,11 @@
 // `use common::fixture::load_fixture;`.
 pub mod fixture;
 
+// #494: hand-crafted prior-version save byte builders.  Hoisted out
+// of `tests/region_persistence.rs` so future SAVE bumps can extend
+// the fixture set without per-test boilerplate.
+pub mod wire_format;
+
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;
