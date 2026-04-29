@@ -1306,6 +1306,20 @@ fn draw_main_panels_system(
             .unwrap_or(false)
     });
 
+    // #491 PR-2: Light-coherent ShipView routing — pass the viewing
+    // empire's `KnowledgeStore` (own ship → projection, foreign ship →
+    // snapshot) and entity to the panel. Observer mode currently passes
+    // `None` for the store to fall through to realtime ECS (= ground
+    // truth); see #499 for the staged migration to empire-view-as-light-
+    // coherent. Mirrors the pattern already in
+    // `draw_outline_and_tooltips_system` where the `knowledge` resolution
+    // applies the same observer-mode → None gate before passing through
+    // to outline / tooltip helpers.
+    let ship_panel_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
+        None
+    } else {
+        Some(knowledge)
+    };
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
@@ -1337,6 +1351,8 @@ fn draw_main_panels_system(
         &registries.hull_registry,
         &world.ship_modifiers,
         selected_ship_is_own,
+        ship_panel_knowledge,
+        Some(empire_entity),
     );
 
     // #398: In observer read-only mode, suppress all ship panel actions
