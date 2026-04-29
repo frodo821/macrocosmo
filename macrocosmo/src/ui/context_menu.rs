@@ -4,6 +4,7 @@ use bevy_egui::egui;
 use crate::colony::{Colony, SlotAssignment};
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
 use crate::physics;
 use crate::player::{AboardShip, Player, StationedAt};
 use crate::ship::{
@@ -13,6 +14,7 @@ use crate::ship_design::ShipDesignRegistry;
 use crate::technology::GlobalParams;
 use crate::time_system::GameClock;
 use crate::ui::UiElementRegistry;
+use crate::ui::ship_view::ship_view;
 use crate::visualization::{SelectedShip, SelectedShips};
 
 /// #482: Map a [`QueuedCommand`] to the equivalent [`crate::ship::ShipCommand`]
@@ -41,6 +43,126 @@ pub struct HarbourInfo {
     pub entity: Entity,
     pub name: String,
     pub can_dock: bool,
+}
+
+/// #491 (PR-3): Light-coherent context-menu inputs derived from a ship's
+/// `ShipView` instead of the realtime ECS `ShipState`.
+///
+/// Returned by [`compute_context_menu_ship_data`]. All fields are derived
+/// from the viewing empire's projection (own ship) / snapshot (foreign
+/// ship) / realtime fallback (no-store) — never the ship's realtime
+/// `ShipState` directly. This collapses the FTL leak surface in the
+/// context-menu path to a single helper.
+///
+/// `remaining_travel` is the *projection-mediated* time-to-arrival —
+/// `expected_arrival_at - clock.elapsed`, clamped at zero. For non-transit
+/// projection states (e.g. steady-state `InSystem`, or projections with
+/// `expected_arrival_at = None`) this is `0`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContextMenuShipData {
+    /// `Some(system)` when the ship's *projected* state is `InSystem`.
+    pub docked_system: Option<Entity>,
+    /// The ship's projected target / current system, when the ship is
+    /// in transit / surveying / settling / refitting. `None` for
+    /// `InSystem` / `Loitering` / terminal states.
+    pub current_destination_system: Option<Entity>,
+    /// Deep-space coordinate when the projection reports `Loitering`.
+    /// `None` for all other states.
+    pub loitering_pos: Option<[f64; 3]>,
+    /// Projected time-to-arrival in hexadies. `0` when the ship is
+    /// `is_docked` or has no in-flight expected arrival.
+    pub remaining_travel: i64,
+    /// `true` iff the projection reports `InSystem`.
+    pub is_docked: bool,
+}
+
+/// #491 (PR-3): Compute the projection-mediated context-menu data for a
+/// ship. Routes own-empire ships through `ShipProjection` and foreign
+/// ships through `ShipSnapshot` via the [`ship_view`] helper, eliminating
+/// the realtime `ShipState` reads that previously leaked FTL/transit
+/// state into the context menu (#491).
+///
+/// # Semantics
+///
+/// * `docked_system` / `is_docked` — derived from `ShipView::state` via
+///   `ShipSnapshotState::InSystem`. The ship's *projected* docking
+///   state, not its realtime ECS state.
+/// * `current_destination_system` — derived from `ShipView::system` for
+///   transit / survey / settle / refit projection states.
+/// * `loitering_pos` — extracted via `ShipView::position()`.
+/// * `remaining_travel` — `ShipProjection.expected_arrival_at -
+///   clock.elapsed`, clamped at zero. Light-coherent with the dispatcher's
+///   timeline (= what the player believes about the ship's arrival).
+///
+/// # Fallback
+///
+/// When `ship_view` returns `None` (= the viewing empire has no
+/// projection / snapshot for the ship — e.g. before a seed projection
+/// lands), this returns `None`. The caller treats that as "close menu".
+pub fn compute_context_menu_ship_data(
+    ship_entity: Entity,
+    ship: &Ship,
+    realtime_state: &ShipState,
+    clock: &GameClock,
+    viewing_knowledge: Option<&KnowledgeStore>,
+    viewing_empire: Option<Entity>,
+) -> Option<ContextMenuShipData> {
+    let view = ship_view(
+        ship_entity,
+        ship,
+        realtime_state,
+        viewing_knowledge,
+        viewing_empire,
+    )?;
+    // #491 Stage-2 follow-up: terminal projections (Destroyed / Missing)
+    // must not surface a context menu — the player should not be able to
+    // dispatch MoveTo / Survey / Colonize against a ship the empire
+    // already believes is gone. Return `None` so the caller closes the
+    // menu, the same outcome as a missing projection (= "menu has no
+    // valid target, bail").
+    if !view.is_actionable() {
+        return None;
+    }
+    let docked_system = match view.state {
+        ShipSnapshotState::InSystem => view.system,
+        _ => None,
+    };
+    // For non-`InSystem` states, the `view.system` is the destination /
+    // target / planet-bearing system. `Loitering` / `Destroyed` /
+    // `Missing` carry `view.system = None`, so this naturally yields
+    // `None` for those. `InSystem` is handled via `docked_system` above
+    // (current_destination_system stays `None`).
+    let current_destination_system = match view.state {
+        ShipSnapshotState::InSystem | ShipSnapshotState::Destroyed | ShipSnapshotState::Missing => {
+            None
+        }
+        ShipSnapshotState::Loitering { .. } => None,
+        _ => view.system,
+    };
+    let loitering_pos = view.position();
+    let is_docked = matches!(view.state, ShipSnapshotState::InSystem);
+    // #491 (PR-3): `remaining_travel` is the dispatcher's projected
+    // time-to-arrival. For docked ships it's irrelevant (forced to 0).
+    // For projections with no `expected_arrival_at` (e.g. steady-state
+    // `InSystem`, or spatial-less commands) it's also 0. This replaces
+    // the previous realtime-`ShipState`-driven `arrival_at` /
+    // `completes_at` reads.
+    let remaining_travel = if is_docked {
+        0
+    } else {
+        viewing_knowledge
+            .and_then(|k| k.get_projection(ship_entity))
+            .and_then(|p| p.expected_arrival_at)
+            .map(|eta| (eta - clock.elapsed).max(0))
+            .unwrap_or(0)
+    };
+    Some(ContextMenuShipData {
+        docked_system,
+        current_destination_system,
+        loitering_pos,
+        remaining_travel,
+        is_docked,
+    })
 }
 
 /// Apply a command directly to a ship's [`ShipState`].
@@ -159,6 +281,17 @@ pub fn draw_context_menu(
     target_harbours: &[HarbourInfo],
     // #389: Whether the selected ship is already docked at a harbour.
     ship_is_docked_at_harbour: bool,
+    // #491 (PR-3): Viewing empire's KnowledgeStore for projection-mediated
+    // ship-state reads. `None` falls back to realtime ECS (= early Startup
+    // before empires are wired, observer god-view future work). The
+    // existing #432 caller-side guard suppresses the menu for non-owned
+    // ships, so the realistic `Some(...)` case is `viewing_empire ==
+    // ship.owner` (= projection-driven path).
+    viewing_knowledge: Option<&KnowledgeStore>,
+    // #491 (PR-3): Empire whose perspective the player is currently
+    // viewing — `PlayerEmpire` in normal play, observed empire in
+    // observer mode. Resolved at the call site (`ui/mod.rs`).
+    viewing_empire: Option<Entity>,
 ) -> ContextMenuActions {
     let mut ctx_actions = ContextMenuActions {
         dock_at: None,
@@ -178,53 +311,13 @@ pub fn draw_context_menu(
         return ctx_actions;
     };
 
-    // Collect ship data
-    let ship_data = {
-        let Ok((_, ship, state, _, _, _)) = ships_query.get(ship_entity) else {
-            context_menu.open = false;
-            return ctx_actions;
-        };
-        let docked_system = if let ShipState::InSystem { system } = &*state {
-            Some(*system)
-        } else {
-            None
-        };
-        // For non-docked ships, determine origin position from current state.
-        // #266: Loitering ships have no associated system but DO have a known
-        // deep-space position — carry it as a fallback so context menu can
-        // still compute light delay and open properly.
-        let current_destination_system = match &*state {
-            ShipState::SubLight { target_system, .. } => *target_system,
-            ShipState::InFTL {
-                destination_system, ..
-            } => Some(*destination_system),
-            ShipState::Surveying { target_system, .. } => Some(*target_system),
-            ShipState::Settling { system, .. } => Some(*system),
-            ShipState::InSystem { .. } => None, // handled via docked_system
-            ShipState::Refitting { system, .. } => Some(*system),
-            ShipState::Loitering { .. } => None,
-            ShipState::Scouting { target_system, .. } => Some(*target_system),
-        };
-        let loitering_pos: Option<[f64; 3]> = match &*state {
-            ShipState::Loitering { position } => Some(*position),
-            _ => None,
-        };
-        (
-            ship.name.clone(),
-            ship.design_id.clone(),
-            ship.ftl_range,
-            ship.sublight_speed,
-            docked_system,
-            current_destination_system,
-            loitering_pos,
-            // #296: cache immobility so the MoveTo guard below stays a
-            // simple boolean.
-            ship.is_immobile(),
-            // #299 (S-5): ship faction for Core-presence check.
-            ship.owner,
-        )
-    };
-
+    // Collect ship data — projection-mediated per #491 (PR-3): own-empire
+    // ships read `ShipProjection`, foreign ships read `ShipSnapshot`,
+    // no-store falls back to realtime ECS state. The previous realtime
+    // `ShipState` reads (`InFTL { arrival_at }` / `SubLight {
+    // target_system }` / etc.) are gone — they were the FTL-leak surface
+    // this PR closes. See [`compute_context_menu_ship_data`] for the
+    // helper contract.
     let (
         ship_name,
         design_id,
@@ -235,9 +328,43 @@ pub fn draw_context_menu(
         loitering_pos,
         ship_immobile,
         ship_owner,
-    ) = ship_data;
-
-    let is_docked = docked_system.is_some();
+        remaining_travel,
+        is_docked,
+    ) = {
+        let Ok((_, ship, state, _, _, _)) = ships_query.get(ship_entity) else {
+            context_menu.open = false;
+            return ctx_actions;
+        };
+        let Some(view_data) = compute_context_menu_ship_data(
+            ship_entity,
+            &ship,
+            &state,
+            clock,
+            viewing_knowledge,
+            viewing_empire,
+        ) else {
+            // No projection / snapshot resolvable for this ship — close
+            // the menu rather than fall through with stale realtime data.
+            context_menu.open = false;
+            return ctx_actions;
+        };
+        (
+            ship.name.clone(),
+            ship.design_id.clone(),
+            ship.ftl_range,
+            ship.sublight_speed,
+            view_data.docked_system,
+            view_data.current_destination_system,
+            view_data.loitering_pos,
+            // #296: cache immobility so the MoveTo guard below stays a
+            // simple boolean.
+            ship.is_immobile(),
+            // #299 (S-5): ship faction for Core-presence check.
+            ship.owner,
+            view_data.remaining_travel,
+            view_data.is_docked,
+        )
+    };
 
     // For docked ships, the origin is the docked system.
     // For non-docked ships, the origin is either the current destination
@@ -266,8 +393,16 @@ pub fn draw_context_menu(
     let same_system = is_docked && origin_system == Some(target_entity);
 
     // #76: Calculate light-speed delay from player to ship's location.
-    // For in-transit ships, the command must also wait for the ship to arrive
-    // at its destination (it can't receive commands mid-FTL).
+    // For in-transit ships, the command must also wait for the ship to
+    // arrive at its destination (it can't receive commands mid-FTL).
+    //
+    // #491 (PR-3): `remaining_travel` is now the dispatcher's projected
+    // ETA (= `ShipProjection.expected_arrival_at - clock.elapsed`) instead
+    // of the realtime `arrival_at` / `completes_at`. The semantic shift
+    // is intentional: the player's command travel time should align with
+    // *what the player believes* about the ship's arrival, not the
+    // ground-truth ECS timeline (which the player can't observe yet).
+    // The `light_delay.max(remaining_travel)` envelope is preserved.
     let command_delay: i64 = {
         let light_delay: i64 = player_q
             .single()
@@ -278,30 +413,6 @@ pub fn draw_context_menu(
                 Some(physics::light_delay_hexadies(dist))
             })
             .unwrap_or(0);
-
-        // For non-docked ships, also account for remaining travel time
-        let remaining_travel: i64 = if !is_docked {
-            if let Ok((_, _, state, _, _, _)) = ships_query.get(ship_entity) {
-                match &*state {
-                    ShipState::InFTL { arrival_at, .. } => (*arrival_at - clock.elapsed).max(0),
-                    ShipState::SubLight { arrival_at, .. } => (*arrival_at - clock.elapsed).max(0),
-                    ShipState::Surveying { completes_at, .. } => {
-                        (*completes_at - clock.elapsed).max(0)
-                    }
-                    ShipState::Settling { completes_at, .. } => {
-                        (*completes_at - clock.elapsed).max(0)
-                    }
-                    ShipState::Refitting { completes_at, .. } => {
-                        (*completes_at - clock.elapsed).max(0)
-                    }
-                    _ => 0,
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        };
 
         light_delay.max(remaining_travel)
     };
