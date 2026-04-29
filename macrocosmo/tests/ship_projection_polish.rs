@@ -162,7 +162,7 @@ fn stale_fact_does_not_clear_new_intent() {
         s.ship,
         s.home,
         s.frontier,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         50,
     );
 
@@ -222,7 +222,7 @@ fn stale_fact_does_not_clear_new_intent() {
         s.ship,
         s.home,
         s.frontier,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         300,
     );
 
@@ -257,7 +257,7 @@ fn stale_fact_does_not_clear_new_intent() {
         .expect("projection must still exist");
     assert_eq!(
         p.intended_state,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         "stale fact (observed_at < dispatched_at) must NOT clear the new mission's intended_state"
     );
     assert_eq!(
@@ -375,7 +375,7 @@ fn stale_destroyed_fact_still_clears_intent() {
         s.ship,
         s.home,
         s.frontier,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         300,
     );
 
@@ -533,7 +533,7 @@ fn saturation_path_does_not_silently_corrupt() {
             dispatcher_pos,
             ship_pos,
             Some(target_pos),
-            Some(ShipSnapshotState::InTransit),
+            Some(ShipSnapshotState::InTransitSubLight),
             None,
             true,
             None,
@@ -583,7 +583,7 @@ fn normal_galactic_distance_does_not_saturate() {
         dispatcher_pos,
         ship_pos,
         Some(target_pos),
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         None,
         true,
         None,

@@ -123,7 +123,7 @@ fn zero_delay_move_command_writes_projection() {
         .expect("zero-delay MoveTo must write a projection");
     assert_eq!(
         projection.intended_state,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         "MoveTo maps to InTransit intended state"
     );
     assert_eq!(projection.intended_system, Some(frontier));

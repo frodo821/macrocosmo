@@ -427,25 +427,21 @@ fn two_region_empire_round_trips_cross_region_refs() {
 #[test]
 fn save_version_strictly_rejects_previous_version() {
     assert_eq!(
-        SAVE_VERSION, 19,
-        "#483 bumps SAVE_VERSION 18 → 19 (ship_bits added to \
-         SavedKnowledgeFact::{{ShipArrived, SurveyComplete, ShipDestroyed, \
-         ShipMissing}})"
+        SAVE_VERSION, 20,
+        "#491 (D-H-4) bumps SAVE_VERSION 19 → 20 (split \
+         ShipSnapshotState::InTransit into InTransitSubLight / \
+         InTransitFTL — postcard's positional enum tag encoding makes \
+         this a breaking change)"
     );
 
-    // Hand-craft a minimal byte stream that begins with a v18 version
+    // Hand-craft a minimal byte stream that begins with a v19 version
     // header and confirm `load_game_from_reader` rejects it via
     // `LoadError::VersionMismatch`. The rest of the bytes don't need to
     // form a valid GameSave — the version check must trigger first.
-    //
-    // We construct a real v18-styled GameSave by serializing a fresh
-    // GameSave with version forcibly overwritten — this is more
-    // robust than poking bytes by hand and proves the strict-reject
-    // path triggers on real-shape inputs.
     use macrocosmo::persistence::save::GameSave;
     use macrocosmo::persistence::save::SavedResources;
-    let v18 = GameSave {
-        version: 18,
+    let v_prev = GameSave {
+        version: 19,
         scripts_version: "0.1".into(),
         resources: SavedResources {
             game_clock_elapsed: 0,
@@ -464,17 +460,17 @@ fn save_version_strictly_rejects_previous_version() {
         },
         entities: Vec::new(),
     };
-    let bytes = postcard::to_stdvec(&v18).expect("encode forged v18 save");
+    let bytes = postcard::to_stdvec(&v_prev).expect("encode forged v19 save");
 
     let mut world = World::new();
     let result = load_game_from_reader(&mut world, &bytes[..]);
     match result {
         Err(LoadError::VersionMismatch { saved, expected }) => {
-            assert_eq!(saved, 18, "saved version field must surface to caller");
+            assert_eq!(saved, 19, "saved version field must surface to caller");
             assert_eq!(expected, SAVE_VERSION);
         }
         other => panic!(
-            "v18 save must be strictly rejected at load; got {:?}",
+            "v19 save must be strictly rejected at load; got {:?}",
             other
         ),
     }

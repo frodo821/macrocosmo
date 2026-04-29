@@ -469,8 +469,14 @@ pub struct ProjectionWriteParams<'w, 's> {
 /// `scripting::gamestate_scope::write_lua_dispatch_projection`).
 pub fn queued_command_intended_state(cmd: &QueuedCommand) -> Option<ShipSnapshotState> {
     match cmd {
+        // #491 (D-H-4): The dispatcher cannot know FTL vs SubLight at
+        // command-issue time (route planning happens later in
+        // `plan_ftl_route` once the ship physically departs). The
+        // projection's *intended* layer uses `InTransitSubLight` as the
+        // conservative placeholder; the reconciler overwrites with the
+        // real variant once the per-empire `ShipDeparted` fact lands.
         QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
-            Some(ShipSnapshotState::InTransit)
+            Some(ShipSnapshotState::InTransitSubLight)
         }
         QueuedCommand::Survey { .. } | QueuedCommand::Scout { .. } => {
             Some(ShipSnapshotState::Surveying)

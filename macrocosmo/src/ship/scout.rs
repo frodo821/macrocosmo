@@ -266,29 +266,9 @@ pub fn tick_scout_observation(
     )> = Vec::new();
 
     for (ship_entity, ship, state, ship_pos, hp) in ships.iter() {
-        let (snap_state, last_system) = match state {
-            ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
-            ShipState::SubLight { target_system, .. } => {
-                (ShipSnapshotState::InTransit, *target_system)
-            }
-            ShipState::InFTL {
-                destination_system, ..
-            } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-            ShipState::Surveying { target_system, .. } => {
-                (ShipSnapshotState::Surveying, Some(*target_system))
-            }
-            ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
-            ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
-            ShipState::Loitering { position } => (
-                ShipSnapshotState::Loitering {
-                    position: *position,
-                },
-                None,
-            ),
-            ShipState::Scouting { target_system, .. } => {
-                (ShipSnapshotState::Surveying, Some(*target_system))
-            }
-        };
+        // #491 (D-C-2): route through the shared helper so the scout
+        // observation writer stays in lock-step with the reader path.
+        let (snap_state, last_system) = crate::knowledge::realtime_state_to_snapshot(state);
         all_ships.push(ShipObservation {
             entity: ship_entity,
             name: ship.name.clone(),

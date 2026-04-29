@@ -267,7 +267,7 @@ fn dispatcher_overwrites_when_head_diverges_from_existing() {
             expected_return_at: None,
             projected_state: ShipSnapshotState::InSystem,
             projected_system: Some(home),
-            intended_state: Some(ShipSnapshotState::InTransit),
+            intended_state: Some(ShipSnapshotState::InTransitSubLight),
             intended_system: Some(home),
             intended_takes_effect_at: Some(8),
         });
@@ -378,7 +378,7 @@ fn dispatcher_writes_after_reconcile_clears_intended() {
         .expect("projection must persist through update");
     assert_eq!(
         projection.intended_state,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         "post-reconcile None intended_state must be overwritten by head's InTransit"
     );
     assert_eq!(
@@ -484,7 +484,7 @@ fn dispatcher_handles_multiple_command_variants() {
         .expect("MoveTo projection missing");
     assert_eq!(
         move_proj.intended_state,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         "MoveTo ⇒ InTransit"
     );
     assert_eq!(move_proj.intended_system, Some(move_target));

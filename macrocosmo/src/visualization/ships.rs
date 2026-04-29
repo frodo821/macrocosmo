@@ -465,14 +465,14 @@ pub fn draw_ships(
                     });
                 *system_ship_counts.entry(system).or_insert(0) += 1;
             }
-            // #477: `InTransit` falls back to drawing at `projected_system`
-            // (the destination, per #475). The pre-#477 realtime renderer
-            // interpolated from origin → destination based on departed_at /
-            // arrival_at, but `ShipProjection` doesn't carry those fields;
-            // adding them is deferred to a later schema bump (epic #473
-            // sub-issue E or follow-up). The coarser draw is the
-            // light-coherent answer.
-            ShipSnapshotState::InTransit => {
+            // #477 / #491 (D-H-4): both transit variants render at the
+            // projected destination. The `InTransitFTL` vs
+            // `InTransitSubLight` distinction is currently only surfaced
+            // in panel labels (FTL ships cannot be intercepted); the
+            // gizmo renders the same dot for both. A future schema bump
+            // (epic #473 sub-issue E) will carry origin/destination
+            // positions for proper interpolation.
+            ShipSnapshotState::InTransitSubLight | ShipSnapshotState::InTransitFTL => {
                 let Some(system) = item.projected_system else {
                     continue;
                 };

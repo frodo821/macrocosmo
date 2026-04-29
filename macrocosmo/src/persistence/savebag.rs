@@ -3061,7 +3061,11 @@ impl SavedSystemKnowledge {
 pub enum SavedShipSnapshotState {
     #[serde(alias = "Docked")]
     InSystem,
-    InTransit,
+    /// #491 (D-H-4): Sub-light leg of an in-transit ship.
+    InTransitSubLight,
+    /// #491 (D-H-4): FTL leg of an in-transit ship — interception
+    /// disallowed by game contract.
+    InTransitFTL,
     Surveying,
     Settling,
     Refitting,
@@ -3075,7 +3079,8 @@ impl From<&ShipSnapshotState> for SavedShipSnapshotState {
     fn from(v: &ShipSnapshotState) -> Self {
         match v {
             ShipSnapshotState::InSystem => Self::InSystem,
-            ShipSnapshotState::InTransit => Self::InTransit,
+            ShipSnapshotState::InTransitSubLight => Self::InTransitSubLight,
+            ShipSnapshotState::InTransitFTL => Self::InTransitFTL,
             ShipSnapshotState::Surveying => Self::Surveying,
             ShipSnapshotState::Settling => Self::Settling,
             ShipSnapshotState::Refitting => Self::Refitting,
@@ -3091,7 +3096,8 @@ impl From<SavedShipSnapshotState> for ShipSnapshotState {
     fn from(v: SavedShipSnapshotState) -> Self {
         match v {
             SavedShipSnapshotState::InSystem => Self::InSystem,
-            SavedShipSnapshotState::InTransit => Self::InTransit,
+            SavedShipSnapshotState::InTransitSubLight => Self::InTransitSubLight,
+            SavedShipSnapshotState::InTransitFTL => Self::InTransitFTL,
             SavedShipSnapshotState::Surveying => Self::Surveying,
             SavedShipSnapshotState::Settling => Self::Settling,
             SavedShipSnapshotState::Refitting => Self::Refitting,
