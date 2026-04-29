@@ -519,12 +519,25 @@ pub fn queued_command_has_return_leg(cmd: &QueuedCommand) -> bool {
 /// * Ship has `Owner::Neutral` (mirrors `seed_own_ship_projections`'s
 ///   neutral skip — hostile / pirate factions never seed any empire's
 ///   projection store).
-/// * The owning empire already has a projection for this ship (= a
-///   caller-side dispatch site already wrote it; their numbers are
-///   strictly better than what we can recompute here).
 /// * The command is spatial-less (cargo / structure ops with no
 ///   `ShipState` implication) — `queued_command_intended_state`
-///   returns `None`.
+///   returns `None` — AND the existing projection's `intended_*` is
+///   already `None` (= seed / post-reconcile steady state matches
+///   "no mission"; nothing to write).
+/// * The owning empire's existing projection's `intended_state` /
+///   `intended_system` already match what this head queued command
+///   implies (= a caller-side dispatch site wrote an accurate
+///   projection at the dispatch instant; their numbers are strictly
+///   better than what we can recompute here, so leave it alone).
+///
+/// Per #492: the previous `is_some()` guard was dead-on-arrival —
+/// `seed_own_ship_projections` (#481) installs a seed projection
+/// (`intended_state: None`) at every own-empire ship's spawn, which
+/// caused the guard to always fire and the defensive write to never
+/// run. The head-command-aware match below correctly overwrites
+/// (a) the seed, (b) post-reconcile cleared-intended state, and
+/// (c) stale caller writes whose mission diverges from the current
+/// queue head, while still preserving fresh caller writes.
 fn maybe_write_dispatcher_projection(
     ship_entity: Entity,
     ship: &Ship,
@@ -540,26 +553,49 @@ fn maybe_write_dispatcher_projection(
         Owner::Neutral => return,
     };
 
-    // Idempotency guard: a caller-side write already covered this
-    // ship's dispatch — leave it alone.
-    if let Ok(store) = params.knowledge_stores.get(owner_empire) {
-        if store.get_projection(ship_entity).is_some() {
+    let intended_state = queued_command_intended_state(cmd);
+    let intended_system = queued_command_target_system(cmd);
+
+    // Head-command-aware idempotency guard (#492). Compare the
+    // existing projection's `intended_state` / `intended_system`
+    // against what the current head command implies — only skip when
+    // they match. This correctly:
+    // * overwrites the seed projection (`intended_state: None`) when
+    //   the head command has a non-None intended,
+    // * overwrites post-reconcile state (intended_* cleared) when a
+    //   new mission has been queued,
+    // * overwrites stale caller writes whose mission no longer
+    //   matches the current queue head,
+    // * preserves fresh caller writes for the same mission.
+    let existing_matches = match params.knowledge_stores.get(owner_empire) {
+        Ok(store) => store
+            .get_projection(ship_entity)
+            .map(|p| p.intended_state == intended_state && p.intended_system == intended_system)
+            .unwrap_or(false),
+        Err(_) => {
+            // Owning empire missing or has no `KnowledgeStore` —
+            // nothing to write into.
             return;
         }
-    } else {
-        // Owning empire missing or has no `KnowledgeStore` — nothing
-        // to write into.
+    };
+    if existing_matches {
         return;
     }
 
     // Skip spatial-less commands (cargo ops). They have no ShipState
-    // implication once executed.
-    let intended_state = queued_command_intended_state(cmd);
+    // implication once executed. We only get here when the existing
+    // projection (if any) does NOT already match `intended_state =
+    // None / intended_system = None` — but for a spatial-less head
+    // command, writing a new projection with `intended_state = None`
+    // would still leak (e.g.) a stale caller's intended fields into
+    // an unrelated mission. The safest behaviour matches the
+    // pre-#492 contract: skip the dispatcher write entirely for
+    // spatial-less commands. The renderer treats `intended_*: None`
+    // as "no in-flight mission", which is correct for cargo ops.
     if intended_state.is_none() {
         return;
     }
 
-    let intended_system = queued_command_target_system(cmd);
     let target_system_pos =
         intended_system.and_then(|sys| params.star_positions.get(sys).ok().map(|p| p.as_array()));
     let has_return_leg = queued_command_has_return_leg(cmd);

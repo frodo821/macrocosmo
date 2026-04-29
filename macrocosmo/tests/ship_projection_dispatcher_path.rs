@@ -1,4 +1,4 @@
-//! #488: dispatcher-side `ShipProjection` defensive write.
+//! #488 / #492: dispatcher-side `ShipProjection` defensive write.
 //!
 //! Background: pre-#488, projection writes happened at the **3 civilised
 //! dispatch sites** (#475):
@@ -17,31 +17,49 @@
 //! Detected by BRP exploratory: pushing a Survey command directly into
 //! `Explorer-1.CommandQueue` left `KnowledgeStore.projections == {}`.
 //!
-//! Fix: `dispatch_queued_commands` writes a defensive projection at
-//! the queue-processing tick whenever no projection already exists for
-//! the ship's owning empire. The 3 caller-side writes are kept intact
+//! Fix (#488): `dispatch_queued_commands` writes a defensive projection
+//! at the queue-processing tick. The 3 caller-side writes stay intact
 //! (they have access to the exact dispatch tick + Ruler position the
 //! dispatcher cannot recover post-hoc); the dispatcher write only
 //! covers the bypass paths.
+//!
+//! #492 follow-up: the original guard `is_some()` was dead-on-arrival
+//! once #481 (`seed_own_ship_projections`) shipped — every own-empire
+//! ship has a seed projection from spawn (`intended_state: None`), so
+//! the defensive write never ran. Replaced with a head-command-aware
+//! match that compares the existing projection's `intended_state` /
+//! `intended_system` against what the queue head implies; mismatch
+//! triggers an overwrite.
 //!
 //! Tests:
 //!
 //! 1. `direct_command_queue_push_writes_projection` — bypass the 3
 //!    civilised paths by directly pushing a `Survey` command into the
 //!    ship's `CommandQueue`; assert
-//!    `KnowledgeStore.projections.get(ship)` is `Some(_)` with
+//!    `KnowledgeStore.projections.get(ship)` has
 //!    `intended_state = Surveying` after one Update.
-//! 2. `dispatcher_does_not_overwrite_fresh_caller_projection` —
-//!    pre-populate a projection (mimicking a caller-side write); push a
-//!    queued command; run dispatcher; assert the projection was NOT
-//!    overwritten — the dispatcher's idempotency guard works.
-//! 3. `dispatcher_handles_multiple_command_variants` — direct push of
+//! 2. `dispatcher_writes_over_seed_projection` — #492 regression: with
+//!    `seed_own_ship_projections` installed, a seed projection exists
+//!    at spawn (`intended_state: None`); a direct Survey push must
+//!    cause the dispatcher to overwrite the seed.
+//! 3. `dispatcher_writes_after_reconcile_clears_intended` — projection
+//!    in post-reconcile steady state (`intended_*: None`, but a real
+//!    `projected_state`); a new mission via direct push must trigger
+//!    a dispatcher write.
+//! 4. `dispatcher_preserves_caller_projection_when_head_matches` —
+//!    caller wrote a projection consistent with the queue head; the
+//!    dispatcher's idempotency match fires; the caller's exact
+//!    light-delay numbers survive.
+//! 5. `dispatcher_overwrites_when_head_diverges_from_existing` — caller
+//!    wrote a projection for mission X but the queue head is mission
+//!    Y; the dispatcher overwrites the stale write.
+//! 6. `dispatcher_handles_multiple_command_variants` — direct push of
 //!    `MoveTo`, `Survey`, `Colonize` variants; assert each maps to the
 //!    right `intended_state`.
-//! 4. `dispatcher_skips_neutral_owner_ships` — `Owner::Neutral` ship's
+//! 7. `dispatcher_skips_neutral_owner_ships` — `Owner::Neutral` ship's
 //!    queue receives a direct push; assert no projection written
 //!    (mirrors `seed_own_ship_projections`'s neutral skip).
-//! 5. `dispatcher_skips_spatial_less_commands` — direct push of a
+//! 8. `dispatcher_skips_spatial_less_commands` — direct push of a
 //!    `LoadDeliverable` (cargo op, no `ShipState` implication); assert
 //!    no projection written.
 
@@ -49,11 +67,26 @@ mod common;
 
 use bevy::prelude::*;
 
-use macrocosmo::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshotState};
+use macrocosmo::knowledge::{
+    KnowledgeStore, ShipProjection, ShipSnapshotState, seed_own_ship_projections,
+};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{CommandQueue, Owner, QueuedCommand, Ship};
 
 use common::{spawn_test_ruler, spawn_test_ship, spawn_test_system, test_app};
+
+/// Like `test_app` but registers `seed_own_ship_projections` so newly
+/// spawned own-empire ships get a seed projection installed before the
+/// dispatcher runs — mirrors the production runtime where #481 + #488
+/// interact. Used by the #492 regression tests below.
+fn dispatcher_test_app_with_seed() -> App {
+    let mut app = test_app();
+    app.add_systems(
+        Update,
+        seed_own_ship_projections.before(macrocosmo::ship::dispatcher::dispatch_queued_commands),
+    );
+    app
+}
 
 /// Build a minimal scenario: one PlayerEmpire with a Ruler at `home`,
 /// one frontier system, one ship docked at `home` and owned by the
@@ -157,13 +190,17 @@ fn direct_command_queue_push_writes_projection() {
 }
 
 #[test]
-fn dispatcher_does_not_overwrite_fresh_caller_projection() {
+fn dispatcher_preserves_caller_projection_when_head_matches() {
+    // #492 head-command-aware idempotency: when the caller wrote a
+    // projection consistent with the current queue head (= same
+    // `intended_state` and `intended_system`), the dispatcher's match
+    // guard fires and the caller's exact light-delay numbers survive.
     let mut app = test_app();
     let (empire, home, frontier, ship) = setup_scenario(&mut app);
 
     // Pre-populate a "caller-written" projection with distinguishing
     // sentinel values, mimicking what one of the 3 civilised dispatch
-    // sites would have written.
+    // sites would have written for a Survey of `frontier`.
     let sentinel_arrival = 999_999_i64;
     {
         let mut em = app.world_mut().entity_mut(empire);
@@ -172,27 +209,26 @@ fn dispatcher_does_not_overwrite_fresh_caller_projection() {
             entity: ship,
             dispatched_at: 7,
             expected_arrival_at: Some(sentinel_arrival),
-            expected_return_at: None,
+            expected_return_at: Some(123_456_i64),
             projected_state: ShipSnapshotState::InSystem,
             projected_system: Some(home),
-            intended_state: Some(ShipSnapshotState::InTransit),
+            // intended_* match what `Survey { system: frontier }` implies.
+            intended_state: Some(ShipSnapshotState::Surveying),
             intended_system: Some(frontier),
             intended_takes_effect_at: Some(8),
         });
     }
 
-    // Now push a direct Survey command — dispatcher must NOT overwrite
-    // the existing projection (its idempotency guard fires).
+    // Push the matching Survey command — dispatcher must NOT overwrite
+    // the existing projection (head-command-aware match fires).
     direct_push(&mut app, ship, QueuedCommand::Survey { system: frontier });
     app.update();
 
     let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
     let projection = store.get_projection(ship).unwrap();
-    // The caller-written sentinel survives — dispatcher saw the
-    // existing entry and skipped the defensive write.
     assert_eq!(
         projection.dispatched_at, 7,
-        "caller-written dispatched_at must survive (idempotency guard)"
+        "caller-written dispatched_at must survive — head matches existing intended"
     );
     assert_eq!(
         projection.expected_arrival_at,
@@ -200,9 +236,155 @@ fn dispatcher_does_not_overwrite_fresh_caller_projection() {
         "caller-written expected_arrival_at must survive"
     );
     assert_eq!(
+        projection.expected_return_at,
+        Some(123_456_i64),
+        "caller-written expected_return_at must survive"
+    );
+    assert_eq!(
+        projection.intended_state,
+        Some(ShipSnapshotState::Surveying),
+        "caller-written intended_state preserved (= matches head)"
+    );
+}
+
+#[test]
+fn dispatcher_overwrites_when_head_diverges_from_existing() {
+    // #492: if the caller-written projection's `intended_*` no longer
+    // matches what the queue head implies (= a different mission was
+    // pushed since the caller wrote), the dispatcher's match guard
+    // does NOT fire and the stale caller write is overwritten.
+    let mut app = test_app();
+    let (empire, home, frontier, ship) = setup_scenario(&mut app);
+
+    // Caller wrote a projection for a MoveTo (InTransit) to `home`.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 7,
+            expected_arrival_at: Some(999_999_i64),
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: Some(ShipSnapshotState::InTransit),
+            intended_system: Some(home),
+            intended_takes_effect_at: Some(8),
+        });
+    }
+
+    // Queue head is Survey of `frontier` — divergent mission.
+    direct_push(&mut app, ship, QueuedCommand::Survey { system: frontier });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let projection = store.get_projection(ship).unwrap();
+    // Dispatcher overwrote — projection now reflects the head Survey.
+    assert_eq!(
+        projection.intended_state,
+        Some(ShipSnapshotState::Surveying),
+        "stale caller intended_state must be overwritten by head's Surveying"
+    );
+    assert_eq!(
+        projection.intended_system,
+        Some(frontier),
+        "stale caller intended_system must be overwritten by head's target"
+    );
+    // Survey has a return leg — dispatcher write populates it.
+    assert!(
+        projection.expected_return_at.is_some(),
+        "dispatcher write for Survey must populate expected_return_at"
+    );
+}
+
+#[test]
+fn dispatcher_writes_over_seed_projection() {
+    // #492 regression: with `seed_own_ship_projections` installed,
+    // every newly-spawned own-empire ship has a seed projection
+    // (`intended_state: None`, `projected_state: InSystem`). A direct
+    // CommandQueue push (BRP / plugin / test bypass) must cause the
+    // dispatcher to overwrite the seed with the head command's
+    // intended trajectory — otherwise the renderer (#477) sees a
+    // ship "parked at home" forever.
+    let mut app = dispatcher_test_app_with_seed();
+    let (empire, home, frontier, ship) = setup_scenario(&mut app);
+
+    // Direct push BEFORE the first Update — both the seed system and
+    // the dispatcher run in this Update; seed runs first via
+    // `.before(dispatch_queued_commands)`.
+    direct_push(&mut app, ship, QueuedCommand::Survey { system: frontier });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let projection = store
+        .get_projection(ship)
+        .expect("seed system installed a projection; dispatcher must overwrite, not skip");
+    // Seed had `intended_state: None`; dispatcher overwrote with
+    // Surveying — this is the literal #492 fix.
+    assert_eq!(
+        projection.intended_state,
+        Some(ShipSnapshotState::Surveying),
+        "dispatcher must overwrite seed projection's None intended_state with head's Surveying"
+    );
+    assert_eq!(projection.intended_system, Some(frontier));
+    assert!(
+        projection.intended_takes_effect_at.is_some(),
+        "intended_takes_effect_at must be populated after overwrite"
+    );
+    assert!(
+        projection.expected_return_at.is_some(),
+        "Survey return leg must be populated after overwrite"
+    );
+    // home is unused in this assertion block, silence the binding.
+    let _ = home;
+}
+
+#[test]
+fn dispatcher_writes_after_reconcile_clears_intended() {
+    // #492 follow-on: post-reconcile (= mission completed, fact
+    // arrived, intended_* cleared) projection state. A new mission
+    // pushed via direct CommandQueue must trigger a dispatcher write.
+    // This is the same code path as the seed case — both have
+    // `intended_state: None` — but we exercise it explicitly to lock
+    // in the post-reconcile path.
+    let mut app = test_app();
+    let (empire, home, frontier, ship) = setup_scenario(&mut app);
+
+    // Mimic `reconcile_ship_projections` clearing intended_* after the
+    // ship completed a previous mission and arrived home.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: 5,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+
+    // New mission pushed directly (BRP / plugin / test bypass).
+    direct_push(&mut app, ship, QueuedCommand::MoveTo { system: frontier });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let projection = store
+        .get_projection(ship)
+        .expect("projection must persist through update");
+    assert_eq!(
         projection.intended_state,
         Some(ShipSnapshotState::InTransit),
-        "caller-written intended_state must survive — not overwritten by Surveying"
+        "post-reconcile None intended_state must be overwritten by head's InTransit"
+    );
+    assert_eq!(
+        projection.intended_system,
+        Some(frontier),
+        "post-reconcile None intended_system must be overwritten by head's target"
     );
 }
 
