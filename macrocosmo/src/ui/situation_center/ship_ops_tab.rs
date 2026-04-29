@@ -4,13 +4,28 @@
 //! Combat / Other). Category groups become root events; individual
 //! ships hang as children with `EventSource::Ship(entity)`.
 //!
-//! Category mapping:
-//! * **Travel** — `ShipState::SubLight` or `ShipState::InFTL`.
-//! * **Survey** — `ShipState::Surveying` or `ShipState::Scouting`.
+//! Category mapping is light-coherent (#491 PR-4): the classifier reads
+//! the viewing empire's `KnowledgeStore` projection (own ships) or
+//! snapshot (foreign ships), never the realtime ECS [`ShipState`]
+//! directly. The `ship_view` helper performs the projection /
+//! snapshot collapse and returns a [`ShipView`] carrying a
+//! [`ShipSnapshotState`]; this tab classifies on that.
+//!
+//! Category mapping (over [`ShipSnapshotState`]):
+//! * **Travel** — `InTransitSubLight` or `InTransitFTL`. The two
+//!   variants render distinct labels (`"sublight transit"` vs
+//!   `"in FTL"`) so the player can see whether the ship is
+//!   interceptable; FTL ships are not.
+//! * **Survey** — `Surveying`. (Realtime `Scouting` collapses to
+//!   `Surveying` at snapshot granularity per #217 — the player UI
+//!   does not distinguish them at this layer.)
 //! * **Combat** — any ship whose current system hosts a `Hostile`
-//!   entity. `resolve_combat` is tick-based (no persistent "in-combat"
-//!   flag), so co-location is the cleanest pure-read signal.
-//! * **Other** — `Docked`, `Loitering`, `Settling`, `Refitting`.
+//!   entity AND that is not currently in transit. `resolve_combat` is
+//!   tick-based (no persistent "in-combat" flag), so co-location is
+//!   the cleanest pure-read signal.
+//! * **Other** — `InSystem` (docked), `Loitering`, `Settling`,
+//!   `Refitting`. `Destroyed` and `Missing` are filtered out so the
+//!   tab does not surface ships the player can no longer command.
 //!
 //! Badge surface: Combat count → `Severity::Warn` (ships engaged).
 
@@ -19,8 +34,12 @@ use std::collections::{HashMap, HashSet};
 use bevy::prelude::*;
 
 use crate::galaxy::{AtSystem, Hostile, StarSystem};
+use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
+use crate::observer::ObserverMode;
+use crate::player::PlayerEmpire;
 use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
+use crate::ui::ship_view::{ShipView, ShipViewTiming, ship_view_with_timing};
 
 use super::tab::{OngoingTab, TabBadge, TabMeta};
 use super::types::{Event, EventKind, EventSource, Severity};
@@ -121,10 +140,50 @@ fn hostile_systems(world: &World) -> HashSet<Entity> {
     out
 }
 
+/// Resolve the player empire entity (= viewing empire). Returns `None`
+/// if no `PlayerEmpire` exists yet (early Startup before the spawn
+/// system runs); callers fall back to the realtime ECS path.
+fn resolve_player_empire(world: &World) -> Option<Entity> {
+    let mut q = world.try_query::<(Entity, &PlayerEmpire)>()?;
+    q.iter(world).next().map(|(e, _)| e)
+}
+
+/// #491 PR-4 follow-up: source-resolved viewing context. The
+/// situation_center collects events from the player empire's
+/// perspective by default; in observer mode we want ground truth
+/// (= realtime ECS), so we pass `None` for both the `KnowledgeStore`
+/// and the viewing empire — `ship_view_with_timing` then falls
+/// through to `realtime_state_to_snapshot`.
+struct ViewingContext<'a> {
+    knowledge: Option<&'a KnowledgeStore>,
+    empire: Option<Entity>,
+}
+
+fn resolve_viewing_context(world: &World) -> ViewingContext<'_> {
+    let observer_mode_enabled = world
+        .get_resource::<ObserverMode>()
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+    if observer_mode_enabled {
+        // Observer mode: omniscient view = realtime ECS = ground truth.
+        // Mirrors the gate pattern in outline-tree (#487), ship-panel
+        // (#491 PR-2), and map tooltip (#491 PR-6) observer paths.
+        return ViewingContext {
+            knowledge: None,
+            empire: None,
+        };
+    }
+    let empire = resolve_player_empire(world);
+    let knowledge = empire.and_then(|e| world.entity(e).get::<KnowledgeStore>());
+    ViewingContext { knowledge, empire }
+}
+
 fn collect_ship_events(world: &World) -> Vec<Event> {
     let clock = world.resource::<GameClock>();
     let now = clock.elapsed;
     let hostiles = hostile_systems(world);
+
+    let ctx = resolve_viewing_context(world);
 
     let mut buckets: HashMap<Category, Vec<Event>> = HashMap::new();
 
@@ -134,9 +193,32 @@ fn collect_ship_events(world: &World) -> Vec<Event> {
             if ship.is_immobile() {
                 continue;
             }
-            let current_system = ship_current_system(state);
-            let (category, state_label, eta, started_at) =
-                classify_ship(state, current_system, &hostiles, now);
+
+            // #491 PR-4: route the ship through the viewing empire's
+            // KnowledgeStore. Own = projection, foreign = snapshot,
+            // no-store = realtime fallback.
+            //
+            // #491 PR-4 follow-up: replaced the local
+            // `(ship_view + ship_view_timing)` two-step with the
+            // hoisted `ship_view_with_timing` helper so the ladder
+            // cannot drift from the canonical implementation in
+            // `crate::knowledge::ship_view`.
+            let Some((view, timing)) =
+                ship_view_with_timing(ship_entity, ship, state, ctx.knowledge, ctx.empire)
+            else {
+                // No projection / snapshot for this ship — skip rather
+                // than render stale realtime ECS state. Mirrors the
+                // outline-tree contract (#487).
+                continue;
+            };
+
+            let Some((category, state_label, eta, started_at)) =
+                classify_view(&view, &timing, &hostiles, now)
+            else {
+                // Destroyed / Missing — filter out of the tab.
+                continue;
+            };
+
             let label = format!("{} — {}", ship.name, state_label);
             buckets.entry(category).or_default().push(Event {
                 id: ship_entity.to_bits(),
@@ -187,14 +269,29 @@ fn summarise_ships(world: &World) -> ShipSummary {
     let mut summary = ShipSummary::default();
     let clock = world.resource::<GameClock>();
     let now = clock.elapsed;
-    if let Some(mut q) = world.try_query::<(&Ship, &ShipState)>() {
-        for (ship, state) in q.iter(world) {
+
+    let ctx = resolve_viewing_context(world);
+
+    if let Some(mut q) = world.try_query::<(Entity, &Ship, &ShipState)>() {
+        for (ship_entity, ship, state) in q.iter(world) {
             // #389: Exclude immobile ships (stations) from summary
             if ship.is_immobile() {
                 continue;
             }
-            let current_system = ship_current_system(state);
-            let (category, _, _, _) = classify_ship(state, current_system, &hostiles, now);
+
+            // #491 PR-4 follow-up: same hoisted-helper rewire as
+            // `collect_ship_events` so the badge count and the tree
+            // contents cannot drift.
+            let Some((view, timing)) =
+                ship_view_with_timing(ship_entity, ship, state, ctx.knowledge, ctx.empire)
+            else {
+                continue;
+            };
+
+            let Some((category, _, _, _)) = classify_view(&view, &timing, &hostiles, now) else {
+                continue;
+            };
+
             match category {
                 Category::Travel => summary.travel += 1,
                 Category::Survey => summary.survey += 1,
@@ -206,103 +303,72 @@ fn summarise_ships(world: &World) -> ShipSummary {
     summary
 }
 
-fn ship_current_system(state: &ShipState) -> Option<Entity> {
-    match state {
-        ShipState::InSystem { system } => Some(*system),
-        ShipState::Settling { system, .. } => Some(*system),
-        ShipState::Refitting { system, .. } => Some(*system),
-        ShipState::Surveying { target_system, .. } => Some(*target_system),
-        ShipState::Scouting { target_system, .. } => Some(*target_system),
-        ShipState::SubLight { target_system, .. } => *target_system,
-        ShipState::InFTL {
-            destination_system, ..
-        } => Some(*destination_system),
-        ShipState::Loitering { .. } => None,
-    }
-}
-
-fn classify_ship(
-    state: &ShipState,
-    current_system: Option<Entity>,
+/// #491 PR-4: Classify a [`ShipView`] (= projection / snapshot
+/// derived) into a UI category, plus the labels and timing payload.
+///
+/// Returns `None` for `Destroyed` / `Missing` — the player has no
+/// command surface for those ships, so they are filtered out of the
+/// Ship Operations tab. Callers `continue` on `None`.
+fn classify_view(
+    view: &ShipView,
+    timing: &ShipViewTiming,
     hostiles: &HashSet<Entity>,
     now: i64,
-) -> (Category, String, Option<i64>, i64) {
+) -> Option<(Category, String, Option<i64>, i64)> {
     // Combat override: if the ship is currently resident in a system
-    // containing a hostile entity AND it's not in transit, classify as
-    // Combat regardless of the other state bits. A ship in InFTL to a
-    // hostile-occupied system is still "travelling" — it's not yet
-    // engaged.
-    let in_transit = matches!(state, ShipState::InFTL { .. } | ShipState::SubLight { .. });
+    // containing a hostile entity AND it's not in transit, classify
+    // as Combat regardless of the other state bits. A ship in
+    // InTransitFTL / InTransitSubLight to a hostile-occupied system
+    // is still "travelling" — it's not yet engaged.
+    let in_transit = view.state.is_in_transit();
     if !in_transit
-        && let Some(sys) = current_system
+        && let Some(sys) = view.system
         && hostiles.contains(&sys)
     {
-        return (Category::Combat, "engaging hostiles".into(), None, now);
+        return Some((Category::Combat, "engaging hostiles".into(), None, now));
     }
 
-    match state {
-        ShipState::SubLight {
-            departed_at,
-            arrival_at,
-            ..
-        } => (
+    match &view.state {
+        ShipSnapshotState::InTransitSubLight => Some((
             Category::Travel,
             "sublight transit".into(),
-            Some(*arrival_at),
-            *departed_at,
-        ),
-        ShipState::InFTL {
-            departed_at,
-            arrival_at,
-            ..
-        } => (
+            timing.expected_tick,
+            timing.origin_tick,
+        )),
+        ShipSnapshotState::InTransitFTL => Some((
             Category::Travel,
             "in FTL".into(),
-            Some(*arrival_at),
-            *departed_at,
-        ),
-        ShipState::Surveying {
-            started_at,
-            completes_at,
-            ..
-        } => (
+            timing.expected_tick,
+            timing.origin_tick,
+        )),
+        ShipSnapshotState::Surveying => Some((
             Category::Survey,
             "surveying".into(),
-            Some(*completes_at),
-            *started_at,
-        ),
-        ShipState::Scouting {
-            started_at,
-            completes_at,
-            ..
-        } => (
-            Category::Survey,
-            "scouting".into(),
-            Some(*completes_at),
-            *started_at,
-        ),
-        ShipState::Settling {
-            started_at,
-            completes_at,
-            ..
-        } => (
+            timing.expected_tick,
+            timing.origin_tick,
+        )),
+        ShipSnapshotState::Settling => Some((
             Category::Other,
             "settling colony".into(),
-            Some(*completes_at),
-            *started_at,
-        ),
-        ShipState::Refitting {
-            started_at,
-            completes_at,
-            ..
-        } => (
+            timing.expected_tick,
+            timing.origin_tick,
+        )),
+        ShipSnapshotState::Refitting => Some((
             Category::Other,
             "refitting".into(),
-            Some(*completes_at),
-            *started_at,
-        ),
-        ShipState::InSystem { .. } => (Category::Other, "docked".into(), None, now),
-        ShipState::Loitering { .. } => (Category::Other, "loitering".into(), None, now),
+            timing.expected_tick,
+            timing.origin_tick,
+        )),
+        ShipSnapshotState::InSystem => Some((Category::Other, "docked".into(), None, now)),
+        ShipSnapshotState::Loitering { .. } => {
+            Some((Category::Other, "loitering".into(), None, now))
+        }
+        // Destroyed / Missing: filtered out of the tab. The player
+        // cannot act on these ships — `Destroyed` is a terminal
+        // state, `Missing` (#409) is "presumed lost". Letting them
+        // through would inflate the badge count for non-actionable
+        // entries.
+        ShipSnapshotState::Destroyed | ShipSnapshotState::Missing => None,
     }
 }
 
@@ -440,6 +506,9 @@ mod tests {
         let p = leaf.progress.expect("progress computed");
         // 50 is 40% of the way from 10 to 110.
         assert!((p - 0.4).abs() < 0.001, "unexpected progress {}", p);
+        // #491 PR-4: InTransitFTL must surface as "in FTL" — distinct
+        // from sublight transit.
+        assert!(leaf.label.contains("in FTL"));
     }
 
     #[test]
