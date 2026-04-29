@@ -802,37 +802,9 @@ pub fn sensor_buoy_detect_system(
                 continue;
             }
 
-            let (snapshot_state, last_system) = match state {
-                crate::ship::ShipState::InSystem { system } => {
-                    (ShipSnapshotState::InSystem, Some(*system))
-                }
-                crate::ship::ShipState::SubLight { target_system, .. } => {
-                    (ShipSnapshotState::InTransit, *target_system)
-                }
-                crate::ship::ShipState::InFTL {
-                    destination_system, ..
-                } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-                crate::ship::ShipState::Surveying { target_system, .. } => {
-                    (ShipSnapshotState::Surveying, Some(*target_system))
-                }
-                crate::ship::ShipState::Settling { system, .. } => {
-                    (ShipSnapshotState::Settling, Some(*system))
-                }
-                crate::ship::ShipState::Refitting { system, .. } => {
-                    (ShipSnapshotState::Refitting, Some(*system))
-                }
-                // #185: Loitering ship — encode position in snapshot state.
-                crate::ship::ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering {
-                        position: *position,
-                    },
-                    None,
-                ),
-                // #217: Scouting ship — display like Surveying for sensor observers.
-                crate::ship::ShipState::Scouting { target_system, .. } => {
-                    (ShipSnapshotState::Surveying, Some(*target_system))
-                }
-            };
+            // #491 (D-C-2): route through the shared helper so the
+            // buoy writer stays in lock-step with the reader path.
+            let (snapshot_state, last_system) = crate::knowledge::realtime_state_to_snapshot(state);
 
             detections.push(BuoyDetection {
                 buoy_pos: buoy_pos.as_array(),
@@ -858,8 +830,7 @@ pub fn sensor_buoy_detect_system(
             continue;
         };
         for det in &detections {
-            let buoy_to_viewer =
-                crate::physics::distance_ly_arr(det.buoy_pos, *viewer_pos_arr);
+            let buoy_to_viewer = crate::physics::distance_ly_arr(det.buoy_pos, *viewer_pos_arr);
             let delay = crate::physics::light_delay_hexadies(buoy_to_viewer);
             let observed_at = clock.elapsed - delay;
             if observed_at < 0 {
@@ -1041,8 +1012,7 @@ pub fn relay_knowledge_propagate_system(
     let hostile_maps: std::collections::HashMap<Entity, std::collections::HashMap<Entity, f64>> = {
         let mut out = std::collections::HashMap::new();
         for (empire_entity, _) in &empire_viewers {
-            let mut hm: std::collections::HashMap<Entity, f64> =
-                std::collections::HashMap::new();
+            let mut hm: std::collections::HashMap<Entity, f64> = std::collections::HashMap::new();
             for (at_system, stats, owner) in &hostiles {
                 let include = match owner {
                     Some(o) => faction_relations
@@ -1074,8 +1044,7 @@ pub fn relay_knowledge_propagate_system(
         std::collections::HashMap::new();
 
     // Reverse design lookup is invariant across the loop body.
-    let reverse =
-        crate::colony::system_buildings::build_reverse_design_map(&building_registry);
+    let reverse = crate::colony::system_buildings::build_reverse_design_map(&building_registry);
 
     for (_source_entity, source_structure, source_pos, relay) in &relays {
         let _ = relay.direction;
@@ -1109,8 +1078,7 @@ pub fn relay_knowledge_propagate_system(
                 if partner_range <= 0.0 {
                     return true; // 0 = infinite range
                 }
-                let dist =
-                    crate::physics::distance_ly_arr(*viewer_pos_arr, partner_arr);
+                let dist = crate::physics::distance_ly_arr(*viewer_pos_arr, partner_arr);
                 dist <= partner_range
             })
             .map(|(e, _)| *e)
@@ -1128,35 +1096,9 @@ pub fn relay_knowledge_propagate_system(
                 continue;
             }
 
-            let (snapshot_state, last_system) = match state {
-                crate::ship::ShipState::InSystem { system } => {
-                    (ShipSnapshotState::InSystem, Some(*system))
-                }
-                crate::ship::ShipState::SubLight { target_system, .. } => {
-                    (ShipSnapshotState::InTransit, *target_system)
-                }
-                crate::ship::ShipState::InFTL {
-                    destination_system, ..
-                } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-                crate::ship::ShipState::Surveying { target_system, .. } => {
-                    (ShipSnapshotState::Surveying, Some(*target_system))
-                }
-                crate::ship::ShipState::Settling { system, .. } => {
-                    (ShipSnapshotState::Settling, Some(*system))
-                }
-                crate::ship::ShipState::Refitting { system, .. } => {
-                    (ShipSnapshotState::Refitting, Some(*system))
-                }
-                crate::ship::ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering {
-                        position: *position,
-                    },
-                    None,
-                ),
-                crate::ship::ShipState::Scouting { target_system, .. } => {
-                    (ShipSnapshotState::Surveying, Some(*target_system))
-                }
-            };
+            // #491 (D-C-2): route through the shared helper so the
+            // relay writer stays in lock-step with the reader path.
+            let (snapshot_state, last_system) = crate::knowledge::realtime_state_to_snapshot(state);
 
             let snap = ShipSnapshot {
                 entity: ship_entity,

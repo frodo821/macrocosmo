@@ -24,6 +24,7 @@ pub mod facts;
 pub mod kind_registry;
 pub mod payload;
 pub mod perceived;
+pub mod ship_view;
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -48,6 +49,9 @@ use crate::time_system::GameClock;
 
 #[allow(unused_imports)]
 pub use perceived::{FactionId, PerceivedInfo, perceived_fleet, perceived_system};
+
+#[allow(unused_imports)]
+pub use ship_view::{ShipView, ShipViewTiming, realtime_state_to_snapshot, ship_view};
 
 /// Round 9 PR #1 Step 3: Bundled `SystemParam` for the queries that
 /// [`collect_faction_vantages`] needs. Lets fact-emitting systems
@@ -540,10 +544,20 @@ pub struct ShipSnapshot {
 }
 
 /// Simplified ship state for knowledge snapshots.
+///
+/// #491 (D-H-4): `InTransit` was split into `InTransitSubLight` and
+/// `InTransitFTL` so the player UI can keep the FTL/sublight distinction
+/// — an FTL ship cannot be intercepted (game contract), and the player
+/// needs to see that without inspecting the realtime ECS state.
 #[derive(Clone, Debug, PartialEq, bevy::reflect::Reflect)]
 pub enum ShipSnapshotState {
     InSystem,
-    InTransit,
+    /// Ship is travelling at sub-light speed between two locations.
+    InTransitSubLight,
+    /// Ship is travelling under FTL between two surveyed star systems.
+    /// FTL ships cannot be intercepted — the player UI surfaces this
+    /// distinction so commands cannot be issued mid-flight.
+    InTransitFTL,
     Surveying,
     Settling,
     Refitting,
@@ -554,6 +568,18 @@ pub enum ShipSnapshotState {
     Loitering {
         position: [f64; 3],
     },
+}
+
+impl ShipSnapshotState {
+    /// #491 (D-H-4): Convenience predicate covering the two transit
+    /// variants. Use when the caller only needs "is the ship moving
+    /// between two locations" without distinguishing FTL from SubLight.
+    pub fn is_in_transit(&self) -> bool {
+        matches!(
+            self,
+            ShipSnapshotState::InTransitSubLight | ShipSnapshotState::InTransitFTL
+        )
+    }
 }
 
 /// #474: Per-empire trajectory projection for an own-empire ship (epic #473).
@@ -897,8 +923,17 @@ pub fn compute_ship_projection(
 ///   `intended_takes_effect_at` but leaves `intended_state` blank).
 pub fn command_kind_to_intended_state(kind: &str) -> Option<ShipSnapshotState> {
     match kind {
+        // #491 (D-H-4): The intended-state layer cannot predict FTL vs
+        // SubLight at command-issue time — route planning is async,
+        // see `crate::ship::routing::poll_pending_routes`. We seed
+        // `InTransitSubLight` as the conservative placeholder; once
+        // the A* route plan completes, `poll_pending_routes` upgrades
+        // the projection's `intended_state` to `InTransitFTL` when
+        // the resolved first segment is an FTL hop. No
+        // `KnowledgeFact` is required — the dispatching empire's
+        // belief is self-updated, not observed.
         "attack_target" | "reposition" | "blockade" | "fortify_system" | "move_ruler"
-        | "move_to" => Some(ShipSnapshotState::InTransit),
+        | "move_to" => Some(ShipSnapshotState::InTransitSubLight),
         "survey_system" => Some(ShipSnapshotState::Surveying),
         "colonize_system" | "colonize_planet" => Some(ShipSnapshotState::Settling),
         _ => None,
@@ -1949,34 +1984,10 @@ pub fn propagate_knowledge(
                 continue;
             }
 
-            let (snapshot_state, last_system) = match state {
-                ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
-                ShipState::SubLight { target_system, .. } => {
-                    (ShipSnapshotState::InTransit, *target_system)
-                }
-                ShipState::InFTL {
-                    destination_system, ..
-                } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-                ShipState::Surveying { target_system, .. } => {
-                    (ShipSnapshotState::Surveying, Some(*target_system))
-                }
-                ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
-                ShipState::Refitting { system, .. } => {
-                    (ShipSnapshotState::Refitting, Some(*system))
-                }
-                // #185: Loitering snapshot carries its position so the UI can render the
-                // ship's last-known location even after it has moved on.
-                ShipState::Loitering { position } => (
-                    ShipSnapshotState::Loitering {
-                        position: *position,
-                    },
-                    None,
-                ),
-                // #217: Scouting — surface like Surveying to external observers.
-                ShipState::Scouting { target_system, .. } => {
-                    (ShipSnapshotState::Surveying, Some(*target_system))
-                }
-            };
+            // #491 (D-C-2): Route the snapshot writer through the same
+            // helper the readers use, so writer/reader stay in lock-step
+            // when the conversion logic evolves.
+            let (snapshot_state, last_system) = ship_view::realtime_state_to_snapshot(state);
 
             store.update_ship(ShipSnapshot {
                 entity: ship_entity,

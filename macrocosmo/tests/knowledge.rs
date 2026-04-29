@@ -957,7 +957,7 @@ fn test_knowledge_store_ship_update_newer_replaces() {
         entity,
         name: "Ship".into(),
         design_id: "test".into(),
-        last_known_state: ShipSnapshotState::InTransit,
+        last_known_state: ShipSnapshotState::InTransitSubLight,
         last_known_system: None,
         observed_at: 20,
         hp: 80.0,
@@ -967,7 +967,7 @@ fn test_knowledge_store_ship_update_newer_replaces() {
 
     let snap = store.get_ship(entity).unwrap();
     assert_eq!(snap.observed_at, 20);
-    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransitSubLight);
 }
 
 #[test]
@@ -985,7 +985,7 @@ fn test_knowledge_store_ship_older_does_not_replace() {
         entity,
         name: "Ship".into(),
         design_id: "test".into(),
-        last_known_state: ShipSnapshotState::InTransit,
+        last_known_state: ShipSnapshotState::InTransitSubLight,
         last_known_system: None,
         observed_at: 20,
         hp: 80.0,
@@ -1010,7 +1010,7 @@ fn test_knowledge_store_ship_older_does_not_replace() {
         snap.observed_at, 20,
         "Newer observation should not be replaced by older"
     );
-    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransitSubLight);
 }
 
 // --- #118: Sensor Buoy detection tests ---
@@ -1126,7 +1126,7 @@ fn test_sensor_buoy_detects_sublight_ship_in_range() {
     // The most-recent observation wins. Whether buoy or propagate_knowledge
     // wins depends on internals. The behavior we verify is: snapshot exists
     // and reflects the SubLight state.
-    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransit);
+    assert_eq!(snap.last_known_state, ShipSnapshotState::InTransitSubLight);
     assert_eq!(snap.name, "Probe-1");
 }
 

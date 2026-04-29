@@ -129,11 +129,13 @@ fn snapshot_knowledge(app: &App, empire: Entity) -> KnowledgeStore {
 /// Run a query against the world's ship table the same way `draw_outline`
 /// does, then call `compute_in_transit_entries`. Returns the produced
 /// entries.
-fn run_in_transit(
-    app: &mut App,
-    knowledge_owner: Option<Entity>,
-    is_observer: bool,
-) -> Vec<InTransitEntry> {
+///
+/// #491 (D-M-9): the legacy `is_observer` parameter was removed —
+/// observer mode is now expressed via `viewing_empire = Some(observed)`.
+/// Callers that previously passed `is_observer = true` with
+/// `viewing_empire = None` should pass the observed empire entity
+/// instead.
+fn run_in_transit(app: &mut App, knowledge_owner: Option<Entity>) -> Vec<InTransitEntry> {
     let knowledge_snap = knowledge_owner.map(|e| snapshot_knowledge(app, e));
     let mut state: bevy::ecs::system::SystemState<
         Query<(
@@ -146,12 +148,7 @@ fn run_in_transit(
         )>,
     > = bevy::ecs::system::SystemState::new(app.world_mut());
     let ships = state.get_mut(app.world_mut());
-    compute_in_transit_entries(
-        &ships,
-        knowledge_snap.as_ref(),
-        knowledge_owner,
-        is_observer,
-    )
+    compute_in_transit_entries(&ships, knowledge_snap.as_ref(), knowledge_owner)
 }
 
 /// Same shape as `run_in_transit` but for the per-ship `ship_outline_view`
@@ -160,7 +157,6 @@ fn run_outline_view(
     app: &mut App,
     ship: Entity,
     knowledge_owner: Option<Entity>,
-    is_observer: bool,
 ) -> Option<ShipOutlineView> {
     let knowledge_snap = knowledge_owner.map(|e| snapshot_knowledge(app, e));
     let ship_ref = app.world().entity(ship);
@@ -172,7 +168,6 @@ fn run_outline_view(
         state,
         knowledge_snap.as_ref(),
         knowledge_owner,
-        is_observer,
     )
 }
 
@@ -231,7 +226,7 @@ fn outline_in_transit_section_uses_projection_not_realtime() {
         },
     );
 
-    let entries = run_in_transit(&mut app, Some(empire), false);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert!(
         entries.is_empty(),
         "FTL leak regression: own-empire ship must NOT appear in 'In Transit' \
@@ -241,7 +236,7 @@ fn outline_in_transit_section_uses_projection_not_realtime() {
 
     // The same ship through `ship_outline_view` should report the
     // projected state (`InSystem`), not the realtime `InFTL`.
-    let view = run_outline_view(&mut app, ship, Some(empire), false).expect("view");
+    let view = run_outline_view(&mut app, ship, Some(empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::InSystem);
     assert_eq!(view.system, Some(home));
 }
@@ -299,12 +294,12 @@ fn outline_post_arrival_uses_projection() {
         },
     );
 
-    let entries = run_in_transit(&mut app, Some(empire), false);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert_eq!(entries.len(), 1, "ship must appear in 'In Transit'");
     assert_eq!(entries[0].entity, ship);
     assert_eq!(entries[0].status, "Surveying");
 
-    let view = run_outline_view(&mut app, ship, Some(empire), false).expect("view");
+    let view = run_outline_view(&mut app, ship, Some(empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::Surveying);
     assert_eq!(view.system, Some(frontier));
 }
@@ -346,7 +341,7 @@ fn outline_no_projection_handles_gracefully() {
         },
     );
 
-    let entries = run_in_transit(&mut app, Some(empire), false);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert!(
         entries.is_empty(),
         "without projection the ship must be skipped, not rendered with \
@@ -354,7 +349,7 @@ fn outline_no_projection_handles_gracefully() {
         entries
     );
 
-    let view = run_outline_view(&mut app, ship, Some(empire), false);
+    let view = run_outline_view(&mut app, ship, Some(empire));
     assert!(
         view.is_none(),
         "ship_outline_view returns None for own-ship without projection"
@@ -430,13 +425,13 @@ fn outline_foreign_ship_uses_snapshot() {
         ShipState::InSystem { system: home },
     );
 
-    let view = run_outline_view(&mut app, foreign_ship, Some(viewing_empire), false).expect("view");
+    let view = run_outline_view(&mut app, foreign_ship, Some(viewing_empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::Surveying);
     assert_eq!(view.system, Some(foreign_sys));
 
     // `compute_in_transit_entries` filters out foreign-empire ships
     // (they have their own UI surface, not the In Transit section).
-    let entries = run_in_transit(&mut app, Some(viewing_empire), false);
+    let entries = run_in_transit(&mut app, Some(viewing_empire));
     assert!(
         entries.iter().all(|e| e.entity != foreign_ship),
         "foreign ship must not appear in In Transit. Entries: {:?}",
@@ -502,14 +497,124 @@ fn outline_observer_mode_is_light_coherent_via_projection() {
 
     // Observer mode = empire-view, light-coherent: should report the
     // projected InSystem state, NOT the realtime Surveying.
-    let view = run_outline_view(&mut app, ship, Some(empire), true).expect("view");
+    let view = run_outline_view(&mut app, ship, Some(empire)).expect("view");
     assert_eq!(view.state, ShipSnapshotState::InSystem);
     assert_eq!(view.system, Some(home));
 
     // Steady-state per projection => not in In-Transit section.
-    let entries = run_in_transit(&mut app, Some(empire), true);
+    let entries = run_in_transit(&mut app, Some(empire));
     assert!(
         entries.is_empty(),
         "observer mode must hide realtime ECS state — In-Transit section must be empty when projection says InSystem"
+    );
+}
+
+/// #491 / #495 sibling: the existing
+/// `outline_observer_mode_is_light_coherent_via_projection` test only
+/// exercises `viewing_empire == ship.owner` (= observer is looking at
+/// their own ship), which collapses to the own-ship projection path
+/// and degenerates the foreign-ship branch. This test pins the
+/// *foreign-ship-as-observer* contract: an observer that is NOT the
+/// ship's owner must read the snapshot side, ignoring realtime ECS
+/// ground truth.
+#[test]
+fn outline_observer_mode_foreign_ship_uses_snapshot() {
+    let mut app = test_app();
+
+    // Viewing empire — the empire whose KnowledgeStore we read.
+    let viewing_empire = spawn_minimal_empire(&mut app);
+
+    // Foreign empire — owns the ship under test. Spawned as a separate
+    // entity (does not need PlayerEmpire / SystemVisibilityMap on the
+    // observer-side path; we only read the viewing empire's store).
+    let foreign_empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Foreign".into(),
+            },
+            Faction {
+                id: "foreign".into(),
+                name: "Foreign".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            macrocosmo::knowledge::SystemVisibilityMap::default(),
+        ))
+        .id();
+
+    let last_known_sys = spawn_test_system(
+        app.world_mut(),
+        "LastKnownSys",
+        [10.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+    let realtime_dest = spawn_test_system(
+        app.world_mut(),
+        "RealtimeDest",
+        [200.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    let ship = spawn_test_ship(app.world_mut(), "EnemyShip", foreign_empire, last_known_sys);
+
+    // Viewing empire's snapshot of the foreign ship: last seen at
+    // sub-light transit (= light-delayed observation of an earlier
+    // command). The realtime ECS will then advance to FTL — observer
+    // mode must NOT see that.
+    {
+        let mut em = app.world_mut().entity_mut(viewing_empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_ship(ShipSnapshot {
+            entity: ship,
+            name: "EnemyShip".into(),
+            design_id: "explorer_mk1".into(),
+            last_known_state: ShipSnapshotState::InTransitSubLight,
+            last_known_system: Some(last_known_sys),
+            observed_at: 0,
+            hp: 100.0,
+            hp_max: 100.0,
+            source: ObservationSource::Direct,
+        });
+    }
+
+    // Realtime: the ship has actually entered FTL (post-snapshot
+    // ground truth). The observer-as-foreign path must hide this.
+    set_ship_state(
+        app.world_mut(),
+        ship,
+        ShipState::InFTL {
+            origin_system: last_known_sys,
+            destination_system: realtime_dest,
+            departed_at: 1,
+            arrival_at: 5,
+        },
+    );
+
+    // Observer: viewing as `viewing_empire`, looking at a ship owned
+    // by `foreign_empire`. Must read the snapshot path, NOT realtime.
+    let view = run_outline_view(&mut app, ship, Some(viewing_empire))
+        .expect("foreign-ship-as-observer must produce a view via snapshot");
+    assert_eq!(
+        view.state,
+        ShipSnapshotState::InTransitSubLight,
+        "foreign-ship observer view must reflect snapshot (sublight), \
+         not realtime FTL ground truth"
+    );
+    assert_eq!(view.system, Some(last_known_sys));
+
+    // Foreign ships are filtered out of the In-Transit section by
+    // design (they have their own UI surface) — keep the existing
+    // contract from `outline_foreign_ship_uses_snapshot`.
+    let entries = run_in_transit(&mut app, Some(viewing_empire));
+    assert!(
+        entries.iter().all(|e| e.entity != ship),
+        "foreign ship must not appear in In-Transit (observer mode). Entries: {:?}",
+        entries
     );
 }

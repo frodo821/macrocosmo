@@ -94,7 +94,7 @@ fn ship_projection_round_trips_through_postcard() {
         dispatched_at: 200,
         expected_arrival_at: Some(215),
         expected_return_at: None,
-        projected_state: ShipSnapshotState::InTransit,
+        projected_state: ShipSnapshotState::InTransitSubLight,
         projected_system: Some(sys_z),
         intended_state: Some(ShipSnapshotState::Settling),
         intended_system: Some(sys_z),
@@ -154,7 +154,7 @@ fn ship_projection_round_trips_through_postcard() {
         .expect("ship_c projection round-trip");
     assert_eq!(p_c.expected_arrival_at, Some(215));
     assert_eq!(p_c.expected_return_at, None);
-    assert_eq!(p_c.projected_state, ShipSnapshotState::InTransit);
+    assert_eq!(p_c.projected_state, ShipSnapshotState::InTransitSubLight);
     assert_eq!(p_c.intended_state, Some(ShipSnapshotState::Settling));
     assert_eq!(p_c.intended_takes_effect_at, Some(208));
 

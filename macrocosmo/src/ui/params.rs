@@ -21,6 +21,24 @@ use crate::visualization::{
     ContextMenu, SelectedPlanet, SelectedShip, SelectedShips, SelectedSystem,
 };
 
+/// #491 (D-H-7): Resolve a [`StarSystem`] [`Entity`] to its display name.
+///
+/// Falls back to `"Unknown"` when the entity is not a star system (e.g.
+/// the entity was just despawned, or the caller passed a non-system).
+/// Centralised here so `ship_panel` / `ship_view` / `outline` /
+/// `situation_center` all share a single definition; pre-#491 each
+/// module shipped its own copy and they had subtly diverging fallback
+/// strings.
+pub fn system_name(
+    entity: Entity,
+    stars: &Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
+) -> String {
+    stars
+        .get(entity)
+        .map(|(_, s, _, _)| s.name.clone())
+        .unwrap_or_else(|_| "Unknown".to_string())
+}
+
 #[derive(SystemParam)]
 pub struct MainPanelWorldQueries<'w, 's> {
     pub positions: Query<'w, 's, &'static Position>,

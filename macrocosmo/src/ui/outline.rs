@@ -11,114 +11,28 @@ use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::ship_design::ShipDesignRegistry;
 use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem};
 
-/// #487: Light-coherent rendering of a ship in the outline tree.
-///
-/// `state` is a [`ShipSnapshotState`] derived from either the viewing
-/// empire's projection (own-empire ship) or `ship_snapshots` (foreign
-/// ship), or — in observer mode / when no `KnowledgeStore` is resolved —
-/// from the realtime ECS [`ShipState`] as ground truth.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ShipOutlineView {
-    pub state: ShipSnapshotState,
-    pub system: Option<Entity>,
-}
-
-/// #487: Convert a realtime [`ShipState`] to the corresponding
-/// [`ShipSnapshotState`] for observer-mode ground-truth rendering.
-///
-/// Mirrors the conversion used at observation-recording time in the
-/// ship-snapshot writer. `SubLight`/`InFTL`/`Scouting` collapse into the
-/// coarser `InTransit`/`Surveying` snapshot variants — observer mode and
-/// the projection-driven path therefore render the same set of labels.
-fn realtime_state_to_snapshot(state: &ShipState) -> (ShipSnapshotState, Option<Entity>) {
-    match state {
-        ShipState::InSystem { system } => (ShipSnapshotState::InSystem, Some(*system)),
-        ShipState::SubLight { target_system, .. } => (ShipSnapshotState::InTransit, *target_system),
-        ShipState::InFTL {
-            destination_system, ..
-        } => (ShipSnapshotState::InTransit, Some(*destination_system)),
-        ShipState::Surveying { target_system, .. } => {
-            (ShipSnapshotState::Surveying, Some(*target_system))
-        }
-        ShipState::Settling { system, .. } => (ShipSnapshotState::Settling, Some(*system)),
-        ShipState::Refitting { system, .. } => (ShipSnapshotState::Refitting, Some(*system)),
-        ShipState::Loitering { position } => (
-            ShipSnapshotState::Loitering {
-                position: *position,
-            },
-            None,
-        ),
-        ShipState::Scouting { target_system, .. } => {
-            (ShipSnapshotState::Surveying, Some(*target_system))
-        }
-    }
-}
-
-/// #487: Compute the outline tree's view of a ship's state, gated by the
-/// light-speed contract.
-///
-/// * **Own-empire ship** (in normal play): read the projected state from
-///   the viewing empire's `KnowledgeStore::projections`. The realtime ECS
-///   [`ShipState`] is intentionally ignored — that's the FTL leak fix
-///   (epic #473 / #487).
-/// * **Foreign ship** (in normal play): read the last-known state from
-///   the viewing empire's `KnowledgeStore::ship_snapshots`. Unchanged
-///   from the pre-#487 contract (it was already snapshot-mediated).
-/// * **Observer mode** (= empire-view, viewing as another empire): treated
-///   identically to own-empire normal play — projection / snapshot of the
-///   **viewing empire** (= the observed empire whose perspective the player
-///   is borrowing). Light-speed coherent. A separate omniscient (god-view)
-///   mode is the right way to expose realtime ground truth (#490, follow-up).
-/// * **No `KnowledgeStore` resolved** (early Startup frames before empires
-///   are wired): fall back to realtime ECS state — there's no light-coherent
-///   view to use.
-///
-/// Returns `None` when the ship has no entry in the viewing empire's
-/// knowledge — e.g. a freshly-spawned own-ship before its seed projection
-/// lands (#481), or a foreign ship the empire has never observed. The
-/// caller decides how to render the absence (skip / Unknown).
-pub fn ship_outline_view(
-    ship_entity: Entity,
-    ship: &Ship,
-    realtime_state: &ShipState,
-    viewing_knowledge: Option<&KnowledgeStore>,
-    viewing_empire: Option<Entity>,
-    _is_observer: bool,
-) -> Option<ShipOutlineView> {
-    // No KnowledgeStore resolved (e.g. very early Startup frames before
-    // empires are wired). Fall back to realtime ECS as a defensive path.
-    // Observer mode (#440) is NOT a fall-through: it still uses the
-    // viewing empire's KnowledgeStore — that's the whole point of
-    // empire-view observer being light-coherent.
-    if viewing_knowledge.is_none() {
-        let (state, system) = realtime_state_to_snapshot(realtime_state);
-        return Some(ShipOutlineView { state, system });
-    }
-    let store = viewing_knowledge.unwrap();
-    if let Owner::Empire(owner) = ship.owner {
-        if Some(owner) == viewing_empire {
-            // Own ship: projection is the only legal source.
-            return store.get_projection(ship_entity).map(|p| ShipOutlineView {
-                state: p.projected_state.clone(),
-                system: p.projected_system,
-            });
-        }
-    }
-    // Foreign ship: snapshot is the only legal source.
-    store.get_ship(ship_entity).map(|s| ShipOutlineView {
-        state: s.last_known_state.clone(),
-        system: s.last_known_system,
-    })
-}
+// #491: The `ShipOutlineView` / `ship_outline_view` helpers were factored
+// out of this module into [`crate::knowledge::ship_view`] (data shape +
+// selection) and [`crate::ui::ship_view`] (egui-adjacent formatters) so
+// every UI panel can share the same projection-/snapshot-mediated read
+// path. The names here remain exported as backward-compatibility aliases —
+// existing imports (incl. `tests/outline_tree_ftl_leak.rs`) continue to
+// work unchanged.
+pub use crate::knowledge::ShipView as ShipOutlineView;
+pub use crate::knowledge::ship_view as ship_outline_view;
 
 /// #487: Status label for the "In Transit" section. Returns `None` for
 /// steady-state variants (`InSystem` / `Refitting`) so the caller can
 /// filter them out — they belong in the docked / Stationed-Elsewhere
 /// sections.
+///
+/// #491 (D-H-4): SubLight/FTL transit are surfaced separately so the
+/// player sees that an FTL ship cannot be intercepted.
 fn snapshot_status_in_transit_label(state: &ShipSnapshotState) -> Option<&'static str> {
     match state {
         ShipSnapshotState::InSystem | ShipSnapshotState::Refitting => None,
-        ShipSnapshotState::InTransit => Some("In Transit"),
+        ShipSnapshotState::InTransitSubLight => Some("In Transit"),
+        ShipSnapshotState::InTransitFTL => Some("FTL"),
         ShipSnapshotState::Surveying => Some("Surveying"),
         ShipSnapshotState::Settling => Some("Settling"),
         ShipSnapshotState::Loitering { .. } => Some("Loitering"),
@@ -132,7 +46,8 @@ fn snapshot_status_in_transit_label(state: &ShipSnapshotState) -> Option<&'stati
 fn snapshot_status_tooltip_label(state: &ShipSnapshotState) -> &'static str {
     match state {
         ShipSnapshotState::InSystem => "Docked",
-        ShipSnapshotState::InTransit => "In Transit",
+        ShipSnapshotState::InTransitSubLight => "In Transit",
+        ShipSnapshotState::InTransitFTL => "FTL",
         ShipSnapshotState::Surveying => "Surveying",
         ShipSnapshotState::Settling => "Settling",
         ShipSnapshotState::Refitting => "Refitting",
@@ -297,7 +212,6 @@ fn draw_ship_list(
     is_station: bool,
     viewing_knowledge: Option<&KnowledgeStore>,
     viewing_empire: Option<Entity>,
-    is_observer: bool,
 ) {
     if ship_entries.is_empty() {
         ui.label(egui::RichText::new("  (no ships)").weak().italics());
@@ -323,7 +237,6 @@ fn draw_ship_list(
                     &state,
                     viewing_knowledge,
                     viewing_empire,
-                    is_observer,
                 );
                 response = response.on_hover_ui(|ui| {
                     ship_tooltip(ui, &ship, view.as_ref().map(|v| &v.state), &hp, design_name);
@@ -445,31 +358,26 @@ pub fn compute_in_transit_entries(
     )>,
     viewing_knowledge: Option<&KnowledgeStore>,
     viewing_empire: Option<Entity>,
-    is_observer: bool,
 ) -> Vec<InTransitEntry> {
     let mut out: Vec<InTransitEntry> = Vec::new();
     for (entity, ship, state, _, _, _) in ships.iter() {
         if ship.is_immobile() {
             continue;
         }
-        // Only own-empire ships flow through the In Transit section. In
-        // observer mode every ship is treated as "own" (matches the
-        // pre-#487 behaviour and the `is_own_ship` predicate in
-        // `draw_outline`).
-        if !(is_observer || viewing_empire.is_none()) {
-            let viewing = viewing_empire.unwrap();
-            if ship.owner != Owner::Empire(viewing) {
-                continue;
+        // #491 (D-M-9): Only own-empire ships flow through the In
+        // Transit section. The realtime fallback path
+        // (`viewing_knowledge.is_none()`, e.g. early Startup) shows
+        // every ship since there's no empire-side filter to apply yet.
+        if viewing_knowledge.is_some() {
+            if let Some(viewing) = viewing_empire {
+                if ship.owner != Owner::Empire(viewing) {
+                    continue;
+                }
             }
         }
-        let Some(view) = ship_outline_view(
-            entity,
-            &ship,
-            &state,
-            viewing_knowledge,
-            viewing_empire,
-            is_observer,
-        ) else {
+        let Some(view) =
+            ship_outline_view(entity, &ship, &state, viewing_knowledge, viewing_empire)
+        else {
             // No projection / snapshot — skip. (= a freshly-spawned
             // ship before its seed projection lands; #481 covers the
             // common case.)
@@ -509,27 +417,24 @@ pub fn compute_stationed_elsewhere(
     owned_system_entities: &[Entity],
     viewing_knowledge: Option<&KnowledgeStore>,
     viewing_empire: Option<Entity>,
-    is_observer: bool,
 ) -> Vec<(Entity, String, Vec<(Entity, String, String)>)> {
     let mut out: Vec<(Entity, String, Vec<(Entity, String, String)>)> = Vec::new();
     for (entity, ship, state, _, _, _) in ships.iter() {
         if ship.is_immobile() {
             continue;
         }
-        if !(is_observer || viewing_empire.is_none()) {
-            let viewing = viewing_empire.unwrap();
-            if ship.owner != Owner::Empire(viewing) {
-                continue;
+        // #491 (D-M-9): only own-empire ships, except in the realtime
+        // fallback (early Startup with no KnowledgeStore yet).
+        if viewing_knowledge.is_some() {
+            if let Some(viewing) = viewing_empire {
+                if ship.owner != Owner::Empire(viewing) {
+                    continue;
+                }
             }
         }
-        let Some(view) = ship_outline_view(
-            entity,
-            &ship,
-            &state,
-            viewing_knowledge,
-            viewing_empire,
-            is_observer,
-        ) else {
+        let Some(view) =
+            ship_outline_view(entity, &ship, &state, viewing_knowledge, viewing_empire)
+        else {
             continue;
         };
         if !matches!(view.state, ShipSnapshotState::InSystem) {
@@ -695,7 +600,6 @@ pub fn draw_outline(
                             ship_owner_filter,
                             viewing_knowledge,
                             viewed_empire,
-                            is_observer,
                         );
                         let docked = ships_docked_at(
                             *system_entity,
@@ -703,7 +607,6 @@ pub fn draw_outline(
                             ship_owner_filter,
                             viewing_knowledge,
                             viewed_empire,
-                            is_observer,
                         );
                         let has_both = !system_stations.is_empty() && !docked.is_empty();
                         if !system_stations.is_empty() {
@@ -726,7 +629,6 @@ pub fn draw_outline(
                                     true,
                                     viewing_knowledge,
                                     viewed_empire,
-                                    is_observer,
                                 );
                             });
                         }
@@ -756,7 +658,6 @@ pub fn draw_outline(
                                 selected_system,
                                 viewing_knowledge,
                                 viewed_empire,
-                                is_observer,
                             );
                         });
                     }
@@ -777,7 +678,6 @@ pub fn draw_outline(
                     &owned_system_entities,
                     viewing_knowledge,
                     viewed_empire,
-                    is_observer,
                 );
 
                 if !unowned_system_ships.is_empty() {
@@ -821,7 +721,6 @@ pub fn draw_outline(
                                                 selected_system,
                                                 viewing_knowledge,
                                                 viewed_empire,
-                                                is_observer,
                                             );
                                         },
                                     );
@@ -836,12 +735,8 @@ pub fn draw_outline(
                 // #487: Routed through `compute_in_transit_entries` so the
                 // gating state comes from the viewing empire's
                 // `ShipProjection`, never realtime ECS.
-                let in_transit = compute_in_transit_entries(
-                    ships,
-                    viewing_knowledge,
-                    viewed_empire,
-                    is_observer,
-                );
+                let in_transit =
+                    compute_in_transit_entries(ships, viewing_knowledge, viewed_empire);
 
                 if !in_transit.is_empty() {
                     ui.separator();
@@ -869,7 +764,6 @@ pub fn draw_outline(
                                         &state,
                                         viewing_knowledge,
                                         viewed_empire,
-                                        is_observer,
                                     );
                                     response = response.on_hover_ui(|ui| {
                                         ship_tooltip(
@@ -936,7 +830,6 @@ fn ships_docked_at(
     owner_filter: Option<Entity>,
     viewing_knowledge: Option<&KnowledgeStore>,
     viewing_empire: Option<Entity>,
-    is_observer: bool,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -949,14 +842,7 @@ fn ships_docked_at(
                     return None;
                 }
             }
-            let view = ship_outline_view(
-                e,
-                &ship,
-                &state,
-                viewing_knowledge,
-                viewing_empire,
-                is_observer,
-            )?;
+            let view = ship_outline_view(e, &ship, &state, viewing_knowledge, viewing_empire)?;
             if matches!(view.state, ShipSnapshotState::InSystem) && view.system == Some(system) {
                 return Some((e, ship.name.clone(), ship.design_id.clone()));
             }
@@ -990,7 +876,6 @@ fn draw_fleet_grouped_ship_list(
     selected_system: &mut SelectedSystem,
     viewing_knowledge: Option<&KnowledgeStore>,
     viewing_empire: Option<Entity>,
-    is_observer: bool,
 ) {
     if ship_entries.is_empty() {
         ui.label(egui::RichText::new("  (no ships)").weak().italics());
@@ -1053,7 +938,6 @@ fn draw_fleet_grouped_ship_list(
                 false,
                 viewing_knowledge,
                 viewing_empire,
-                is_observer,
             );
         });
     }
@@ -1072,7 +956,6 @@ fn draw_fleet_grouped_ship_list(
             false,
             viewing_knowledge,
             viewing_empire,
-            is_observer,
         );
     }
 }
@@ -1095,7 +978,6 @@ fn stations_at(
     owner_filter: Option<Entity>,
     viewing_knowledge: Option<&KnowledgeStore>,
     viewing_empire: Option<Entity>,
-    is_observer: bool,
 ) -> Vec<(Entity, String, String)> {
     let mut result: Vec<(Entity, String, String)> = ships
         .iter()
@@ -1108,14 +990,7 @@ fn stations_at(
                     return None;
                 }
             }
-            let view = ship_outline_view(
-                e,
-                &ship,
-                &state,
-                viewing_knowledge,
-                viewing_empire,
-                is_observer,
-            )?;
+            let view = ship_outline_view(e, &ship, &state, viewing_knowledge, viewing_empire)?;
             if matches!(view.state, ShipSnapshotState::InSystem) && view.system == Some(system) {
                 return Some((e, ship.name.clone(), ship.design_id.clone()));
             }

@@ -469,8 +469,21 @@ pub struct ProjectionWriteParams<'w, 's> {
 /// `scripting::gamestate_scope::write_lua_dispatch_projection`).
 pub fn queued_command_intended_state(cmd: &QueuedCommand) -> Option<ShipSnapshotState> {
     match cmd {
+        // #491 (D-H-4): The dispatcher cannot know FTL vs SubLight at
+        // command-issue time — route planning is async (see
+        // `crate::ship::routing::PendingRoute` /
+        // `poll_pending_routes`). The intended-state layer is seeded
+        // here with `InTransitSubLight` as the conservative
+        // placeholder; once the A* route plan completes,
+        // `poll_pending_routes` upgrades the projection's
+        // `intended_state` to `InTransitFTL` when `segments[0]` is an
+        // FTL hop. No `KnowledgeFact::ShipDeparted` is required — the
+        // dispatching empire's belief is self-updated, not observed
+        // (the player UI must surface the FTL distinction the moment
+        // the route plan resolves, well before any light-coherent
+        // observation could arrive).
         QueuedCommand::MoveTo { .. } | QueuedCommand::MoveToCoordinates { .. } => {
-            Some(ShipSnapshotState::InTransit)
+            Some(ShipSnapshotState::InTransitSubLight)
         }
         QueuedCommand::Survey { .. } | QueuedCommand::Scout { .. } => {
             Some(ShipSnapshotState::Surveying)

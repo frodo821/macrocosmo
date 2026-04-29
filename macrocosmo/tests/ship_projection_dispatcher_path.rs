@@ -267,7 +267,7 @@ fn dispatcher_overwrites_when_head_diverges_from_existing() {
             expected_return_at: None,
             projected_state: ShipSnapshotState::InSystem,
             projected_system: Some(home),
-            intended_state: Some(ShipSnapshotState::InTransit),
+            intended_state: Some(ShipSnapshotState::InTransitSubLight),
             intended_system: Some(home),
             intended_takes_effect_at: Some(8),
         });
@@ -378,7 +378,7 @@ fn dispatcher_writes_after_reconcile_clears_intended() {
         .expect("projection must persist through update");
     assert_eq!(
         projection.intended_state,
-        Some(ShipSnapshotState::InTransit),
+        Some(ShipSnapshotState::InTransitSubLight),
         "post-reconcile None intended_state must be overwritten by head's InTransit"
     );
     assert_eq!(
@@ -482,10 +482,16 @@ fn dispatcher_handles_multiple_command_variants() {
     let move_proj = store
         .get_projection(move_ship)
         .expect("MoveTo projection missing");
+    // #491 (D-H-4 follow-up): the dispatcher seeds `InTransitSubLight`
+    // as the conservative placeholder; once `poll_pending_routes`
+    // resolves the route plan in the same `app.update()`, the empire's
+    // projection's `intended_state` is upgraded to `InTransitFTL`
+    // because the move_target is FTL-reachable (surveyed, in range).
+    // This pins the post-route-plan upgrade contract.
     assert_eq!(
         move_proj.intended_state,
-        Some(ShipSnapshotState::InTransit),
-        "MoveTo ⇒ InTransit"
+        Some(ShipSnapshotState::InTransitFTL),
+        "MoveTo with FTL-reachable target ⇒ InTransitFTL after route plan resolves"
     );
     assert_eq!(move_proj.intended_system, Some(move_target));
 

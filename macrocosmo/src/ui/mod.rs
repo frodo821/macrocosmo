@@ -7,6 +7,7 @@ pub mod outline;
 pub mod overlays;
 pub mod params;
 pub mod ship_panel;
+pub mod ship_view;
 pub mod situation_center;
 pub mod system_panel;
 pub mod top_bar;

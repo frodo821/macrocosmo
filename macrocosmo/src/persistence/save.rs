@@ -144,7 +144,15 @@ use super::savebag::*;
 /// dispatcher's `intended_*` projection layer set indefinitely. Postcard's
 /// positional encoding requires a version bump (18 → 19) and a fixture
 /// regeneration. v18 saves are strictly rejected at load.
-pub const SAVE_VERSION: u32 = 19;
+/// #491 (D-H-4): split `ShipSnapshotState::InTransit` into
+/// `InTransitSubLight` / `InTransitFTL` — the player UI needs to keep
+/// the FTL/sublight distinction (FTL ships cannot be intercepted by
+/// game contract). The matching `SavedShipSnapshotState` enum loses
+/// `InTransit` and gains the two new variants. Postcard's positional
+/// enum tag encoding makes this a breaking change; SAVE_VERSION bumps
+/// 19 → 20 and the fixture is regenerated. v19 saves are strictly
+/// rejected at load.
+pub const SAVE_VERSION: u32 = 20;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.
