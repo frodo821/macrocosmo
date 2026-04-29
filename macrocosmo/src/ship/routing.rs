@@ -24,7 +24,7 @@ use crate::physics::distance_ly_arr;
 use crate::time_system::HEXADIES_PER_YEAR;
 
 use super::{
-    CommandQueue, PortParams, QueuedCommand, RulesOfEngagement, Ship, ShipState,
+    CommandQueue, Owner, PortParams, QueuedCommand, RulesOfEngagement, Ship, ShipState,
     start_sublight_travel_with_bonus,
 };
 
@@ -515,6 +515,40 @@ pub fn collect_ftl_blockers(regions: &Query<&ForbiddenRegion>) -> Vec<RegionBloc
         .collect()
 }
 
+/// #491 (D-H-4 follow-up): upgrade the owning empire's
+/// [`crate::knowledge::ShipProjection::intended_state`] to the variant
+/// implied by the resolved first route segment.
+///
+/// Skip cases:
+/// * No existing projection — `seed_own_ship_projections` /
+///   dispatcher write never landed for this empire/ship pair. Nothing
+///   to upgrade. The next dispatch cycle will create a projection if
+///   one is needed.
+/// * Resolved variant matches the existing `intended_state` —
+///   idempotent no-op (e.g. dispatcher already wrote
+///   `InTransitSubLight` for a sublight first segment).
+///
+/// Caller (`poll_pending_routes`) is responsible for the
+/// `Owner::Neutral` skip — neutral / pirate ships never receive empire
+/// projections in the first place.
+pub(super) fn upgrade_projection_intended_state_after_route_plan(
+    store: &mut crate::knowledge::KnowledgeStore,
+    ship_entity: Entity,
+    first_segment: &RouteSegment,
+) {
+    let resolved_intended = match first_segment {
+        RouteSegment::FTL { .. } => crate::knowledge::ShipSnapshotState::InTransitFTL,
+        RouteSegment::SubLight { .. } => crate::knowledge::ShipSnapshotState::InTransitSubLight,
+    };
+    if let Some(existing) = store.get_projection(ship_entity).cloned() {
+        if existing.intended_state.as_ref() != Some(&resolved_intended) {
+            let mut updated = existing;
+            updated.intended_state = Some(resolved_intended);
+            store.update_projection(updated);
+        }
+    }
+}
+
 /// System that polls pending route computations and applies completed routes.
 ///
 /// When a route completes:
@@ -522,6 +556,17 @@ pub fn collect_ftl_blockers(regions: &Query<&ForbiddenRegion>) -> Vec<RegionBloc
 /// 2. Consumes the head `MoveTo` command from the queue.
 /// 3. Starts executing the first segment (FTL or sublight).
 /// 4. Prepends remaining segments as `MoveTo` commands.
+///
+/// #491 (D-H-4 follow-up): once the route plan completes here, the first
+/// segment's kind (FTL vs SubLight) is finally known — we update the
+/// owning empire's [`crate::knowledge::ShipProjection::intended_state`]
+/// to the correct variant. The dispatcher seeds `InTransitSubLight` as
+/// a conservative placeholder at command-issue time; this system
+/// upgrades to `InTransitFTL` when `segments[0]` is an FTL hop. No
+/// `KnowledgeFact` is required — the dispatching empire's belief is
+/// self-updated, not observed (the player UI must surface the FTL
+/// distinction the moment the route plan resolves, well before any
+/// light-coherent observation could arrive).
 pub fn poll_pending_routes(
     mut commands: Commands,
     clock: Res<crate::time_system::GameClock>,
@@ -539,6 +584,12 @@ pub fn poll_pending_routes(
     // `PendingRoute.command_id`; `None` is tolerated for in-flight ships
     // that predate the refactor (emission is skipped in that case).
     mut executed: MessageWriter<super::command_events::CommandExecuted>,
+    // #491 (D-H-4 follow-up): mutate the ship-owner empire's
+    // `KnowledgeStore.projections[ship].intended_state` once the route
+    // plan resolves so the projection layer surfaces the correct
+    // FTL/SubLight variant. Empire entities never carry `Ship`, so
+    // there is no overlap with the `ships` query above.
+    mut knowledge_stores: Query<&mut crate::knowledge::KnowledgeStore, With<crate::player::Empire>>,
 ) {
     use super::command_events::{CommandExecuted, CommandKind, CommandResult};
     let base_ftl_speed = balance.initial_ftl_speed_c();
@@ -691,6 +742,19 @@ pub fn poll_pending_routes(
         // Execute first segment, push remaining as MoveTo commands.
         let first = &route.segments[0];
         let remaining = &route.segments[1..];
+
+        // #491 (D-H-4 follow-up): upgrade the owning empire's
+        // `ShipProjection.intended_state` from the dispatcher's
+        // conservative `InTransitSubLight` placeholder to the actual
+        // variant implied by the resolved first segment. Delegates to
+        // `upgrade_projection_intended_state_after_route_plan` so the
+        // logic is unit-testable without spinning up the full
+        // `poll_pending_routes` system harness.
+        if let Owner::Empire(owner_empire) = ship.owner {
+            if let Ok(mut store) = knowledge_stores.get_mut(owner_empire) {
+                upgrade_projection_intended_state_after_route_plan(&mut store, ship_entity, first);
+            }
+        }
 
         // Prepend remaining segments as MoveTo commands (in reverse order to maintain order).
         for seg in remaining.iter().rev() {
@@ -1058,5 +1122,134 @@ mod tests {
         let route = result.unwrap();
         assert_eq!(route.segments.len(), 1);
         assert!(matches!(route.segments[0], RouteSegment::SubLight { .. }));
+    }
+
+    // -----------------------------------------------------------------
+    // #491 (D-H-4 follow-up):
+    // upgrade_projection_intended_state_after_route_plan
+    // -----------------------------------------------------------------
+
+    use crate::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshotState};
+
+    fn seed_projection(
+        store: &mut KnowledgeStore,
+        ship_entity: Entity,
+        intended_state: Option<ShipSnapshotState>,
+    ) {
+        store.update_projection(ShipProjection {
+            entity: ship_entity,
+            dispatched_at: 0,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: None,
+            intended_state,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+
+    #[test]
+    fn projection_intended_state_upgrades_to_ftl_after_route_plan_completes() {
+        // Dispatcher seeded `InTransitSubLight` at command-issue time
+        // (placeholder — see `queued_command_intended_state`). The
+        // resolved first segment is `FTL` → upgrade to `InTransitFTL`.
+        let ship_entity = test_entity(42);
+        let dest = test_entity(99);
+        let mut store = KnowledgeStore::default();
+        seed_projection(
+            &mut store,
+            ship_entity,
+            Some(ShipSnapshotState::InTransitSubLight),
+        );
+        let first = RouteSegment::FTL { to: dest };
+        upgrade_projection_intended_state_after_route_plan(&mut store, ship_entity, &first);
+        let proj = store
+            .get_projection(ship_entity)
+            .expect("projection should still exist post-upgrade");
+        assert_eq!(
+            proj.intended_state,
+            Some(ShipSnapshotState::InTransitFTL),
+            "FTL first segment must upgrade intended_state to InTransitFTL"
+        );
+    }
+
+    #[test]
+    fn projection_intended_state_remains_sublight_for_sublight_route_plan() {
+        // First segment is `SubLight` → no upgrade needed (matches the
+        // dispatcher's placeholder). Idempotent no-op.
+        let ship_entity = test_entity(42);
+        let dest = test_entity(99);
+        let mut store = KnowledgeStore::default();
+        seed_projection(
+            &mut store,
+            ship_entity,
+            Some(ShipSnapshotState::InTransitSubLight),
+        );
+        let first = RouteSegment::SubLight {
+            to_pos: [10.0, 0.0, 0.0],
+            to_system: Some(dest),
+        };
+        upgrade_projection_intended_state_after_route_plan(&mut store, ship_entity, &first);
+        let proj = store.get_projection(ship_entity).expect("projection");
+        assert_eq!(
+            proj.intended_state,
+            Some(ShipSnapshotState::InTransitSubLight),
+            "SubLight first segment must leave intended_state unchanged"
+        );
+    }
+
+    #[test]
+    fn projection_upgrade_skips_when_no_existing_projection() {
+        // `seed_own_ship_projections` (#481) installs a projection at
+        // every own-empire ship spawn, but a hand-rolled / pirate /
+        // pre-#481-test ship may legitimately have no projection. The
+        // helper must skip cleanly rather than insert a fresh one
+        // (= would fabricate `dispatched_at = 0`, mis-rooting the
+        // light-coherence calculation).
+        let ship_entity = test_entity(42);
+        let dest = test_entity(99);
+        let mut store = KnowledgeStore::default();
+        let first = RouteSegment::FTL { to: dest };
+        upgrade_projection_intended_state_after_route_plan(&mut store, ship_entity, &first);
+        assert!(
+            store.get_projection(ship_entity).is_none(),
+            "no-existing-projection case must not fabricate a projection"
+        );
+    }
+
+    #[test]
+    fn projection_upgrade_preserves_unrelated_fields() {
+        // Only `intended_state` should change — `projected_state`,
+        // `expected_arrival_at`, `expected_return_at`, etc. are owned
+        // by the dispatcher and reconciler, not the route resolver.
+        let ship_entity = test_entity(42);
+        let intended_sys = test_entity(7);
+        let projected_sys = test_entity(3);
+        let dest = test_entity(99);
+        let mut store = KnowledgeStore::default();
+        store.update_projection(ShipProjection {
+            entity: ship_entity,
+            dispatched_at: 100,
+            expected_arrival_at: Some(150),
+            expected_return_at: Some(200),
+            projected_state: ShipSnapshotState::Surveying,
+            projected_system: Some(projected_sys),
+            intended_state: Some(ShipSnapshotState::InTransitSubLight),
+            intended_system: Some(intended_sys),
+            intended_takes_effect_at: Some(110),
+        });
+        let first = RouteSegment::FTL { to: dest };
+        upgrade_projection_intended_state_after_route_plan(&mut store, ship_entity, &first);
+        let proj = store.get_projection(ship_entity).expect("projection");
+        assert_eq!(proj.intended_state, Some(ShipSnapshotState::InTransitFTL));
+        // Unrelated fields untouched.
+        assert_eq!(proj.dispatched_at, 100);
+        assert_eq!(proj.expected_arrival_at, Some(150));
+        assert_eq!(proj.expected_return_at, Some(200));
+        assert_eq!(proj.projected_state, ShipSnapshotState::Surveying);
+        assert_eq!(proj.projected_system, Some(projected_sys));
+        assert_eq!(proj.intended_system, Some(intended_sys));
+        assert_eq!(proj.intended_takes_effect_at, Some(110));
     }
 }

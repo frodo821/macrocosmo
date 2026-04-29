@@ -924,10 +924,14 @@ pub fn compute_ship_projection(
 pub fn command_kind_to_intended_state(kind: &str) -> Option<ShipSnapshotState> {
     match kind {
         // #491 (D-H-4): The intended-state layer cannot predict FTL vs
-        // SubLight at command-issue time (route planning runs later).
-        // We use `InTransitSubLight` as the conservative placeholder;
-        // once the ship's `ShipDeparted` fact lands the reconciler
-        // overwrites with the actual variant.
+        // SubLight at command-issue time — route planning is async,
+        // see `crate::ship::routing::poll_pending_routes`. We seed
+        // `InTransitSubLight` as the conservative placeholder; once
+        // the A* route plan completes, `poll_pending_routes` upgrades
+        // the projection's `intended_state` to `InTransitFTL` when
+        // the resolved first segment is an FTL hop. No
+        // `KnowledgeFact` is required — the dispatching empire's
+        // belief is self-updated, not observed.
         "attack_target" | "reposition" | "blockade" | "fortify_system" | "move_ruler"
         | "move_to" => Some(ShipSnapshotState::InTransitSubLight),
         "survey_system" => Some(ShipSnapshotState::Surveying),

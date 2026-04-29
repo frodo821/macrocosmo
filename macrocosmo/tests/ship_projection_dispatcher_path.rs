@@ -482,10 +482,16 @@ fn dispatcher_handles_multiple_command_variants() {
     let move_proj = store
         .get_projection(move_ship)
         .expect("MoveTo projection missing");
+    // #491 (D-H-4 follow-up): the dispatcher seeds `InTransitSubLight`
+    // as the conservative placeholder; once `poll_pending_routes`
+    // resolves the route plan in the same `app.update()`, the empire's
+    // projection's `intended_state` is upgraded to `InTransitFTL`
+    // because the move_target is FTL-reachable (surveyed, in range).
+    // This pins the post-route-plan upgrade contract.
     assert_eq!(
         move_proj.intended_state,
-        Some(ShipSnapshotState::InTransitSubLight),
-        "MoveTo ⇒ InTransit"
+        Some(ShipSnapshotState::InTransitFTL),
+        "MoveTo with FTL-reachable target ⇒ InTransitFTL after route plan resolves"
     );
     assert_eq!(move_proj.intended_system, Some(move_target));
 
