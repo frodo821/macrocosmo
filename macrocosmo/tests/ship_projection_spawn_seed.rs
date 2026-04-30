@@ -35,7 +35,8 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 
 use macrocosmo::knowledge::{
-    KnowledgeStore, ShipProjection, ShipSnapshotState, seed_own_ship_projections,
+    KnowledgeStore, SEED_DISPATCHED_AT_SENTINEL, ShipProjection, ShipSnapshotState,
+    seed_own_ship_projections,
 };
 use macrocosmo::player::Empire;
 use macrocosmo::ship::{Owner, Ship};
@@ -195,7 +196,9 @@ fn shipyard_built_ship_gets_projection() {
     let empire = spawn_test_empire(app.world_mut());
     let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
     app.update();
-    // Advance the clock so we can verify dispatched_at = current tick.
+    // Advance the clock — the seed's dispatched_at is independent of
+    // `clock.elapsed` (#497 sentinel), but we still bump the clock to
+    // confirm the seed does not capture it accidentally.
     app.world_mut().resource_mut::<GameClock>().elapsed = 42;
     let ship = spawn_test_ship(
         app.world_mut(),
@@ -216,7 +219,10 @@ fn shipyard_built_ship_gets_projection() {
         .get_projection(ship)
         .expect("post-Startup-spawned ship must still be seeded");
     assert_eq!(projection.projected_system, Some(home));
-    assert_eq!(projection.dispatched_at, 42);
+    // #497: seed always uses the sentinel `i64::MIN` so the reconciler
+    // staleness gate (#484) accepts any in-flight fact against a
+    // never-dispatched seed.
+    assert_eq!(projection.dispatched_at, SEED_DISPATCHED_AT_SENTINEL);
 }
 
 #[test]

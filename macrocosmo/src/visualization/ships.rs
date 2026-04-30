@@ -206,6 +206,16 @@ const INTENDED_DASH_AT_DISPATCH: (f32, f32) = (4.0, 2.0);
 /// confirmation". (#489)
 const INTENDED_DASH_AFTER_TAKES_EFFECT: (f32, f32) = (8.0, 4.0);
 
+/// #496: Threshold above which a `takes_effect_at` value is treated as
+/// saturated (= the producer's `saturating_add` collapsed an
+/// astronomical / malformed input to `i64::MAX`). Mirrors the
+/// `i64::MAX / 2` guard `compute_ship_projection` already emits a
+/// warn-log for in #486. Anything at/above this is rendered as the
+/// steady-state ("settled") layer rather than letting the f32 cast
+/// blow up to `~9.22e18` and pin the alpha curve at `fraction = 1.0`
+/// permanently.
+const SATURATION_THRESHOLD: i64 = i64::MAX / 2;
+
 /// #478 / #489: Compute the alpha for the intended-trajectory dashed
 /// overlay.
 ///
@@ -217,10 +227,21 @@ const INTENDED_DASH_AFTER_TAKES_EFFECT: (f32, f32) = (8.0, 4.0);
 ///   *not yet at* the intended target, but is no longer "in flight to ship".
 /// * If the projection has no `intended_takes_effect_at`, falls back to
 ///   the steady floor value.
+/// * #496: if `intended_takes_effect_at` saturated to `i64::MAX` (=
+///   release-build slip-through past the producer-side `debug_assert!`
+///   in `compute_ship_projection`), falls back to the steady floor.
+///   Without this short-circuit the `(takes_effect_at - now) as f32`
+///   cast would yield `~9.22e18`, the clamp would pin `fraction = 1.0`,
+///   and the dashed layer would render forever as "fresh dispatch".
 pub fn intended_layer_alpha(projection: &ShipProjection, now: i64) -> f32 {
     let Some(takes_effect_at) = projection.intended_takes_effect_at else {
         return INTENDED_ALPHA_FLOOR;
     };
+    // #496: saturation safety — defense-in-depth atop #486's
+    // producer-side guard.
+    if takes_effect_at >= SATURATION_THRESHOLD {
+        return INTENDED_ALPHA_FLOOR;
+    }
     if now >= takes_effect_at {
         return INTENDED_ALPHA_FLOOR;
     }
@@ -257,6 +278,13 @@ pub fn intended_layer_dash_pattern(projection: &ShipProjection, now: i64) -> (f3
     let Some(takes_effect_at) = projection.intended_takes_effect_at else {
         return INTENDED_DASH_AFTER_TAKES_EFFECT;
     };
+    // #496: saturation safety — same threshold as
+    // `intended_layer_alpha`. Without this, the f32 cast below would
+    // pin `fraction = 1.0` and the dashed layer would lock at the
+    // dispatch-fresh urgent pattern forever.
+    if takes_effect_at >= SATURATION_THRESHOLD {
+        return INTENDED_DASH_AFTER_TAKES_EFFECT;
+    }
     if now >= takes_effect_at {
         return INTENDED_DASH_AFTER_TAKES_EFFECT;
     }

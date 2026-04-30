@@ -607,3 +607,124 @@ fn dispatcher_skips_spatial_less_commands() {
         "spatial-less LoadDeliverable must not write a projection"
     );
 }
+
+// ---------------------------------------------------------------------------
+// #493: dispatcher must NOT write a defensive projection when the head
+// command is dropped during validation. Pre-#493 the write fired before
+// the per-variant validation block, so a target-gone / immobile-ship /
+// no-op MoveTo would leak a stale `intended_*` projection that the
+// renderer would dash toward a phantom target until the reconciler
+// caught up.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dropped_move_to_for_nonexistent_target_does_not_leak_projection() {
+    // Target system entity destroyed before the dispatcher runs. The
+    // MoveTo arm validates `systems.get(target).is_err()` and drops the
+    // command — projection write must not fire.
+    let mut app = test_app();
+    let (empire, _home, _frontier, ship) = setup_scenario(&mut app);
+
+    // Forge a non-existent target by allocating an unused Entity id.
+    let phantom = Entity::from_raw_u32(9_999).unwrap();
+    direct_push(&mut app, ship, QueuedCommand::MoveTo { system: phantom });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert!(
+        store.get_projection(ship).is_none(),
+        "MoveTo with a vanished target must NOT leak a projection — \
+         dispatcher write must run AFTER per-variant validation (#493)"
+    );
+}
+
+#[test]
+fn dropped_move_to_for_immobile_ship_does_not_leak_projection() {
+    // Immobile ship — Cores, derelicts, etc. The MoveTo arm validates
+    // `ship.is_immobile()` and drops the command. Projection must not
+    // be written.
+    let mut app = test_app();
+    let (empire, _home, frontier, ship) = setup_scenario(&mut app);
+
+    // Force the ship immobile by zeroing its propulsion stats.
+    {
+        let mut em = app.world_mut().entity_mut(ship);
+        let mut ship_mut = em.get_mut::<Ship>().expect("ship must exist");
+        ship_mut.sublight_speed = 0.0;
+        ship_mut.ftl_range = 0.0;
+    }
+
+    direct_push(&mut app, ship, QueuedCommand::MoveTo { system: frontier });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert!(
+        store.get_projection(ship).is_none(),
+        "MoveTo on an immobile ship must NOT leak a projection (#493)"
+    );
+}
+
+#[test]
+fn dropped_no_op_same_system_move_to_does_not_leak_projection() {
+    // Ship is docked at `home` and the queue head is `MoveTo home` —
+    // same-system no-op. The MoveTo arm drops the command. Projection
+    // must not be written.
+    let mut app = test_app();
+    let (empire, home, _frontier, ship) = setup_scenario(&mut app);
+
+    direct_push(&mut app, ship, QueuedCommand::MoveTo { system: home });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert!(
+        store.get_projection(ship).is_none(),
+        "no-op same-system MoveTo must NOT leak a projection (#493)"
+    );
+}
+
+#[test]
+fn dropped_move_to_preserves_pre_existing_projection() {
+    // Variant of the above: when a caller-written projection exists
+    // (e.g. a previous mission's reconcile-cleared steady state) AND
+    // the queue head is a MoveTo that gets dropped, the existing
+    // projection must survive untouched. Pre-#493 the dispatcher's
+    // pre-validation overwrite would clobber the caller projection
+    // before the validation drop fired.
+    let mut app = test_app();
+    let (empire, home, _frontier, ship) = setup_scenario(&mut app);
+
+    // Pre-populate a steady-state projection with sentinel values.
+    let sentinel_dispatched_at = 1_234_i64;
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update_projection(ShipProjection {
+            entity: ship,
+            dispatched_at: sentinel_dispatched_at,
+            expected_arrival_at: None,
+            expected_return_at: None,
+            projected_state: ShipSnapshotState::InSystem,
+            projected_system: Some(home),
+            intended_state: None,
+            intended_system: None,
+            intended_takes_effect_at: None,
+        });
+    }
+
+    // Push a no-op MoveTo (same system as docked).
+    direct_push(&mut app, ship, QueuedCommand::MoveTo { system: home });
+    app.update();
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let projection = store
+        .get_projection(ship)
+        .expect("pre-existing projection must survive the drop");
+    assert_eq!(
+        projection.dispatched_at, sentinel_dispatched_at,
+        "validation-drop path must NOT overwrite the pre-existing projection (#493)"
+    );
+    assert!(
+        projection.intended_state.is_none(),
+        "validation-drop path must NOT write `intended_*` for a dropped command (#493)"
+    );
+}

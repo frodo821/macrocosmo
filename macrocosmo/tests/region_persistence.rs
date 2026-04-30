@@ -11,6 +11,8 @@
 //! two-region empire to stress the `Vec<u64>` / cross-entity `Option`
 //! paths in the savebag shims.
 
+mod common;
+
 use bevy::prelude::*;
 
 use macrocosmo::ai::{MidAgent, ShortAgent, ShortScope};
@@ -434,33 +436,16 @@ fn save_version_strictly_rejects_previous_version() {
          this a breaking change)"
     );
 
-    // Hand-craft a minimal byte stream that begins with a v19 version
-    // header and confirm `load_game_from_reader` rejects it via
-    // `LoadError::VersionMismatch`. The rest of the bytes don't need to
-    // form a valid GameSave — the version check must trigger first.
-    use macrocosmo::persistence::save::GameSave;
-    use macrocosmo::persistence::save::SavedResources;
-    let v_prev = GameSave {
-        version: 19,
-        scripts_version: "0.1".into(),
-        resources: SavedResources {
-            game_clock_elapsed: 0,
-            game_speed_hexadies_per_second: 1.0,
-            game_speed_previous: 1.0,
-            last_production_tick: 0,
-            galaxy_config: None,
-            game_rng: None,
-            faction_relations: None,
-            pending_fact_queue: None,
-            event_log: None,
-            notification_queue: None,
-            destroyed_ship_registry: None,
-            ai_command_outbox: None,
-            region_registry: None,
-        },
-        entities: Vec::new(),
-    };
-    let bytes = postcard::to_stdvec(&v_prev).expect("encode forged v19 save");
+    // #494: byte-fixture hoisted to `tests/common/wire_format.rs` so
+    // future SAVE bumps can extend the helper set without duplicating
+    // the encode-with-overridden-version dance per-test. The forge
+    // exercises the **policy** rigor (= version field reads as 19,
+    // strict-reject path fires); the **wire-misparse** rigor (=
+    // v19-shaped enum-tag positional drift) is deferred to a
+    // follow-up: the `ShipSnapshotState` split cannot be exercised
+    // without a non-empty entity carrying a `SavedShipSnapshotState`
+    // payload, which depends on internal savebag layouts.
+    let bytes = common::wire_format::forge_current_shape_with_version_field(19);
 
     let mut world = World::new();
     let result = load_game_from_reader(&mut world, &bytes[..]);
@@ -471,6 +456,53 @@ fn save_version_strictly_rejects_previous_version() {
         }
         other => panic!(
             "v19 save must be strictly rejected at load; got {:?}",
+            other
+        ),
+    }
+}
+
+/// #494 companion: explicit lock that the helper API surface (=
+/// `forge_current_shape_with_version_field` + the deferred
+/// `build_v19_positional_misparse_bytes`) survives a SAVE bump
+/// uninvalidated. The next bump only needs to add a new
+/// `build_vN_positional_misparse_bytes` next to its peers; this test
+/// pins the helper contract.
+#[test]
+fn wire_format_helper_contract() {
+    // Each prior version (19 today, 18/17/... in the future as bumps
+    // accumulate) must produce a byte stream that the version check
+    // refuses. Today only v19 is the most-recent prior; this test
+    // grows naturally as bumps land.
+    for prior in [0u32, 1, 18, 19] {
+        if prior == SAVE_VERSION {
+            continue;
+        }
+        let bytes = common::wire_format::forge_current_shape_with_version_field(prior);
+        let mut world = World::new();
+        let result = load_game_from_reader(&mut world, &bytes[..]);
+        match result {
+            Err(LoadError::VersionMismatch { saved, .. }) => {
+                assert_eq!(
+                    saved, prior,
+                    "saved field must round-trip through the reader"
+                );
+            }
+            other => panic!(
+                "v{} forge must be rejected with VersionMismatch; got {:?}",
+                prior, other
+            ),
+        }
+    }
+
+    // Phase-1 v19 wire-misparse helper still produces the same
+    // version-mismatch reject (= the trailer fix-up is deferred but
+    // the helper exists and decodes through the same path).
+    let bytes_v19 = common::wire_format::build_v19_positional_misparse_bytes();
+    let mut world = World::new();
+    match load_game_from_reader(&mut world, &bytes_v19[..]) {
+        Err(LoadError::VersionMismatch { saved: 19, .. }) => {}
+        other => panic!(
+            "build_v19_positional_misparse_bytes must surface VersionMismatch{{19}}; got {:?}",
             other
         ),
     }
