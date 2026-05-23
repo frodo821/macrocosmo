@@ -114,14 +114,25 @@ fn setup_colonizer_scenario(app: &mut App) -> (Entity, Entity, Entity, Entity) {
     (empire, home, target, colony_ship)
 }
 
-/// Returns `true` if the `AiCommandOutbox` contains a `colonize_system`
-/// command targeting the given system. The outbox holds AI commands
-/// after `dispatch_ai_pending_commands` drains them from the bus and
-/// before the light-speed window elapses, so it's the post-tick
-/// observation surface for emitted commands.
-fn outbox_has_colonize_for(app: &App, target_system: Entity) -> bool {
+/// Returns `true` if there's an in-flight `colonize_system` AI command
+/// for the given target system OR the issuing empire has stamped a
+/// `PendingAssignment::Colonize` marker on a ship for this target.
+///
+/// Surfaces checked:
+/// 1. `AiCommandOutbox.entries` — pre-#468-PR2 light-speed shim (still
+///    used by non-migrated kinds).
+/// 2. `PendingAiShipCommand` — #468 PR-2 per-ship pipeline. With
+///    Ruler→ship = 0 light delay the holder is drained the same tick
+///    it's spawned, so this surface only catches the very-narrow
+///    in-flight window.
+/// 3. `PendingAssignment::Colonize` — stamped on the ship at dispatch
+///    time and removed once the issuing empire learns the target is
+///    colonized. This is the durable "the AI committed to this target"
+///    surface that survives the courier window collapsing to zero.
+fn outbox_has_colonize_for(app: &mut App, target_system: Entity) -> bool {
+    use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
     let outbox = app.world().resource::<AiCommandOutbox>();
-    outbox.entries.iter().any(|entry| {
+    let outbox_hit = outbox.entries.iter().any(|entry| {
         let cmd = &entry.command;
         if cmd.kind != cmd_ids::colonize_system() {
             return false;
@@ -132,6 +143,27 @@ fn outbox_has_colonize_for(app: &App, target_system: Entity) -> bool {
             }
             _ => false,
         }
+    });
+    if outbox_hit {
+        return true;
+    }
+    // #468 PR-2: colonize_system migrated to PendingAiShipCommand.
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    let in_flight = {
+        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+        q.iter(app.world())
+            .any(|p| p.kind == cmd_ids::colonize_system() && p.target_system == target_system)
+    };
+    if in_flight {
+        return true;
+    }
+    // Marker surface: dispatch stamps `PendingAssignment::Colonize`
+    // BEFORE the holder matures, so even with zero light-delay (Ruler
+    // at the ship) this is a durable signal that the AI committed.
+    let mut q = app.world_mut().query::<&PendingAssignment>();
+    q.iter(app.world()).any(|pa| {
+        matches!(pa.kind, AssignmentKind::Colonize)
+            && matches!(pa.target, AssignmentTarget::System(t) if t == target_system)
     })
 }
 
@@ -190,7 +222,7 @@ fn colonize_system_not_emitted_when_target_lacks_core() {
     }
 
     assert!(
-        !outbox_has_colonize_for(&app, target),
+        !outbox_has_colonize_for(&mut app, target),
         "AI emitted colonize_system for a target with no own Core present \
          — this is the loop bug the Core-presence filter must close."
     );
@@ -210,7 +242,7 @@ fn colonize_system_emitted_when_target_has_core() {
     }
 
     assert!(
-        outbox_has_colonize_for(&app, target),
+        outbox_has_colonize_for(&mut app, target),
         "AI must emit colonize_system when own Core is present at the target"
     );
 }

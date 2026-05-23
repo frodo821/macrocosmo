@@ -307,25 +307,37 @@ fn outbox_dedups_survey_system_during_light_delay_window() {
 /// Bug A regression (colonize path): same shape as the survey case
 /// but for `colonize_system`. Two colony ships, one colonizable
 /// target with an owned Core in place — only one `colonize_system`
-/// command may live in the outbox during the light-speed window.
+/// command may live in flight during the light-speed window.
+///
+/// #468 PR-2: `colonize_system` migrated to the per-ship
+/// `PendingAiShipCommand` pipeline keyed on Ruler→ship distance, not
+/// Ruler→target. The colony ships are staged at a remote loitering
+/// system 5 ly away from the Ruler's home so the courier window
+/// stays open across multiple decision ticks — placing them at home
+/// would give a 0 light-delay and the command would mature instantly,
+/// erasing the in-flight dedup window.
 #[test]
 fn outbox_dedups_colonize_system_during_light_delay_window() {
     let mut app = test_app();
     // `target_surveyed = true` so Rule 3 considers the frontier a
     // valid colonization candidate.
-    let (empire, home, frontier) = setup_far_target(&mut app, "Aurelian", 5.0, true);
+    let (empire, _home, frontier) = setup_far_target(&mut app, "Aurelian", 5.0, true);
 
     // Satisfy the Core-presence gate (#299).
     place_core_at(app.world_mut(), empire, frontier, [5.0, 0.0, 0.0]);
 
-    // Two idle colony ships at home.
+    // Stage the colony ships at a remote loitering system 5 ly from
+    // the Ruler. With #468 PR-2 the colonize_system courier delay is
+    // Ruler→ship, so this keeps the in-flight window open across the
+    // dedup-check ticks.
+    let loiter = spawn_test_system(app.world_mut(), "Loiter", [0.0, 5.0, 0.0], 1.0, true, false);
     for i in 0..2 {
         let s = spawn_test_ship(
             app.world_mut(),
             &format!("Colonizer-{}", i),
             "colony_ship_mk1",
-            home,
-            [0.0, 0.0, 0.0],
+            loiter,
+            [0.0, 5.0, 0.0],
         );
         app.world_mut()
             .entity_mut(s)
@@ -353,7 +365,7 @@ fn outbox_dedups_colonize_system_during_light_delay_window() {
     let after_second = count_outbox_for(&mut app, cmd_ids::colonize_system(), frontier);
     assert_eq!(
         after_second, 1,
-        "expected outbox to still hold exactly 1 colonize command for the \
+        "expected exactly 1 in-flight colonize command for the \
          frontier (the light-speed window has not elapsed); got {} — \
          Bug A regression",
         after_second,

@@ -1627,6 +1627,7 @@ impl SavedConqueredCore {
 ///
 /// `kind` is encoded as a `u8`:
 /// - `0` = `AssignmentKind::Survey`.
+/// - `1` = `AssignmentKind::Colonize` (#468 PR-2).
 ///
 /// `target` is encoded as a `(u8, u64)`:
 /// - tag `0` (`AssignmentTarget::System`) → entity bits.
@@ -1643,6 +1644,7 @@ impl SavedPendingAssignment {
     pub fn from_live(v: &crate::ai::assignments::PendingAssignment) -> Self {
         let kind = match v.kind {
             crate::ai::assignments::AssignmentKind::Survey => 0,
+            crate::ai::assignments::AssignmentKind::Colonize => 1,
         };
         let (target_tag, target_bits) = match v.target {
             crate::ai::assignments::AssignmentTarget::System(e) => (0u8, e.to_bits()),
@@ -1657,8 +1659,11 @@ impl SavedPendingAssignment {
     }
     pub fn into_live(self, map: &EntityMap) -> crate::ai::assignments::PendingAssignment {
         let kind = match self.kind {
-            // `Survey` is the only currently-defined kind; future variants
-            // will fan in additional match arms with explicit tags.
+            0 => crate::ai::assignments::AssignmentKind::Survey,
+            1 => crate::ai::assignments::AssignmentKind::Colonize,
+            // Unknown future tag from a forward-compatible save: fall back
+            // to `Survey` to keep the load path infallible. SAVE_VERSION
+            // bumps would have been blocked at the schema layer first.
             _ => crate::ai::assignments::AssignmentKind::Survey,
         };
         let target = match self.target_tag {

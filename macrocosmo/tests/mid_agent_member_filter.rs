@@ -231,22 +231,59 @@ fn setup_two_region_empire(
 }
 
 /// Count outbox entries of `kind` whose `target_system` matches.
-fn count_outbox_for(app: &App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
-    let outbox = app.world().resource::<AiCommandOutbox>();
-    outbox
-        .entries
-        .iter()
-        .filter(|entry| {
-            let cmd = &entry.command;
-            if cmd.kind != kind {
-                return false;
-            }
-            match cmd.params.get("target_system") {
-                Some(macrocosmo_ai::CommandValue::System(sys_id)) => target.to_bits() == sys_id.0,
-                _ => false,
-            }
-        })
-        .count()
+///
+/// #468 PR-2: also folds in the per-ship `PendingAiShipCommand`
+/// pipeline + the durable `PendingAssignment` marker, since several
+/// kinds (survey_system, colonize_system, reposition, blockade) no
+/// longer flow through `AiCommandOutbox`.
+fn count_outbox_for(app: &mut App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
+    let outbox_count = {
+        let outbox = app.world().resource::<AiCommandOutbox>();
+        outbox
+            .entries
+            .iter()
+            .filter(|entry| {
+                let cmd = &entry.command;
+                if cmd.kind != kind {
+                    return false;
+                }
+                match cmd.params.get("target_system") {
+                    Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
+                        target.to_bits() == sys_id.0
+                    }
+                    _ => false,
+                }
+            })
+            .count()
+    };
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    let ship_command_count = {
+        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+        q.iter(app.world())
+            .filter(|p| p.kind == kind && p.target_system == target)
+            .count()
+    };
+    // PendingAssignment marker is the durable surface — survives a
+    // zero light-delay window where the holder despawns same-tick.
+    use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+    let assignment_kind_match = if kind == cmd_ids::survey_system() {
+        Some(AssignmentKind::Survey)
+    } else if kind == cmd_ids::colonize_system() {
+        Some(AssignmentKind::Colonize)
+    } else {
+        None
+    };
+    let assignment_count = if let Some(akind) = assignment_kind_match {
+        let mut q = app.world_mut().query::<&PendingAssignment>();
+        q.iter(app.world())
+            .filter(|pa| {
+                pa.kind == akind && matches!(pa.target, AssignmentTarget::System(t) if t == target)
+            })
+            .count()
+    } else {
+        0
+    };
+    outbox_count + ship_command_count + assignment_count
 }
 
 #[test]
@@ -285,8 +322,8 @@ fn each_mid_agent_only_dispatches_within_its_own_region() {
     // Each Mid must have dispatched a colonize_system command at the
     // target inside ITS region only. Cross-region targets must stay
     // empty (no leakage).
-    let target_a_count = count_outbox_for(&app, cmd_ids::colonize_system(), target_a);
-    let target_b_count = count_outbox_for(&app, cmd_ids::colonize_system(), target_b);
+    let target_a_count = count_outbox_for(&mut app, cmd_ids::colonize_system(), target_a);
+    let target_b_count = count_outbox_for(&mut app, cmd_ids::colonize_system(), target_b);
     assert!(
         target_a_count >= 1,
         "Mid A must dispatch colonize on target_a (region A); got {}",
@@ -298,37 +335,39 @@ fn each_mid_agent_only_dispatches_within_its_own_region() {
         target_b_count
     );
 
-    // Each colonize command's `ship_0` parameter must be the ship from
-    // the same region (no cross-region ship reuse).
-    let outbox = app.world().resource::<AiCommandOutbox>();
-    let cmd_kind = cmd_ids::colonize_system();
-    for entry in outbox.entries.iter() {
-        let cmd = &entry.command;
-        if cmd.kind != cmd_kind {
-            continue;
-        }
-        let target_sys = match cmd.params.get("target_system") {
-            Some(macrocosmo_ai::CommandValue::System(s)) => Entity::from_bits(s.0),
-            _ => continue,
+    // Each colonize commitment's ship must be the ship from the same
+    // region (no cross-region ship reuse).
+    //
+    // #468 PR-2: colonize commitments now live on the ship entity as
+    // `PendingAssignment::Colonize` (target = system). Walk the marker
+    // surface; the legacy outbox-entry walk would be empty here.
+    {
+        use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+        let pairs: Vec<(Entity, Entity)> = {
+            let mut q = app.world_mut().query::<(Entity, &PendingAssignment)>();
+            q.iter(app.world())
+                .filter(|(_, pa)| matches!(pa.kind, AssignmentKind::Colonize))
+                .filter_map(|(ship, pa)| match pa.target {
+                    AssignmentTarget::System(t) => Some((t, ship)),
+                })
+                .collect()
         };
-        let ship = match cmd.params.get("ship_0") {
-            Some(macrocosmo_ai::CommandValue::Entity(e)) => Entity::from_bits(e.0),
-            _ => continue,
-        };
-        if target_sys == target_a {
-            assert_eq!(
-                ship, colony_a,
-                "colonize on target_a must use the region-A ship (colony_a); \
-                 got ship={:?}, expected {:?} — cross-region leakage",
-                ship, colony_a
-            );
-        } else if target_sys == target_b {
-            assert_eq!(
-                ship, colony_b,
-                "colonize on target_b must use the region-B ship (colony_b); \
-                 got ship={:?}, expected {:?} — cross-region leakage",
-                ship, colony_b
-            );
+        for (target_sys, ship) in pairs {
+            if target_sys == target_a {
+                assert_eq!(
+                    ship, colony_a,
+                    "colonize on target_a must use the region-A ship (colony_a); \
+                     got ship={:?}, expected {:?} — cross-region leakage",
+                    ship, colony_a
+                );
+            } else if target_sys == target_b {
+                assert_eq!(
+                    ship, colony_b,
+                    "colonize on target_b must use the region-B ship (colony_b); \
+                     got ship={:?}, expected {:?} — cross-region leakage",
+                    ship, colony_b
+                );
+            }
         }
     }
 }
