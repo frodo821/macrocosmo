@@ -1627,6 +1627,7 @@ impl SavedConqueredCore {
 ///
 /// `kind` is encoded as a `u8`:
 /// - `0` = `AssignmentKind::Survey`.
+/// - `1` = `AssignmentKind::Colonize` (#468 PR-2).
 ///
 /// `target` is encoded as a `(u8, u64)`:
 /// - tag `0` (`AssignmentTarget::System`) → entity bits.
@@ -1643,6 +1644,7 @@ impl SavedPendingAssignment {
     pub fn from_live(v: &crate::ai::assignments::PendingAssignment) -> Self {
         let kind = match v.kind {
             crate::ai::assignments::AssignmentKind::Survey => 0,
+            crate::ai::assignments::AssignmentKind::Colonize => 1,
         };
         let (target_tag, target_bits) = match v.target {
             crate::ai::assignments::AssignmentTarget::System(e) => (0u8, e.to_bits()),
@@ -1657,9 +1659,22 @@ impl SavedPendingAssignment {
     }
     pub fn into_live(self, map: &EntityMap) -> crate::ai::assignments::PendingAssignment {
         let kind = match self.kind {
-            // `Survey` is the only currently-defined kind; future variants
-            // will fan in additional match arms with explicit tags.
-            _ => crate::ai::assignments::AssignmentKind::Survey,
+            0 => crate::ai::assignments::AssignmentKind::Survey,
+            1 => crate::ai::assignments::AssignmentKind::Colonize,
+            // Unknown tag — SAVE_VERSION should have blocked this at the
+            // schema layer, so reaching here means a forgotten version
+            // bump on a new variant. Warn loudly so the regression is
+            // visible in CI / playtest logs, then fall back to `Survey`
+            // to keep the load path infallible (the marker may dedup
+            // against the wrong target, but the game stays playable).
+            unknown => {
+                bevy::log::warn!(
+                    "SavedPendingAssignment: unknown kind tag {} — falling back to Survey. \
+                     This indicates a missed SAVE_VERSION bump.",
+                    unknown,
+                );
+                crate::ai::assignments::AssignmentKind::Survey
+            }
         };
         let target = match self.target_tag {
             // `System` is the only currently-defined target; same fan-in

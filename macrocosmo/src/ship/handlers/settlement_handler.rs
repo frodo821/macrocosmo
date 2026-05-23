@@ -160,7 +160,7 @@ pub fn handle_survey_requested(
                 // outlive the dispatch and stay attached until the issuing
                 // empire's `KnowledgeStore` reflects the survey completion
                 // (success path) or the ship is despawned (failure path).
-                // `sweep_resolved_survey_assignments` clears the marker on
+                // `sweep_resolved_assignments` clears the marker on
                 // success once the survey fact reaches the issuer; Bevy's
                 // automatic component cleanup handles ship loss.
             }
@@ -185,6 +185,7 @@ pub fn handle_survey_requested(
 
 #[allow(clippy::too_many_arguments)]
 pub fn handle_colonize_requested(
+    mut commands_buf: Commands,
     clock: Res<GameClock>,
     balance: Res<crate::technology::GameBalance>,
     mut reqs: MessageReader<ColonizeRequested>,
@@ -214,6 +215,11 @@ pub fn handle_colonize_requested(
                 },
                 completed_at: clock.elapsed,
             });
+            // #468 PR-2 review fold-in: ship query failed (despawn or
+            // missing components). Mirrors the survey handler's "ship
+            // unavailable" branch — Bevy drops the
+            // `PendingAssignment::Colonize` marker with the entity, so
+            // no explicit cleanup is required here.
             continue;
         };
 
@@ -237,6 +243,11 @@ pub fn handle_colonize_requested(
                     },
                     completed_at: clock.elapsed,
                 });
+                // #468 PR-2 review fold-in: terminal Rejected — clear
+                // the `PendingAssignment::Colonize` marker so the next
+                // AI tick can re-evaluate this ship. Mirrors the survey
+                // handler's marker hygiene.
+                commands_buf.entity(req.ship).remove::<PendingAssignment>();
                 continue;
             }
         };
@@ -252,6 +263,8 @@ pub fn handle_colonize_requested(
                 },
                 completed_at: clock.elapsed,
             });
+            // #468 PR-2 review fold-in: terminal Rejected — clear marker.
+            commands_buf.entity(req.ship).remove::<PendingAssignment>();
             continue;
         };
 
@@ -298,6 +311,8 @@ pub fn handle_colonize_requested(
                 completed_at: clock.elapsed,
             });
             queue.sync_prediction(ship_pos.as_array(), docked_system);
+            // #468 PR-2 review fold-in: terminal Rejected — clear marker.
+            commands_buf.entity(req.ship).remove::<PendingAssignment>();
             continue;
         }
 
@@ -324,6 +339,8 @@ pub fn handle_colonize_requested(
                     completed_at: clock.elapsed,
                 });
                 queue.sync_prediction(ship_pos.as_array(), docked_system);
+                // #468 PR-2 review fold-in: terminal Rejected — clear marker.
+                commands_buf.entity(req.ship).remove::<PendingAssignment>();
                 continue;
             }
         }

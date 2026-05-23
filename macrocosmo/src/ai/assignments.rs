@@ -24,7 +24,7 @@
 //! 1. `handle_survey_requested` Rejected (start_survey failed at handler
 //!    time, e.g. ship gone) — immediate remove (emit failed; AI is free
 //!    to re-emit next tick).
-//! 2. [`sweep_resolved_survey_assignments`] — every tick, checks the
+//! 2. [`sweep_resolved_assignments`] — every tick, checks the
 //!    issuing empire's `KnowledgeStore`. If the target system is now
 //!    `surveyed = true` from that empire's perspective (success arrived
 //!    via fact propagation) → remove.
@@ -46,13 +46,17 @@
 use bevy::prelude::*;
 
 /// What kind of work has been queued. Reserved for future expansion (#189
-/// follow-up: Colonize, Scout, Repair, etc.).
+/// follow-up: Scout, Repair, etc.).
 #[derive(Debug, Clone, Copy, Reflect, PartialEq, Eq, Hash)]
 pub enum AssignmentKind {
     /// `survey_system` command issued — handler will read the
     /// `SurveyRequested` message and either start the survey or auto-insert
     /// a `MoveTo` first (Deferred).
     Survey,
+    /// `colonize_system` command issued — #468 PR-2 added. Drained by
+    /// `apply_colonize_to_ship` which emits `ColonizeRequested`. Marker
+    /// dedup keyed in `npc_decision.rs::outbox_colonize_per_empire`.
+    Colonize,
 }
 
 /// Where the assignment is targeted. Reserved for future expansion (planet-
@@ -95,42 +99,69 @@ impl PendingAssignment {
             since: now,
         }
     }
+
+    /// #468 PR-2: convenience constructor for a colonize-system
+    /// assignment. Same shape as [`survey_system`] but tags the marker
+    /// with `AssignmentKind::Colonize` so the dedup scan in
+    /// `npc_decision.rs` can distinguish "this ship is on a survey"
+    /// from "this ship is on a colonize" when both lookups need to
+    /// avoid double-tasking a candidate ship.
+    pub fn colonize_system(faction: Entity, target: Entity, now: i64) -> Self {
+        Self {
+            faction,
+            kind: AssignmentKind::Colonize,
+            target: AssignmentTarget::System(target),
+            since: now,
+        }
+    }
 }
 
 /// Knowledge-driven cleanup: remove a `PendingAssignment` once the issuing
-/// empire's `KnowledgeStore` reflects the survey completion. This is the
+/// empire's `KnowledgeStore` reflects the work's completion. This is the
 /// AI memory dissolving as the empire *learns* the result, not when the
 /// handler fires (which is too eager — the success fact still has to
 /// propagate at light speed back to the issuing Ruler). Without this, NPC
 /// AI re-emits the same target for the entire propagation window and the
 /// surveyor loops every 30 hexadies.
 ///
-/// Failure path (ship lost to hostiles before completion) is currently
-/// handled by Bevy's automatic component cleanup on `despawn`. A future
-/// extension may also drop the marker when `KnowledgeStore` records a
-/// `ShipDestroyed` fact for the carrying ship — then the NPC explicitly
-/// knows "scout was lost" and can re-emit immediately rather than waiting
-/// for the ship entity itself to vanish.
-pub fn sweep_resolved_survey_assignments(
+/// #468 PR-2: covers both `Survey` (target's `surveyed` flag) and
+/// `Colonize` (target's `colonized` flag). The body branches on
+/// `AssignmentKind` to pick the relevant resolution predicate; PR-3
+/// will extend with further kinds.
+///
+/// Failure path (ship lost to hostiles before completion) is handled
+/// by Bevy's automatic component cleanup on `despawn` for the survey
+/// kind, and explicitly by `handle_colonize_requested`'s reject-branch
+/// marker removal for the colonize kind (the colonize handler runs
+/// after a Ruler→ship courier window so the ship is still alive when
+/// rejections happen). A future extension may also drop the marker
+/// when `KnowledgeStore` records a `ShipDestroyed` fact for the
+/// carrying ship — then the NPC explicitly knows "scout was lost" and
+/// can re-emit immediately rather than waiting for the ship entity
+/// itself to vanish.
+pub fn sweep_resolved_assignments(
     mut commands: Commands,
     assignments: Query<(Entity, &PendingAssignment)>,
     knowledge: Query<&crate::knowledge::KnowledgeStore>,
 ) {
     for (ship_entity, pa) in &assignments {
-        if !matches!(pa.kind, AssignmentKind::Survey) {
-            continue;
-        }
         let target = match pa.target {
             AssignmentTarget::System(t) => t,
         };
         let Ok(store) = knowledge.get(pa.faction) else {
             continue;
         };
-        if store
-            .get(target)
-            .map(|sk| sk.data.surveyed)
-            .unwrap_or(false)
-        {
+        let snapshot = store.get(target);
+        // #468 PR-2: extended to drop the marker when the kind's
+        // target-state has been learned by the issuing empire. For
+        // `Survey` that's `surveyed = true`; for `Colonize` that's
+        // `colonized = true`. Either flag becoming true means the AI no
+        // longer needs the marker to dedup against in-flight work.
+        let resolved = match pa.kind {
+            AssignmentKind::Survey => snapshot.map(|sk| sk.data.surveyed).unwrap_or(false),
+            AssignmentKind::Colonize => snapshot.map(|sk| sk.data.colonized).unwrap_or(false),
+        };
+        if resolved {
             commands.entity(ship_entity).remove::<PendingAssignment>();
         }
     }
@@ -151,5 +182,18 @@ mod tests {
             AssignmentTarget::System(e) => assert_eq!(e, target),
         }
         assert_eq!(pa.since, 100);
+    }
+
+    #[test]
+    fn colonize_system_constructor_sets_fields() {
+        let faction = Entity::from_raw_u32(3).unwrap();
+        let target = Entity::from_raw_u32(4).unwrap();
+        let pa = PendingAssignment::colonize_system(faction, target, 200);
+        assert_eq!(pa.faction, faction);
+        assert!(matches!(pa.kind, AssignmentKind::Colonize));
+        match pa.target {
+            AssignmentTarget::System(e) => assert_eq!(e, target),
+        }
+        assert_eq!(pa.since, 200);
     }
 }

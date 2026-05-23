@@ -198,17 +198,16 @@ pub fn drain_ai_commands(
                 cmd.issuer
             );
         } else if kind_str == cmd_ids::colonize_system().as_str() {
-            if let Some(ref mut w) = stamp.colonize_writer {
-                handle_colonize_system(
-                    &cmd.issuer,
-                    &cmd.params,
-                    &ships,
-                    &empires,
-                    w,
-                    &mut stamp.next_cmd_id,
-                    now,
-                );
-            }
+            // #468 PR-2: `colonize_system` is now produced via the new
+            // `PendingAiShipCommand` pipeline and consumed by
+            // `drain_ai_ship_commands` — it must never reach this arm.
+            // If a stale command slips in via the old outbox path, drop
+            // it with a `debug!` rather than re-dispatch.
+            debug!(
+                "drain_ai_commands: stale colonize_system from faction {:?} hit legacy \
+                 dispatch; expected `drain_ai_ship_commands` to handle this",
+                cmd.issuer
+            );
         } else if kind_str == cmd_ids::build_ship().as_str() {
             handle_build_ship(
                 &cmd.issuer,
@@ -236,14 +235,14 @@ pub fn drain_ai_commands(
                 &mut build_research,
             );
         } else if kind_str == cmd_ids::reposition().as_str() {
-            handle_reposition(
-                &cmd.issuer,
-                &cmd.params,
-                &ships,
-                &empires,
-                &mut stamp.move_writer,
-                &mut stamp.next_cmd_id,
-                now,
+            // #468 PR-2: `reposition` migrated to the per-ship
+            // `PendingAiShipCommand` pipeline (consumed by
+            // `drain_ai_ship_commands`). Stale legacy emissions drop
+            // with a `debug!`.
+            debug!(
+                "drain_ai_commands: stale reposition from faction {:?} hit legacy \
+                 dispatch; expected `drain_ai_ship_commands` to handle this",
+                cmd.issuer
             );
         } else if kind_str == cmd_ids::move_ruler().as_str() {
             handle_move_ruler(
@@ -259,14 +258,14 @@ pub fn drain_ai_commands(
                 now,
             );
         } else if kind_str == cmd_ids::blockade().as_str() {
-            handle_blockade(
-                &cmd.issuer,
-                &cmd.params,
-                &ships,
-                &empires,
-                &mut stamp.move_writer,
-                &mut stamp.next_cmd_id,
-                now,
+            // #468 PR-2: `blockade` migrated to the per-ship
+            // `PendingAiShipCommand` pipeline (consumed by
+            // `drain_ai_ship_commands`). Stale legacy emissions drop
+            // with a `debug!`.
+            debug!(
+                "drain_ai_commands: stale blockade from faction {:?} hit legacy \
+                 dispatch; expected `drain_ai_ship_commands` to handle this",
+                cmd.issuer
             );
         } else if kind_str == cmd_ids::build_deliverable().as_str() {
             handle_build_deliverable(
@@ -430,59 +429,10 @@ fn handle_attack_target(
     }
 }
 
-/// Handle `colonize_system`: dispatch the specified colony ship to the target system.
-fn handle_colonize_system(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    colonize_writer: &mut MessageWriter<ColonizeRequested>,
-    next_cmd_id: &mut NextCommandId,
-    now: i64,
-) {
-    let target_system = match params.get("target_system") {
-        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
-        _ => {
-            warn!("colonize_system command missing target_system param");
-            return;
-        }
-    };
-
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => return,
-    };
-
-    let selected_ships = extract_ship_list(params);
-    let mut dispatched = 0;
-    for ship_entity in selected_ships {
-        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
-            continue;
-        };
-        if ship.owner != Owner::Empire(empire_entity) {
-            continue;
-        }
-        if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
-            continue;
-        }
-
-        colonize_writer.write(ColonizeRequested {
-            command_id: next_cmd_id.allocate(),
-            ship: ship_entity,
-            target_system,
-            planet: None, // Let the handler pick the best planet
-            issued_at: now,
-        });
-        dispatched += 1;
-    }
-
-    if dispatched > 0 {
-        info!(
-            "colonize_system: dispatched {} ships from faction {:?} to system {:?}",
-            dispatched, issuer, target_system
-        );
-    }
-}
+// #468 PR-2: `handle_colonize_system` removed — the colonize_system arm
+// of `drain_ai_commands` now logs and drops stale legacy emissions; the
+// canonical dispatch path is the per-ship `PendingAiShipCommand`
+// pipeline + `apply_colonize_to_ship`.
 
 /// Queue a ship build order at a system owned by the faction that has a
 /// shipyard. Returns true if the order was queued successfully.
@@ -927,57 +877,13 @@ fn handle_build_structure(
     }
 }
 
-/// Handle `reposition`: move specified ships to a target system.
-///
-/// Params:
-/// - `target_system` (System): destination system.
-/// - `ship_count` / `ship_N` (indexed list): ships to move.
-fn handle_reposition(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    move_writer: &mut MessageWriter<MoveRequested>,
-    next_cmd_id: &mut NextCommandId,
-    now: i64,
-) {
-    dispatch_ships_to_target(
-        "reposition",
-        issuer,
-        params,
-        ships,
-        empires,
-        move_writer,
-        next_cmd_id,
-        now,
-    );
-}
-
-/// Handle `blockade`: move specified ships to a target system (tactical positioning).
-///
-/// Params:
-/// - `target_system` (System): destination system.
-/// - `ship_count` / `ship_N` (indexed list): ships to move.
-fn handle_blockade(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    move_writer: &mut MessageWriter<MoveRequested>,
-    next_cmd_id: &mut NextCommandId,
-    now: i64,
-) {
-    dispatch_ships_to_target(
-        "blockade",
-        issuer,
-        params,
-        ships,
-        empires,
-        move_writer,
-        next_cmd_id,
-        now,
-    );
-}
+// #468 PR-2: `handle_reposition` and `handle_blockade` removed — both
+// kinds are now produced via the per-ship `PendingAiShipCommand`
+// pipeline and consumed by `apply_reposition_to_ship` /
+// `apply_blockade_to_ship`. `dispatch_ships_to_target` was deleted in
+// the PR-2 review fold-in (it had no live callers); PR-3 will choose
+// between `apply_move_to_ship` and a freshly-extracted helper for
+// `attack_target` / `fortify_system` based on whichever shape fits.
 
 // ---------------------------------------------------------------------------
 // Deliverable family handlers (#446)
@@ -1398,77 +1304,6 @@ fn handle_colonize_planet(
     );
 }
 
-/// Shared logic for reposition / blockade: dispatch listed ships to a
-/// target system (same pattern as `handle_attack_target`).
-fn dispatch_ships_to_target(
-    cmd_name: &str,
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    move_writer: &mut MessageWriter<MoveRequested>,
-    next_cmd_id: &mut NextCommandId,
-    now: i64,
-) {
-    let target_system = match params.get("target_system") {
-        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
-        _ => {
-            warn!("{} command missing target_system param", cmd_name);
-            return;
-        }
-    };
-
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!("{}: no empire found for faction {:?}", cmd_name, issuer);
-            return;
-        }
-    };
-
-    let selected_ships = extract_ship_list(params);
-    if selected_ships.is_empty() {
-        debug!(
-            "{}: no ships specified by policy for faction {:?}",
-            cmd_name, issuer
-        );
-        return;
-    }
-
-    let mut dispatched = 0;
-    for ship_entity in selected_ships {
-        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
-            continue;
-        };
-        if ship.owner != Owner::Empire(empire_entity) {
-            continue;
-        }
-        if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
-            continue;
-        }
-        if let ShipState::InSystem { system } = state {
-            if *system == target_system {
-                continue;
-            }
-        }
-
-        move_writer.write(MoveRequested {
-            command_id: next_cmd_id.allocate(),
-            ship: ship_entity,
-            target: target_system,
-            issued_at: now,
-        });
-        dispatched += 1;
-    }
-
-    if dispatched > 0 {
-        info!(
-            "{}: dispatched {} ships from faction {:?} to system {:?}",
-            cmd_name, dispatched, issuer, target_system
-        );
-    }
-}
-
 /// Handle `retreat`: find ships in systems with hostiles and send them
 /// back to the faction's home system (system with most colonies).
 fn handle_retreat(
@@ -1770,8 +1605,9 @@ pub struct PendingAiShipCommand {
 /// `*Requested` message for any whose `arrives_at` has elapsed. Despawns
 /// the holder entity once dispatched.
 ///
-/// PR-1 only handles `survey_system`. Other ship-kind holders are not
-/// produced yet (PR-2/3 follow); the function logs and despawns any
+/// PR-1 handled `survey_system`; PR-2 adds `colonize_system`,
+/// `reposition`, and `blockade`. Other ship-kind holders are not
+/// produced yet (PR-3 follows); the function logs and despawns any
 /// unexpected kind defensively rather than re-queueing.
 pub fn drain_ai_ship_commands(
     mut commands_buf: Commands,
@@ -1779,10 +1615,15 @@ pub fn drain_ai_ship_commands(
     ships: Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     clock: Res<GameClock>,
     mut survey_writer: Option<MessageWriter<SurveyRequested>>,
+    mut colonize_writer: Option<MessageWriter<ColonizeRequested>>,
+    mut move_writer: Option<MessageWriter<MoveRequested>>,
     mut next_cmd_id: ResMut<NextCommandId>,
 ) {
     let now = clock.elapsed;
     let survey_kind = crate::ai::schema::ids::command::survey_system();
+    let colonize_kind = crate::ai::schema::ids::command::colonize_system();
+    let reposition_kind = crate::ai::schema::ids::command::reposition();
+    let blockade_kind = crate::ai::schema::ids::command::blockade();
 
     // Collect mature entries first so we can despawn while iterating
     // without invalidating the query cursor.
@@ -1802,7 +1643,8 @@ pub fn drain_ai_ship_commands(
     }
 
     for (holder_entity, m) in mature {
-        if m.kind.as_str() == survey_kind.as_str() {
+        let kind_str = m.kind.as_str();
+        if kind_str == survey_kind.as_str() {
             apply_survey_to_ship(
                 m.ship,
                 m.issuer_empire,
@@ -1813,12 +1655,44 @@ pub fn drain_ai_ship_commands(
                 &mut commands_buf,
                 now,
             );
+        } else if kind_str == colonize_kind.as_str() {
+            apply_colonize_to_ship(
+                m.ship,
+                m.issuer_empire,
+                m.target_system,
+                &ships,
+                colonize_writer.as_mut(),
+                &mut next_cmd_id,
+                &mut commands_buf,
+                now,
+            );
+        } else if kind_str == reposition_kind.as_str() {
+            apply_reposition_to_ship(
+                m.ship,
+                m.issuer_empire,
+                m.target_system,
+                &ships,
+                move_writer.as_mut(),
+                &mut next_cmd_id,
+                now,
+            );
+        } else if kind_str == blockade_kind.as_str() {
+            apply_blockade_to_ship(
+                m.ship,
+                m.issuer_empire,
+                m.target_system,
+                &ships,
+                move_writer.as_mut(),
+                &mut next_cmd_id,
+                now,
+            );
         } else {
-            // Defensive: PR-1 only spawns `survey_system` holders. Any
-            // other kind here means an upstream bug — log + drop rather
-            // than silently dispatch through an unknown path. Also
-            // strip the stale `PendingAssignment` so the ship is not
-            // permanently excluded from future AI dispatches.
+            // Defensive: only kinds migrated through `dispatch_ship_command_per_ship`
+            // should produce holders. Any other kind here means an
+            // upstream bug — log + drop rather than silently dispatch
+            // through an unknown path. Also strip the stale
+            // `PendingAssignment` so the ship is not permanently
+            // excluded from future AI dispatches.
             debug!(
                 "drain_ai_ship_commands: unexpected kind {} for ship {:?}; dropping",
                 m.kind, m.ship
@@ -1915,6 +1789,200 @@ fn apply_survey_to_ship(
     info!(
         "drain_ai_ship_commands: survey_system delivered to ship {:?} → system {:?} for empire {:?}",
         ship_entity, target_system, empire_entity
+    );
+}
+
+/// #468 PR-2: Apply a matured `colonize_system` PendingAiShipCommand.
+///
+/// Mirrors `apply_survey_to_ship`: validate the ship is still eligible
+/// (owned by the issuer, in-system, idle) and write the
+/// `ColonizeRequested` message. The `PendingAssignment` marker was
+/// inserted at outbox-spawn time with `AssignmentKind::Colonize`; on
+/// every reject branch we strip the marker so the ship is not
+/// permanently excluded from future AI colonize dispatches (the dedup
+/// scan in `npc_decision.rs` filters by `PendingAssignment`).
+///
+/// `planet = None` — the consumer-side colonization handler picks the
+/// best planet in the target system. Same convention the legacy
+/// `handle_colonize_system` used.
+fn apply_colonize_to_ship(
+    ship_entity: Entity,
+    empire_entity: Entity,
+    target_system: Entity,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    colonize_writer: Option<&mut MessageWriter<ColonizeRequested>>,
+    next_cmd_id: &mut NextCommandId,
+    commands_buf: &mut Commands,
+    now: i64,
+) {
+    let Some(writer) = colonize_writer else {
+        warn!("drain_ai_ship_commands: ColonizeRequested writer unavailable");
+        commands_buf
+            .entity(ship_entity)
+            .remove::<crate::ai::assignments::PendingAssignment>();
+        return;
+    };
+
+    let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
+        debug!(
+            "drain_ai_ship_commands: colonize ship {:?} despawned before arrival",
+            ship_entity
+        );
+        return;
+    };
+    if ship.owner != Owner::Empire(empire_entity) {
+        debug!(
+            "drain_ai_ship_commands: colonize ship {:?} no longer owned by empire {:?}",
+            ship_entity, empire_entity
+        );
+        commands_buf
+            .entity(ship_entity)
+            .remove::<crate::ai::assignments::PendingAssignment>();
+        return;
+    }
+    if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
+        debug!(
+            "drain_ai_ship_commands: colonize ship {:?} not idle at arrival (queue_len={})",
+            ship_entity,
+            queue.commands.len(),
+        );
+        commands_buf
+            .entity(ship_entity)
+            .remove::<crate::ai::assignments::PendingAssignment>();
+        return;
+    }
+
+    writer.write(ColonizeRequested {
+        command_id: next_cmd_id.allocate(),
+        ship: ship_entity,
+        target_system,
+        planet: None,
+        issued_at: now,
+    });
+
+    info!(
+        "drain_ai_ship_commands: colonize_system delivered to ship {:?} → system {:?} for empire {:?}",
+        ship_entity, target_system, empire_entity
+    );
+}
+
+/// #468 PR-2: Apply a matured `reposition` PendingAiShipCommand.
+///
+/// Reposition is a pure movement order — no `PendingAssignment` marker
+/// is involved (the dispatcher passes `None` for `assignment_factory`),
+/// so reject branches simply early-return without marker bookkeeping.
+/// Also skips ships already at `target_system` (= move-to-self no-op).
+fn apply_reposition_to_ship(
+    ship_entity: Entity,
+    empire_entity: Entity,
+    target_system: Entity,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    move_writer: Option<&mut MessageWriter<MoveRequested>>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    apply_move_to_ship(
+        "reposition",
+        ship_entity,
+        empire_entity,
+        target_system,
+        ships,
+        move_writer,
+        next_cmd_id,
+        now,
+    );
+}
+
+/// #468 PR-2: Apply a matured `blockade` PendingAiShipCommand.
+///
+/// Same shape as `apply_reposition_to_ship` — both are pure movement
+/// orders that write `MoveRequested` after validating ship eligibility.
+fn apply_blockade_to_ship(
+    ship_entity: Entity,
+    empire_entity: Entity,
+    target_system: Entity,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    move_writer: Option<&mut MessageWriter<MoveRequested>>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    apply_move_to_ship(
+        "blockade",
+        ship_entity,
+        empire_entity,
+        target_system,
+        ships,
+        move_writer,
+        next_cmd_id,
+        now,
+    );
+}
+
+/// #468 PR-2: shared movement-order delivery for `reposition` and
+/// `blockade`. Both kinds are bus-of-MoveRequested writes after the
+/// idle / owned / not-already-there gates, so the body is the same; the
+/// `cmd_name` argument keeps the `info!` line distinguishable in logs.
+fn apply_move_to_ship(
+    cmd_name: &str,
+    ship_entity: Entity,
+    empire_entity: Entity,
+    target_system: Entity,
+    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    move_writer: Option<&mut MessageWriter<MoveRequested>>,
+    next_cmd_id: &mut NextCommandId,
+    now: i64,
+) {
+    let Some(writer) = move_writer else {
+        warn!(
+            "drain_ai_ship_commands: MoveRequested writer unavailable for {}",
+            cmd_name
+        );
+        return;
+    };
+
+    let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
+        debug!(
+            "drain_ai_ship_commands: {} ship {:?} despawned before arrival",
+            cmd_name, ship_entity
+        );
+        return;
+    };
+    if ship.owner != Owner::Empire(empire_entity) {
+        debug!(
+            "drain_ai_ship_commands: {} ship {:?} no longer owned by empire {:?}",
+            cmd_name, ship_entity, empire_entity
+        );
+        return;
+    }
+    if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
+        debug!(
+            "drain_ai_ship_commands: {} ship {:?} not idle at arrival (queue_len={})",
+            cmd_name,
+            ship_entity,
+            queue.commands.len(),
+        );
+        return;
+    }
+    if let ShipState::InSystem { system } = state {
+        if *system == target_system {
+            debug!(
+                "drain_ai_ship_commands: {} ship {:?} already at target {:?}; skipping",
+                cmd_name, ship_entity, target_system
+            );
+            return;
+        }
+    }
+
+    writer.write(MoveRequested {
+        command_id: next_cmd_id.allocate(),
+        ship: ship_entity,
+        target: target_system,
+        issued_at: now,
+    });
+
+    info!(
+        "drain_ai_ship_commands: {} delivered to ship {:?} → system {:?} for empire {:?}",
+        cmd_name, ship_entity, target_system, empire_entity
     );
 }
 
@@ -2495,6 +2563,11 @@ mod tests {
         assert!(found, "should have queued a building order");
     }
 
+    /// #468 PR-2: `reposition` is dispatched through the per-ship
+    /// `PendingAiShipCommand` pipeline. We construct a matured holder
+    /// directly and assert `drain_ai_ship_commands` emits one
+    /// `MoveRequested` — same wire shape as the legacy
+    /// `handle_reposition` path that this test replaced.
     #[test]
     fn reposition_dispatches_ships() {
         let mut app = test_app();
@@ -2509,8 +2582,6 @@ mod tests {
             ))
             .id();
 
-        let faction_id = to_ai_faction(empire_entity);
-
         let origin = world
             .spawn((
                 StarSystem {
@@ -2522,7 +2593,6 @@ mod tests {
                 Position::from([0.0, 0.0, 0.0]),
             ))
             .id();
-
         let target = world
             .spawn((
                 StarSystem {
@@ -2534,7 +2604,6 @@ mod tests {
                 Position::from([10.0, 0.0, 0.0]),
             ))
             .id();
-
         let ship_entity = world
             .spawn((
                 Ship {
@@ -2555,22 +2624,30 @@ mod tests {
             ))
             .id();
 
-        let target_ref = crate::ai::convert::to_ai_system(target);
-        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
-        let cmd = Command::new(cmd_ids::reposition(), faction_id, 10)
-            .with_param("target_system", CommandValue::System(target_ref))
-            .with_param("ship_count", CommandValue::I64(1))
-            .with_param("ship_0", CommandValue::Entity(ship_ref));
-        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+        // Spawn a matured holder (arrives_at = sent_at = 0) so the very
+        // next drain pass picks it up.
+        world.spawn(PendingAiShipCommand {
+            kind: cmd_ids::reposition(),
+            target_system: target,
+            ship: ship_entity,
+            issuer_empire: empire_entity,
+            sent_at: 0,
+            arrives_at: 0,
+        });
 
         app.insert_resource(MoveCount(0));
-        app.add_systems(Update, (drain_ai_commands, count_moves).chain());
+        app.add_systems(Update, (drain_ai_ship_commands, count_moves).chain());
         app.update();
 
         let count = app.world().resource::<MoveCount>().0;
-        assert_eq!(count, 1, "reposition should emit 1 MoveRequested");
+        assert_eq!(
+            count, 1,
+            "reposition should emit 1 MoveRequested through drain_ai_ship_commands"
+        );
     }
 
+    /// #468 PR-2: same shape as `reposition_dispatches_ships` but for
+    /// the `blockade` kind. Both share `apply_move_to_ship` underneath.
     #[test]
     fn blockade_dispatches_ships() {
         let mut app = test_app();
@@ -2585,8 +2662,6 @@ mod tests {
             ))
             .id();
 
-        let faction_id = to_ai_faction(empire_entity);
-
         let origin = world
             .spawn((
                 StarSystem {
@@ -2598,7 +2673,6 @@ mod tests {
                 Position::from([0.0, 0.0, 0.0]),
             ))
             .id();
-
         let target = world
             .spawn((
                 StarSystem {
@@ -2610,7 +2684,6 @@ mod tests {
                 Position::from([10.0, 0.0, 0.0]),
             ))
             .id();
-
         let ship_entity = world
             .spawn((
                 Ship {
@@ -2631,20 +2704,24 @@ mod tests {
             ))
             .id();
 
-        let target_ref = crate::ai::convert::to_ai_system(target);
-        let ship_ref = crate::ai::convert::to_ai_entity(ship_entity);
-        let cmd = Command::new(cmd_ids::blockade(), faction_id, 10)
-            .with_param("target_system", CommandValue::System(target_ref))
-            .with_param("ship_count", CommandValue::I64(1))
-            .with_param("ship_0", CommandValue::Entity(ship_ref));
-        world.resource_mut::<AiBusResource>().0.emit_command(cmd);
+        world.spawn(PendingAiShipCommand {
+            kind: cmd_ids::blockade(),
+            target_system: target,
+            ship: ship_entity,
+            issuer_empire: empire_entity,
+            sent_at: 0,
+            arrives_at: 0,
+        });
 
         app.insert_resource(MoveCount(0));
-        app.add_systems(Update, (drain_ai_commands, count_moves).chain());
+        app.add_systems(Update, (drain_ai_ship_commands, count_moves).chain());
         app.update();
 
         let count = app.world().resource::<MoveCount>().0;
-        assert_eq!(count, 1, "blockade should emit 1 MoveRequested");
+        assert_eq!(
+            count, 1,
+            "blockade should emit 1 MoveRequested through drain_ai_ship_commands"
+        );
     }
 
     #[test]

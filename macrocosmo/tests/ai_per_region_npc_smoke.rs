@@ -384,12 +384,63 @@ fn outbox_entries_for(
         .collect()
 }
 
-fn count_outbox_for(app: &App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
-    outbox_entries_for(app, kind, target).len()
+/// #468 PR-2: counts in-flight commands across both the legacy
+/// `AiCommandOutbox` and the per-ship `PendingAiShipCommand` surfaces.
+/// Migrated kinds (`survey_system`, `colonize_system`, `reposition`,
+/// `blockade`) only land on the latter; non-migrated kinds still land
+/// on the former. Mirrors the helper in
+/// `tests/ai_npc_outbox_dedup.rs::count_outbox_for`.
+///
+/// Takes `&mut App` because Bevy 0.18's `World::query::<T>` requires a
+/// mutable World to build the QueryState. The `&App` outbox lookup
+/// upstream is preserved by destructuring up front.
+fn count_outbox_for(app: &mut App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
+    let outbox_count = outbox_entries_for(app, kind.clone(), target).len();
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+    let ship_command_count = q
+        .iter(app.world())
+        .filter(|p| p.kind == kind && p.target_system == target)
+        .count();
+    outbox_count + ship_command_count
+}
+
+/// #468 PR-2: durable "AI has committed to this target" surface for
+/// kinds that stamp a `PendingAssignment`. The legacy `count_outbox_for`
+/// helper above ONLY captures the in-flight courier window; when
+/// Ruler→ship = 0 light delay collapses that window to zero (as in
+/// the per-region smoke test), the holder is despawned the same tick
+/// it's spawned and the only durable signal left is the marker on the
+/// ship entity.
+fn count_pending_assignments_for(
+    app: &mut App,
+    kind: macrocosmo_ai::CommandKindId,
+    target: Entity,
+) -> usize {
+    use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+    let assignment_kind = if kind == cmd_ids::survey_system() {
+        AssignmentKind::Survey
+    } else if kind == cmd_ids::colonize_system() {
+        AssignmentKind::Colonize
+    } else {
+        return 0;
+    };
+    let mut q = app.world_mut().query::<&PendingAssignment>();
+    q.iter(app.world())
+        .filter(|pa| {
+            pa.kind == assignment_kind
+                && matches!(pa.target, AssignmentTarget::System(t) if t == target)
+        })
+        .count()
 }
 
 /// Extract the `ship_0` Entity from a command's params (used by Rule 3
 /// `colonize_system` to pass the ship the order is for).
+///
+/// #468 PR-2: colonize_system migrated off the outbox; the cross-region
+/// leak guard now reads `PendingAiShipCommand.ship` directly. Helper
+/// retained for PR-3 / future tests that exercise non-migrated kinds.
+#[allow(dead_code)]
 fn cmd_ship_0(cmd: &macrocosmo_ai::Command) -> Option<Entity> {
     match cmd.params.get("ship_0")? {
         macrocosmo_ai::CommandValue::Entity(e) => Some(Entity::from_bits(e.0)),
@@ -415,8 +466,18 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
 
     // ----- Mid: Rule 3 (colonize) must fire in BOTH regions, each
     // pointing at its OWN frontier target.
-    let target_a_count = count_outbox_for(&app, cmd_ids::colonize_system(), layout.target_a);
-    let target_b_count = count_outbox_for(&app, cmd_ids::colonize_system(), layout.target_b);
+    // #468 PR-2: with the colony ships and Ruler at home (Ruler→ship
+    // light delay = 0), the colonize_system `PendingAiShipCommand`
+    // matures the same tick it's spawned. By the time we observe,
+    // the holder + outbox surfaces are likely empty — the durable
+    // signal is the `PendingAssignment::Colonize` marker on the ship,
+    // stamped at dispatch time. Fold both surfaces into the per-target
+    // signal so the assertion stays correct across the dispatch path
+    // migration.
+    let target_a_count = count_outbox_for(&mut app, cmd_ids::colonize_system(), layout.target_a)
+        + count_pending_assignments_for(&mut app, cmd_ids::colonize_system(), layout.target_a);
+    let target_b_count = count_outbox_for(&mut app, cmd_ids::colonize_system(), layout.target_b)
+        + count_pending_assignments_for(&mut app, cmd_ids::colonize_system(), layout.target_b);
     assert!(
         target_a_count >= 1,
         "Mid A must dispatch colonize on target_a (region A); got {}",
@@ -428,25 +489,28 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
         target_b_count,
     );
 
-    // ----- Cross-region leak guard: every colonize_system command must
-    // pair (target ∈ region A) with (ship_0 ∈ region A's idle ships),
-    // and likewise for region B.
+    // ----- Cross-region leak guard: every colonize commitment must
+    // pair (target ∈ region A) with (ship ∈ region A's idle ships), and
+    // likewise for region B.
+    //
+    // #468 PR-2: colonize_system migrated from `AiCommandOutbox` (which
+    // stored the command's full `params` map) to per-ship
+    // `PendingAiShipCommand` + `PendingAssignment` marker. With zero
+    // light delay the holder is despawned same-tick; the marker is the
+    // durable surface. We walk `(Entity, &PendingAssignment)` and
+    // derive `(target, ship)` from `(pa.target, ship_entity)`.
     {
-        let outbox = app.world().resource::<AiCommandOutbox>();
-        let kind = cmd_ids::colonize_system();
-        for entry in outbox.entries.iter() {
-            let cmd = &entry.command;
-            if cmd.kind != kind {
-                continue;
-            }
-            let target_sys = match cmd.params.get("target_system") {
-                Some(macrocosmo_ai::CommandValue::System(s)) => Entity::from_bits(s.0),
-                _ => continue,
-            };
-            let Some(ship) = cmd_ship_0(cmd) else {
-                continue;
-            };
-
+        use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+        let pairs: Vec<(Entity, Entity)> = {
+            let mut q = app.world_mut().query::<(Entity, &PendingAssignment)>();
+            q.iter(app.world())
+                .filter(|(_, pa)| matches!(pa.kind, AssignmentKind::Colonize))
+                .filter_map(|(ship, pa)| match pa.target {
+                    AssignmentTarget::System(t) => Some((t, ship)),
+                })
+                .collect()
+        };
+        for (target_sys, ship) in pairs {
             if target_sys == layout.target_a {
                 assert_eq!(
                     ship, layout.colony_ship_a,
@@ -564,27 +628,60 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
         );
     }
 
-    // ----- Sanity: AiCommandOutbox carries entries from BOTH regions
-    // in the same world (= multi-Mid is actually live).
-    let outbox = app.world().resource::<AiCommandOutbox>();
+    // ----- Sanity: in-flight AI command entries from BOTH regions
+    // (= multi-Mid is actually live). #468 PR-2: colonize_system
+    // migrated off `AiCommandOutbox` onto `PendingAiShipCommand`; we
+    // walk both surfaces so the assertion remains target-agnostic of
+    // which kind drove the entries.
     let mut seen_a = false;
     let mut seen_b = false;
-    for entry in outbox.entries.iter() {
-        if let Some(macrocosmo_ai::CommandValue::System(s)) =
-            entry.command.params.get("target_system")
-        {
-            if Entity::from_bits(s.0) == layout.target_a {
+    {
+        let outbox = app.world().resource::<AiCommandOutbox>();
+        for entry in outbox.entries.iter() {
+            if let Some(macrocosmo_ai::CommandValue::System(s)) =
+                entry.command.params.get("target_system")
+            {
+                if Entity::from_bits(s.0) == layout.target_a {
+                    seen_a = true;
+                }
+                if Entity::from_bits(s.0) == layout.target_b {
+                    seen_b = true;
+                }
+            }
+        }
+    }
+    {
+        use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+        for p in q.iter(app.world()) {
+            if p.target_system == layout.target_a {
                 seen_a = true;
             }
-            if Entity::from_bits(s.0) == layout.target_b {
+            if p.target_system == layout.target_b {
                 seen_b = true;
+            }
+        }
+    }
+    // #468 PR-2: also check PendingAssignment markers — they remain
+    // even after the holder matures and despawns.
+    {
+        use macrocosmo::ai::assignments::{AssignmentTarget, PendingAssignment};
+        let mut q = app.world_mut().query::<&PendingAssignment>();
+        for pa in q.iter(app.world()) {
+            if let AssignmentTarget::System(t) = pa.target {
+                if t == layout.target_a {
+                    seen_a = true;
+                }
+                if t == layout.target_b {
+                    seen_b = true;
+                }
             }
         }
     }
     assert!(
         seen_a && seen_b,
-        "outbox must hold target_system entries for both regions \
-         (saw target_a={}, target_b={})",
+        "in-flight AI commands must cover both regions (saw target_a={}, \
+         target_b={})",
         seen_a,
         seen_b,
     );

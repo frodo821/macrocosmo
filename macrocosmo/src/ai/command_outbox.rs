@@ -246,16 +246,14 @@ pub fn resolve_capital_system(
 pub fn command_targets_system(kind: &str) -> bool {
     let s = kind;
     s == cmd_ids::attack_target().as_str()
-        || s == cmd_ids::reposition().as_str()
-        || s == cmd_ids::blockade().as_str()
         || s == cmd_ids::fortify_system().as_str()
-        || s == cmd_ids::colonize_system().as_str()
         || s == cmd_ids::move_ruler().as_str()
-    // #468 PR-1: `survey_system` is no longer listed here. Ship-control
-    // commands now compute light-delay Ruler→ship (not Ruler→target_system)
-    // and flow through the `PendingAiShipCommand` per-ship holder; the
+    // #468 PR-1/PR-2: `survey_system`, `colonize_system`, `reposition`,
+    // and `blockade` are no longer listed here. Ship-control commands
+    // now compute light-delay Ruler→ship (not Ruler→target_system) and
+    // flow through the `PendingAiShipCommand` per-ship holder; the
     // outbox's capital/target-system routing only applies to the
-    // remaining (PR-2/3 pending) ship kinds. PR-2/3 will migrate the rest.
+    // remaining (PR-3 pending) ship kinds.
     //
     // build_ship / build_structure may carry a target_system in some
     // policies but commonly route to the empire's preferred shipyard;
@@ -510,6 +508,9 @@ pub fn dispatch_ai_pending_commands(
     let relays: &[crate::knowledge::RelaySnapshot] = &relays_owned;
 
     let survey_kind = cmd_ids::survey_system();
+    let colonize_kind = cmd_ids::colonize_system();
+    let reposition_kind = cmd_ids::reposition();
+    let blockade_kind = cmd_ids::blockade();
 
     for cmd in drained {
         let issuer = cmd.issuer;
@@ -536,21 +537,53 @@ pub fn dispatch_ai_pending_commands(
             continue;
         };
 
-        // #468 PR-1: `survey_system` branches onto the new
+        // #468 PR-1/PR-2: ship-control commands branch onto the new
         // per-ship `PendingAiShipCommand` pipeline. Light delay is
         // Ruler→ship (not Ruler→target_system), and the marker insertion
-        // happens NOW (not at arrival) so the `npc_decision.rs`
-        // outbox-dedup scan still sees in-flight surveys during the
-        // courier window. PR-2/3 will migrate the rest of the
-        // ship-control kinds.
+        // (when applicable) happens NOW (not at arrival) so the
+        // `npc_decision.rs` outbox-dedup scan still sees in-flight
+        // commands during the courier window. PR-3 will migrate the
+        // remaining ship-control kinds (`attack_target`, `move_ruler`,
+        // `load_deliverable`, `unload_deliverable`, `colonize_planet`).
+        //
+        // Survey + Colonize stamp `PendingAssignment` for empire-level
+        // dedup. Reposition + Blockade are pure movement orders — a
+        // duplicate dispatch to the same target is idempotent (the
+        // apply path skips already-in-system ships and ships with a
+        // non-empty queue), so no marker is needed.
         if cmd.kind == survey_kind {
-            dispatch_survey_per_ship(
+            dispatch_ship_command_per_ship(
                 &cmd,
                 empire_entity,
                 origin_pos,
                 now,
                 &mut commands_buf,
                 &mut params,
+                Some(crate::ai::assignments::PendingAssignment::survey_system),
+            );
+            continue;
+        }
+        if cmd.kind == colonize_kind {
+            dispatch_ship_command_per_ship(
+                &cmd,
+                empire_entity,
+                origin_pos,
+                now,
+                &mut commands_buf,
+                &mut params,
+                Some(crate::ai::assignments::PendingAssignment::colonize_system),
+            );
+            continue;
+        }
+        if cmd.kind == reposition_kind || cmd.kind == blockade_kind {
+            dispatch_ship_command_per_ship(
+                &cmd,
+                empire_entity,
+                origin_pos,
+                now,
+                &mut commands_buf,
+                &mut params,
+                None,
             );
             continue;
         }
@@ -618,8 +651,22 @@ pub fn dispatch_ai_pending_commands(
     }
 }
 
-/// #468 PR-1: dispatch a `survey_system` command onto the per-ship
-/// `PendingAiShipCommand` pipeline.
+/// #468 PR-2: generic per-ship dispatcher for AI ship-control commands.
+///
+/// PR-1 introduced this shape for `survey_system`; PR-2 generalises it so
+/// `colonize_system`, `reposition`, and `blockade` flow through the same
+/// path. The kind-specific bits are isolated to two arguments:
+///
+/// * `assignment_factory` — `Some(fn)` for kinds that participate in the
+///   per-faction "don't double-dispatch" dedup contract (Survey,
+///   Colonize); `None` for kinds that don't (Reposition, Blockade —
+///   movement orders aren't "decisions" the AI needs to remember it
+///   already made; a second dispatch to the same target is idempotent
+///   because `apply_*_to_ship` no-ops on already-in-system ships).
+/// * Everything else (intended_state, has_return_leg, projection
+///   computation) is read from `cmd.kind` via the existing
+///   `command_kind_to_intended_state` / `command_kind_has_return_leg`
+///   helpers — no kind-specific branching here.
 ///
 /// For each `ship_<i>` in the command params:
 ///   * read the ship's `Position` (= dispatcher's *real* idea of where
@@ -627,37 +674,38 @@ pub fn dispatch_ai_pending_commands(
 ///     for the projection write only)
 ///   * compute `arrives_at = sent_at + light_delay_ruler_to_ship(ruler, ship)`
 ///   * spawn `PendingAiShipCommand` with the per-ship arrival
-///   * insert `PendingAssignment::survey_system` on the ship NOW (the
-///     dedup contract at `npc_decision.rs:566` requires the marker be
+///   * optionally insert a `PendingAssignment` on the ship NOW (the
+///     dedup contract at `npc_decision.rs` requires the marker be
 ///     visible while the courier window is open)
-///   * write the dispatcher's `ShipProjection` belief — same contract
-///     as the pre-#468 path, just keyed per ship rather than once for
-///     the whole command.
+///   * write the dispatcher's `ShipProjection` belief
 ///
 /// Commands whose ship list is empty, whose target_system param is
 /// missing, or whose primary ship cannot be located fall through with
-/// a `debug!` — these were already no-ops in the previous handler.
-fn dispatch_survey_per_ship(
+/// a `debug!` — these were already no-ops in the legacy handlers.
+fn dispatch_ship_command_per_ship(
     cmd: &Command,
     empire_entity: Entity,
     origin_pos: [f64; 3],
     now: i64,
     commands_buf: &mut Commands,
     params: &mut DispatchParams,
+    assignment_factory: Option<
+        fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
+    >,
 ) {
-    use crate::ai::assignments::PendingAssignment;
     use crate::ai::command_consumer::{PendingAiShipCommand, extract_ship_list};
     use crate::physics::light_delay_ruler_to_ship;
 
-    // target_system is still required so the marker dedup + the eventual
-    // `SurveyRequested` write have somewhere to point. We log + drop a
-    // malformed survey command the same way `handle_survey_system` did.
+    let kind_str = cmd.kind.as_str();
+
+    // target_system is required for every ship-control kind we route here;
+    // the marker dedup + the eventual `*Requested` write both need it.
     let target_system = match extract_target_system(cmd) {
         Some(t) => t,
         None => {
             warn!(
-                "survey_system dispatch: missing target_system for empire {:?}",
-                empire_entity
+                "{} dispatch: missing target_system for empire {:?}",
+                kind_str, empire_entity
             );
             return;
         }
@@ -666,8 +714,8 @@ fn dispatch_survey_per_ship(
     let ship_list = extract_ship_list(&cmd.params);
     if ship_list.is_empty() {
         debug!(
-            "survey_system dispatch: no ships in command for empire {:?}",
-            empire_entity
+            "{} dispatch: no ships in command for empire {:?}",
+            kind_str, empire_entity
         );
         return;
     }
@@ -682,8 +730,8 @@ fn dispatch_survey_per_ship(
             Ok(p) => p.as_array(),
             Err(_) => {
                 debug!(
-                    "survey_system dispatch: ship {:?} has no Position (despawned?)",
-                    ship_entity
+                    "{} dispatch: ship {:?} has no Position (despawned?)",
+                    kind_str, ship_entity
                 );
                 continue;
             }
@@ -693,9 +741,8 @@ fn dispatch_survey_per_ship(
 
         // #475 projection write — preserves the per-empire belief update
         // moved out of the legacy `build_projection_inputs` site. The
-        // snapshot lookup and fallback chain mirror the old path; the
-        // only change is we now write one projection per ship in the
-        // command rather than just `ship_0`.
+        // snapshot lookup and fallback chain mirror the old path; we
+        // write one projection per ship in the command.
         let snapshot = params
             .knowledge_stores
             .get(empire_entity)
@@ -716,8 +763,8 @@ fn dispatch_survey_per_ship(
                 .and_then(|sys| params.star_positions.get(sys).ok().map(|p| p.as_array()))
                 .unwrap_or(origin_pos),
         };
-        let intended_state = crate::knowledge::command_kind_to_intended_state(cmd.kind.as_str());
-        let has_return_leg = crate::knowledge::command_kind_has_return_leg(cmd.kind.as_str());
+        let intended_state = crate::knowledge::command_kind_to_intended_state(kind_str);
+        let has_return_leg = crate::knowledge::command_kind_has_return_leg(kind_str);
 
         let projection = compute_ship_projection(
             ship_entity,
@@ -735,17 +782,15 @@ fn dispatch_survey_per_ship(
             store.update_projection(projection);
         }
 
-        // Spawn the in-flight holder and stamp the dedup marker.
-        // Stamping NOW (not at arrival) is load-bearing: the
-        // `npc_decision.rs:566` outbox scan reads
+        // Spawn the in-flight holder and (for dedup-aware kinds) stamp
+        // the marker. Stamping NOW (not at arrival) is load-bearing: the
+        // `npc_decision.rs` outbox scan reads
         // `Query<&PendingAiShipCommand>` to decide whether to re-emit
-        // a survey for the same target — if the marker waited until
-        // arrival, the scan would still need a fallback into the
-        // PendingAiShipCommand query (which it now has).
+        // a command for the same target during the courier window.
         //
         // Only the kind + target_system are stored — the full `cmd`
         // (with its AHashMap of params and stale ship_<i> list) is not
-        // needed downstream. Per-ship multi-target surveys spawn N
+        // needed downstream. Per-ship multi-target commands spawn N
         // holders here; cloning the whole command would N× the
         // param-map allocations for no benefit.
         commands_buf.spawn(PendingAiShipCommand {
@@ -756,13 +801,11 @@ fn dispatch_survey_per_ship(
             sent_at: now,
             arrives_at,
         });
-        commands_buf
-            .entity(ship_entity)
-            .insert(PendingAssignment::survey_system(
-                empire_entity,
-                target_system,
-                now,
-            ));
+        if let Some(factory) = assignment_factory {
+            commands_buf
+                .entity(ship_entity)
+                .insert(factory(empire_entity, target_system, now));
+        }
     }
 }
 
@@ -895,19 +938,20 @@ mod tests {
 
     #[test]
     fn command_targets_system_lists_spatial_kinds() {
-        // Sanity: every kind that the consumer reads `target_system`
-        // for must report `true` here, and at least one spatial-less
-        // kind must report `false`.
+        // Sanity: every kind still routed through the outbox's
+        // Ruler→target_system path must report `true` here; every kind
+        // migrated to the `PendingAiShipCommand` per-ship pipeline
+        // (PR-1: survey_system; PR-2: colonize_system, reposition,
+        // blockade) must report `false`. Spatial-less kinds also
+        // report `false`.
         assert!(command_targets_system("attack_target"));
-        // #468 PR-1: `survey_system` no longer reports `true` here —
-        // it has been migrated off the Ruler→target_system outbox path
-        // onto the new `PendingAiShipCommand` per-ship pipeline.
-        // PR-2/3 will migrate the other ship-control kinds.
+        // #468 PR-1: survey_system migrated.
         assert!(!command_targets_system("survey_system"));
-        assert!(command_targets_system("colonize_system"));
+        // #468 PR-2: colonize_system / reposition / blockade migrated.
+        assert!(!command_targets_system("colonize_system"));
+        assert!(!command_targets_system("reposition"));
+        assert!(!command_targets_system("blockade"));
         assert!(command_targets_system("move_ruler"));
-        assert!(command_targets_system("reposition"));
-        assert!(command_targets_system("blockade"));
         assert!(command_targets_system("fortify_system"));
         assert!(!command_targets_system("research_focus"));
         assert!(!command_targets_system("retreat"));

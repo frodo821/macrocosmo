@@ -33,7 +33,7 @@
 //!   after the handler `Ok` arm fired — the eager-remove regression
 //!   would clear it. Then directly populate the empire's
 //!   `KnowledgeStore` with `surveyed = true` for the target and one
-//!   more tick must let `sweep_resolved_survey_assignments` clear it.
+//!   more tick must let `sweep_resolved_assignments` clear it.
 //! - `pending_assignment_clears_when_ship_despawns` (Round 10 Bug C
 //!   fix): the time-based `sweep_stale_assignments` was removed
 //!   because its 200-hex lifetime was shorter than realistic sublight
@@ -365,7 +365,7 @@ fn ai_second_tick_does_not_re_emit_when_all_ships_and_targets_are_pending() {
 /// Scenario B (lifetime contract): the handler `Ok` arm must NOT
 /// remove `PendingAssignment` — the marker is the NPC's decision
 /// memory and outlives the dispatch. Removal is driven by
-/// `sweep_resolved_survey_assignments`, which watches the issuing
+/// `sweep_resolved_assignments`, which watches the issuing
 /// empire's `KnowledgeStore` for `surveyed = true` on the target.
 ///
 /// This pins the post-`7ad059a` lifetime semantics: under the old
@@ -464,7 +464,7 @@ fn pending_assignment_outlives_handler_ok_until_knowledge_arrives() {
         });
     }
 
-    // One more tick — `sweep_resolved_survey_assignments` runs in the
+    // One more tick — `sweep_resolved_assignments` runs in the
     // `AiTickSet::CommandDrain` set on every Update and should now
     // notice the issuing empire knows the target is surveyed.
     advance_time(&mut app, 1);
@@ -473,7 +473,7 @@ fn pending_assignment_outlives_handler_ok_until_knowledge_arrives() {
     assert!(
         marker.is_none(),
         "PendingAssignment was not swept after KnowledgeStore reported \
-         surveyed=true on the target — sweep_resolved_survey_assignments \
+         surveyed=true on the target — sweep_resolved_assignments \
          regression",
     );
 }

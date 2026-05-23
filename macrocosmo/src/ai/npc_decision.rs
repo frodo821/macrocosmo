@@ -526,18 +526,27 @@ pub fn npc_decision_tick(
         }
     }
 
-    // #468 PR-1: union in `PendingAiShipCommand` entries for the same
-    // dedup pass. With survey_system off `AiCommandOutbox`, this is the
-    // only place the npc_decision tick can see in-flight surveys during
-    // the Ruler→ship courier window. PR-2/3 will add more kinds here as
-    // they migrate — until then the `kind` filter is a no-op (only
-    // survey_system holders exist) but kept so PR-2/3 can layer in
-    // colonize/attack/etc. without re-walking this scan shape.
+    // #468 PR-1/PR-2: union in `PendingAiShipCommand` entries for the
+    // same dedup pass. With survey_system + colonize_system off
+    // `AiCommandOutbox`, this is the only place the npc_decision tick
+    // can see in-flight survey / colonize during the Ruler→ship
+    // courier window. PR-3 will add more kinds here as they migrate.
+    //
+    // `reposition` / `blockade` holders also exist but they don't
+    // participate in a per-empire dedup map — movement orders aren't
+    // "decisions" the AI remembers it already made, so we ignore them
+    // here (the marker-less dispatch path means there's no
+    // double-dispatch problem to dedup against in the first place).
     for pending in &dedup.pending_ai_ship_commands {
-        if pending.kind.as_str() != survey_kind.as_str() {
+        let kind_str = pending.kind.as_str();
+        let target_set = if kind_str == survey_kind.as_str() {
+            &mut outbox_survey_per_empire
+        } else if kind_str == colonize_kind.as_str() {
+            &mut outbox_colonize_per_empire
+        } else {
             continue;
-        }
-        outbox_survey_per_empire
+        };
+        target_set
             .entry(pending.issuer_empire)
             .or_default()
             .insert(pending.target_system);
@@ -598,6 +607,8 @@ pub fn npc_decision_tick(
         // but the marker covers the same-tick race).
         let mut pending_survey_targets: std::collections::HashSet<Entity> =
             std::collections::HashSet::new();
+        let mut pending_colonize_targets: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
         let mut pending_assigned_ships: std::collections::HashSet<Entity> =
             std::collections::HashSet::new();
         for (ship_entity, pa) in &dedup.pending_assignments {
@@ -605,9 +616,16 @@ pub fn npc_decision_tick(
                 continue;
             }
             pending_assigned_ships.insert(ship_entity);
-            if pa.kind == AssignmentKind::Survey {
-                if let AssignmentTarget::System(sys) = pa.target {
-                    pending_survey_targets.insert(sys);
+            match pa.kind {
+                AssignmentKind::Survey => {
+                    if let AssignmentTarget::System(sys) = pa.target {
+                        pending_survey_targets.insert(sys);
+                    }
+                }
+                AssignmentKind::Colonize => {
+                    if let AssignmentTarget::System(sys) = pa.target {
+                        pending_colonize_targets.insert(sys);
+                    }
                 }
             }
         }
@@ -618,11 +636,9 @@ pub fn npc_decision_tick(
         if let Some(set) = outbox_survey_per_empire.get(&entity) {
             pending_survey_targets.extend(set.iter().copied());
         }
-        let pending_colonize_targets: std::collections::HashSet<Entity> =
-            outbox_colonize_per_empire
-                .get(&entity)
-                .cloned()
-                .unwrap_or_default();
+        if let Some(set) = outbox_colonize_per_empire.get(&entity) {
+            pending_colonize_targets.extend(set.iter().copied());
+        }
 
         // Extract system intel. Hostile / colonizable signals still come
         // from the KnowledgeStore (those require detailed snapshots),
