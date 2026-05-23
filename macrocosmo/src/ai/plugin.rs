@@ -256,8 +256,18 @@ impl Plugin for AiPlugin {
                 Update,
                 (
                     super::command_outbox::process_ai_pending_commands,
-                    super::command_consumer::drain_ai_commands
+                    // #468 PR-1: per-ship light-speed AI command drain
+                    // (survey_system only in PR-1; PR-2/3 extend coverage).
+                    // Runs BEFORE `drain_ai_commands` so a mature
+                    // `PendingAiShipCommand` writes its `SurveyRequested`
+                    // in the same tick the legacy outbox would have, and
+                    // the per-tick message ordering across the bus drain
+                    // is preserved.
+                    super::command_consumer::drain_ai_ship_commands
                         .after(super::command_outbox::process_ai_pending_commands),
+                    super::command_consumer::drain_ai_commands
+                        .after(super::command_outbox::process_ai_pending_commands)
+                        .after(super::command_consumer::drain_ai_ship_commands),
                     super::command_consumer::process_ruler_boarding
                         .after(super::command_consumer::drain_ai_commands),
                     super::assignments::sweep_resolved_survey_assignments,

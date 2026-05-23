@@ -22,6 +22,21 @@ pub fn light_delay_hexadies(distance: f64) -> i64 {
     (distance / LIGHT_SPEED_LY_PER_HEXADIES).ceil() as i64
 }
 
+/// #468: Light-speed command delay from an issuer (Ruler) to a specific
+/// ship.
+///
+/// Centralises the "Ruler → ship" light-delay computation used by the
+/// player-issued command path (`ui::context_menu`), the Lua-scripted
+/// command path (`scripting::gamestate_scope::compute_request_light_delay`),
+/// and the AI ship-command dispatch path (`ai::command_outbox`). Prior to
+/// the #468 hoist each of those sites duplicated the
+/// `light_delay_hexadies(distance_ly_arr(...))` pair inline; collapsing
+/// them through a single helper makes the three paths share one
+/// definition of "command travel time".
+pub fn light_delay_ruler_to_ship(ruler_pos: [f64; 3], ship_pos: [f64; 3]) -> i64 {
+    light_delay_hexadies(distance_ly_arr(ruler_pos, ship_pos))
+}
+
 /// Travel time at sub-light speed in hexadies
 pub fn sublight_travel_hexadies(distance: f64, speed_fraction: f64) -> i64 {
     (distance / (LIGHT_SPEED_LY_PER_HEXADIES * speed_fraction)).ceil() as i64
@@ -78,5 +93,19 @@ mod tests {
         let a = [3.0, 4.0, 0.0];
         let b = [0.0, 0.0, 0.0];
         assert!((distance_ly_arr(a, b) - 5.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn light_delay_ruler_to_ship_zero_when_coincident() {
+        let p = [1.0, 2.0, 3.0];
+        assert_eq!(light_delay_ruler_to_ship(p, p), 0);
+    }
+
+    #[test]
+    fn light_delay_ruler_to_ship_matches_light_delay_hexadies() {
+        let ruler = [0.0, 0.0, 0.0];
+        let ship = [5.0, 0.0, 0.0];
+        let expected = light_delay_hexadies(distance_ly_arr(ruler, ship));
+        assert_eq!(light_delay_ruler_to_ship(ruler, ship), expected);
     }
 }

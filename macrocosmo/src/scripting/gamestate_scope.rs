@@ -2025,8 +2025,10 @@ pub mod apply {
         // Target position: the ship's own `Position`.
         let target_pos = world.get::<Position>(target_ship).map(|p| p.as_array())?;
 
-        let distance = physics::distance_ly_arr(issuer_pos, target_pos);
-        Some(physics::light_delay_hexadies(distance))
+        // #468: route through the shared `light_delay_ruler_to_ship`
+        // helper so the player / Lua / AI command paths share one
+        // definition of "Ruler → ship" light-delay.
+        Some(physics::light_delay_ruler_to_ship(issuer_pos, target_pos))
     }
 
     // ==================================================================

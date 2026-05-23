@@ -17,6 +17,7 @@
 //!
 //! [`AiTickSet::Reason`]: super::AiTickSet::Reason
 
+use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
 use crate::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
@@ -28,6 +29,24 @@ use crate::knowledge::KnowledgeStore;
 use crate::player::{AboardShip, Empire, EmpireRuler, Faction, PlayerEmpire, Ruler, StationedAt};
 use crate::technology::ResearchQueue;
 use crate::time_system::GameClock;
+
+/// #468 PR-1: bundle of dedup-related queries / resources used by
+/// `npc_decision_tick` to avoid double-emitting `survey_system` /
+/// `colonize_system` commands. Centralised in one `SystemParam` so the
+/// outer function stays under Bevy's 16-param limit even as more
+/// dedup sources land (PR-2/3 will add migrated-kind ship pipelines).
+#[derive(SystemParam)]
+pub struct DedupParams<'w, 's> {
+    /// Per-faction in-flight assignment markers (handler-resolved path).
+    pub pending_assignments: Query<'w, 's, (Entity, &'static PendingAssignment)>,
+    /// Light-speed outbox for kinds that still flow through it
+    /// (colonize_system + non-survey ship kinds in PR-1).
+    pub outbox: Res<'w, AiCommandOutbox>,
+    /// #468 PR-1: `survey_system` lives here (one entry per ship) for the
+    /// Ruler→ship courier window. PR-2/3 will expand coverage.
+    pub pending_ai_ship_commands:
+        Query<'w, 's, &'static crate::ai::command_consumer::PendingAiShipCommand>,
+}
 
 /// Marker component: this empire's decisions are made by the AI policy.
 /// Applied to NPC empires automatically, and optionally to the player
@@ -389,18 +408,16 @@ pub fn npc_decision_tick(
     design_registry: Option<Res<crate::ship_design::ShipDesignRegistry>>,
     empire_rulers: Query<&EmpireRuler, With<Empire>>,
     ruler_q: Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
-    // Round 9 PR #2 Step 4: dedup against in-flight survey dispatches so
-    // we don't double-assign two surveyors to the same target across
-    // overlapping decision ticks. Marker is per-faction.
-    pending_assignments: Query<(Entity, &PendingAssignment)>,
-    // Round 11 Bug A: also dedup against commands sitting in the
-    // light-speed outbox — between `bus.emit_command` (here) and
-    // handler insert (`drain_ai_commands` → `PendingAssignment`),
-    // a `survey_system` / `colonize_system` may live in
-    // `AiCommandOutbox.entries` for hundreds of hexadies. Without
-    // this, `mid_cadence=2` re-fires every other tick onto the same
-    // target. See `tests/ai_npc_outbox_dedup.rs` for the regression.
-    outbox: Res<AiCommandOutbox>,
+    // Round 9 PR #2 Step 4 + Round 11 Bug A + #468 PR-1: dedup against
+    // in-flight survey / colonize commands across THREE sources:
+    //   * `PendingAssignment` markers (handler-resolved path)
+    //   * `AiCommandOutbox.entries` (colonize_system + non-survey ship
+    //     kinds during the Ruler→target_system courier window)
+    //   * `PendingAiShipCommand` (survey_system during the Ruler→ship
+    //     courier window — added in #468 PR-1)
+    // Bundled into a `SystemParam` so the outer fn stays under Bevy's
+    // 16-param limit.
+    dedup: DedupParams,
     // #299 / #446 short-term loop fix: only systems hosting one of the
     // empire's own Cores are colonizable. Without this filter the AI
     // re-emits `colonize_system` every tick for systems where the
@@ -475,7 +492,7 @@ pub fn npc_decision_tick(
     > = std::collections::HashMap::new();
     // Both maps are mutated only inside the next block (single pass over
     // outbox.entries); the empire loop below reads via shared `&` only.
-    if !outbox.entries.is_empty() {
+    if !dedup.outbox.entries.is_empty() {
         // Build issuer FactionId → empire Entity once (faction_id
         // encodes only `Entity::index()`, see `to_ai_faction`); then
         // each entry is an O(1) hashmap lookup instead of an O(empires)
@@ -485,7 +502,7 @@ pub fn npc_decision_tick(
         for (entity, _, _, _) in &npcs {
             faction_to_empire.insert(to_ai_faction(entity), entity);
         }
-        for entry in &outbox.entries {
+        for entry in &dedup.outbox.entries {
             let cmd = &entry.command;
             let Some(&empire_entity) = faction_to_empire.get(&cmd.issuer) else {
                 continue;
@@ -507,6 +524,23 @@ pub fn npc_decision_tick(
                     .insert(from_ai_system(*s));
             }
         }
+    }
+
+    // #468 PR-1: union in `PendingAiShipCommand` entries for the same
+    // dedup pass. With survey_system off `AiCommandOutbox`, this is the
+    // only place the npc_decision tick can see in-flight surveys during
+    // the Ruler→ship courier window. PR-2/3 will add more kinds here as
+    // they migrate — until then the `kind` filter is a no-op (only
+    // survey_system holders exist) but kept so PR-2/3 can layer in
+    // colonize/attack/etc. without re-walking this scan shape.
+    for pending in &dedup.pending_ai_ship_commands {
+        if pending.kind.as_str() != survey_kind.as_str() {
+            continue;
+        }
+        outbox_survey_per_empire
+            .entry(pending.issuer_empire)
+            .or_default()
+            .insert(pending.target_system);
     }
 
     // #449 PR2b: per-MidAgent loop. We resolve each MidAgent →
@@ -566,7 +600,7 @@ pub fn npc_decision_tick(
             std::collections::HashSet::new();
         let mut pending_assigned_ships: std::collections::HashSet<Entity> =
             std::collections::HashSet::new();
-        for (ship_entity, pa) in &pending_assignments {
+        for (ship_entity, pa) in &dedup.pending_assignments {
             if pa.faction != entity {
                 continue;
             }

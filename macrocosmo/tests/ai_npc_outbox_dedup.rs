@@ -43,24 +43,45 @@ use macrocosmo::ship::{CoreShip, Owner, Ship};
 
 use common::{advance_time, spawn_test_ruler, spawn_test_ship, spawn_test_system, test_app};
 
-fn count_outbox_for(app: &App, kind: macrocosmo_ai::CommandKindId, target_system: Entity) -> usize {
-    let outbox = app.world().resource::<AiCommandOutbox>();
-    outbox
-        .entries
-        .iter()
-        .filter(|entry| {
-            let cmd = &entry.command;
-            if cmd.kind != kind {
-                return false;
-            }
-            match cmd.params.get("target_system") {
-                Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
-                    target_system.to_bits() == sys_id.0
+fn count_outbox_for(
+    app: &mut App,
+    kind: macrocosmo_ai::CommandKindId,
+    target_system: Entity,
+) -> usize {
+    let outbox_count = {
+        let outbox = app.world().resource::<AiCommandOutbox>();
+        outbox
+            .entries
+            .iter()
+            .filter(|entry| {
+                let cmd = &entry.command;
+                if cmd.kind != kind {
+                    return false;
                 }
-                _ => false,
-            }
-        })
-        .count()
+                match cmd.params.get("target_system") {
+                    Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
+                        target_system.to_bits() == sys_id.0
+                    }
+                    _ => false,
+                }
+            })
+            .count()
+    };
+
+    // #468 PR-1: `survey_system` migrated off `AiCommandOutbox` onto
+    // `PendingAiShipCommand` (one entry per ship). The dedup test
+    // cares about "is there *any* in-flight survey to this target?"
+    // — fold both sources together so the assertion stays valid as
+    // PR-2/3 migrate other kinds.
+    let ship_command_count = {
+        use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+        q.iter(app.world())
+            .filter(|p| p.kind == kind && p.target_system == target_system)
+            .count()
+    };
+
+    outbox_count + ship_command_count
 }
 
 /// Spawn an AI-controlled empire at `home` (capital, surveyed in its
@@ -206,27 +227,41 @@ fn place_core_at(world: &mut World, empire: Entity, system: Entity, position: [f
 
 /// Bug A regression (survey path): with two idle scouts, one
 /// frontier target, and a far-away placement (so the light-speed
-/// outbox window spans many decision ticks), only ONE
-/// `survey_system` command may live in the outbox at any point
-/// before the first one arrives.
+/// courier window spans many decision ticks), only ONE
+/// `survey_system` command may live in flight at any point before
+/// the first one arrives.
+///
+/// #468 PR-1: `survey_system` now flows through `PendingAiShipCommand`
+/// keyed on Ruler→ship distance, not Ruler→target. To keep the
+/// courier window open across multiple decision ticks the scouts are
+/// staged at a remote loitering system 5 ly away from the Ruler's
+/// home — placing them at home would give a 0 light-delay and the
+/// command would mature instantly. The dedup contract under test is
+/// unchanged: only ONE in-flight + marker pair may exist for the
+/// same target while the courier window is open.
 #[test]
 fn outbox_dedups_survey_system_during_light_delay_window() {
-    // 5 ly frontier → light delay is many tens of hexadies, more than
-    // enough for `mid_cadence=2` `npc_decision_tick` to fire several
-    // times during the window.
     let mut app = test_app();
-    let (empire, home, frontier) = setup_far_target(&mut app, "Vesk", 5.0, false);
+    let (empire, _home, frontier) = setup_far_target(&mut app, "Vesk", 5.0, false);
 
-    // Two idle scouts at home — the bug needs more than one candidate
-    // ship to manifest (Rule 2 zips ships×targets and would happily
-    // dispatch the second scout if dedup misses the in-flight one).
+    // Stage the scouts at a remote loitering system (the same 5-ly
+    // frontier system would also work, but spinning a dedicated
+    // "Loiter" system avoids any survey-the-system-you're-in edge
+    // case in the policy). Scouts at 5 ly from Ruler keep the
+    // Ruler→ship light-delay window open.
+    let loiter = spawn_test_system(app.world_mut(), "Loiter", [0.0, 5.0, 0.0], 1.0, true, false);
+
+    // Two idle scouts at the remote loitering system — the bug needs
+    // more than one candidate ship to manifest (Rule 2 zips
+    // ships×targets and would happily dispatch the second scout if
+    // dedup misses the in-flight one).
     for i in 0..2 {
         let s = spawn_test_ship(
             app.world_mut(),
             &format!("Scout-{}", i),
             "explorer_mk1",
-            home,
-            [0.0, 0.0, 0.0],
+            loiter,
+            [0.0, 5.0, 0.0],
         );
         app.world_mut()
             .entity_mut(s)
@@ -236,14 +271,14 @@ fn outbox_dedups_survey_system_during_light_delay_window() {
     }
 
     // First batch: enough ticks for `npc_decision_tick` to fire once
-    // (it gates on `clock.elapsed > last_tick`) and the dispatcher to
-    // park the command in the outbox. Stay well under the 5-ly light
-    // delay so the entry hasn't matured yet.
+    // and the dispatcher to spawn the `PendingAiShipCommand` holder.
+    // Stay well under the 5-ly light delay so the holder is still
+    // in flight.
     for _ in 0..3 {
         advance_time(&mut app, 1);
     }
 
-    let after_first = count_outbox_for(&app, cmd_ids::survey_system(), frontier);
+    let after_first = count_outbox_for(&mut app, cmd_ids::survey_system(), frontier);
     assert_eq!(
         after_first, 1,
         "expected exactly 1 in-flight survey command after first decision \
@@ -252,19 +287,19 @@ fn outbox_dedups_survey_system_during_light_delay_window() {
     );
 
     // Second batch: drive several more decision ticks while the
-    // outbox entry is still in flight. The pre-fix code would let the
+    // holder is still in flight. The pre-fix code would let the
     // second scout fire onto the same target — the assertion checks
-    // the outbox count stays at 1.
+    // the in-flight count stays at 1.
     for _ in 0..6 {
         advance_time(&mut app, 1);
     }
 
-    let after_second = count_outbox_for(&app, cmd_ids::survey_system(), frontier);
+    let after_second = count_outbox_for(&mut app, cmd_ids::survey_system(), frontier);
     assert_eq!(
         after_second, 1,
-        "expected outbox to still hold exactly 1 survey command for the \
-         frontier (the light-speed window has not elapsed); got {} — \
-         Bug A regression",
+        "expected exactly 1 in-flight survey command for the frontier \
+         (the light-speed window has not elapsed); got {} — \
+         Bug A + #468 PR-1 regression",
         after_second,
     );
 }
@@ -303,7 +338,7 @@ fn outbox_dedups_colonize_system_during_light_delay_window() {
         advance_time(&mut app, 1);
     }
 
-    let after_first = count_outbox_for(&app, cmd_ids::colonize_system(), frontier);
+    let after_first = count_outbox_for(&mut app, cmd_ids::colonize_system(), frontier);
     assert_eq!(
         after_first, 1,
         "expected exactly 1 in-flight colonize command after first decision \
@@ -315,7 +350,7 @@ fn outbox_dedups_colonize_system_during_light_delay_window() {
         advance_time(&mut app, 1);
     }
 
-    let after_second = count_outbox_for(&app, cmd_ids::colonize_system(), frontier);
+    let after_second = count_outbox_for(&mut app, cmd_ids::colonize_system(), frontier);
     assert_eq!(
         after_second, 1,
         "expected outbox to still hold exactly 1 colonize command for the \
