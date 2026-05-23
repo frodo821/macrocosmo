@@ -301,22 +301,19 @@ pub fn realtime_state_to_snapshot(state: &ShipState) -> (ShipSnapshotState, Opti
 ///   the viewing empire's [`KnowledgeStore::ship_snapshots`]. Unchanged
 ///   from the pre-#487 contract (it was already snapshot-mediated).
 /// * **Observer mode** (= empire-view, viewing as another empire): the
-///   *intended* contract is "treat identically to own-empire normal
-///   play — projection / snapshot of the **viewing empire**" (= the
-///   observed empire whose perspective the player is borrowing). The
-///   caller would pass the observed empire as `viewing_empire`. A
-///   separate omniscient (god-view) mode is the right way to expose
-///   realtime ground truth (#490, follow-up).
+///   contract is "treat identically to own-empire normal play —
+///   projection / snapshot of the **viewing empire**" (= the observed
+///   empire whose perspective the player is borrowing). The caller
+///   MUST pass the `ObserverView.viewing` empire as `viewing_empire`
+///   and its `KnowledgeStore` as `viewing_knowledge`; passing `None`
+///   in observer mode is reserved for the future omniscient (god-view)
+///   mode (#490), not "ground-truth fallback".
 ///
-///   **Production drift**: the current `ui::mod::draw_outline_and_tooltips_system`
-///   caller passes `viewing_knowledge = None` whenever observer mode is
-///   active, which falls through to the realtime ECS path below
-///   (= ground-truth, not the empire-view contract above). This is
-///   tracked as a follow-up to #440 (observer mode design); the helper
-///   itself supports both contracts via the no-store fallback, so
-///   migrating the call site is a one-line change once the design is
-///   finalised. Tests that pin the empire-view contract still pass
-///   because they construct `viewing_knowledge = Some(...)` explicitly.
+///   Callers resolve the empire via `ui::mod::resolve_ui_empire` (Query)
+///   or `crate::observer::resolve_viewing_empire` (`&World`), and pipe
+///   the store through `ui::mod::resolve_viewing_knowledge` /
+///   `empire_view_knowledge` to enforce the invariant at a single
+///   change point.
 /// * **No `KnowledgeStore` resolved** (early Startup frames before
 ///   empires are wired): fall back to realtime ECS state — there's no
 ///   light-coherent view to use yet.

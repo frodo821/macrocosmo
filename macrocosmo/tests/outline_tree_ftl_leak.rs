@@ -450,6 +450,12 @@ fn outline_foreign_ship_uses_snapshot() {
 ///
 /// Verify by setting up a situation where the projection and realtime
 /// disagree, then asserting observer mode reads the **projection** side.
+///
+/// #499 closed the production drift that previously routed observer
+/// mode through `viewing_knowledge=None` (= realtime fallback). The
+/// `ui::mod::draw_outline_and_tooltips_system` caller now resolves the
+/// store from the observed empire, matching the contract this test
+/// pinned.
 #[test]
 fn outline_observer_mode_is_light_coherent_via_projection() {
     let mut app = test_app();
