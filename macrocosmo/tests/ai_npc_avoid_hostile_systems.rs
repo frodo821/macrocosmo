@@ -150,17 +150,8 @@ fn outbox_has_command_for(
     // single call across both pipelines as PR-2/3 migrate more kinds.
     use macrocosmo::ai::command_consumer::PendingAiShipCommand;
     let mut q = app.world_mut().query::<&PendingAiShipCommand>();
-    q.iter(app.world()).any(|p| {
-        if p.command.kind != kind {
-            return false;
-        }
-        match p.command.params.get("target_system") {
-            Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
-                target_system.to_bits() == sys_id.0
-            }
-            _ => false,
-        }
-    })
+    q.iter(app.world())
+        .any(|p| p.kind == kind && p.target_system == target_system)
 }
 
 fn pending_survey_targets(app: &mut App, empire: Entity) -> Vec<Entity> {

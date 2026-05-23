@@ -77,17 +77,7 @@ fn count_outbox_for(
         use macrocosmo::ai::command_consumer::PendingAiShipCommand;
         let mut q = app.world_mut().query::<&PendingAiShipCommand>();
         q.iter(app.world())
-            .filter(|p| {
-                if p.command.kind != kind {
-                    return false;
-                }
-                match p.command.params.get("target_system") {
-                    Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
-                        target_system.to_bits() == sys_id.0
-                    }
-                    _ => false,
-                }
-            })
+            .filter(|p| p.kind == kind && p.target_system == target_system)
             .count()
     };
 

@@ -45,16 +45,18 @@ fn find_outbox(app: &App, kind: macrocosmo_ai::CommandKindId) -> Option<macrocos
 /// #468 PR-1: ship-kind commands (currently just `survey_system`) flow
 /// through the per-ship `PendingAiShipCommand` pipeline instead of the
 /// faction-wide `AiCommandOutbox`. Find the first such holder whose
-/// command kind matches.
+/// command kind matches and return its (kind, target_system, ship,
+/// issuer_empire) — enough to pin the cutover wire shape without
+/// holding a borrow on the world.
 fn find_ship_pending(
     app: &mut App,
     kind: macrocosmo_ai::CommandKindId,
-) -> Option<macrocosmo_ai::Command> {
+) -> Option<(macrocosmo_ai::CommandKindId, Entity, Entity, Entity)> {
     use macrocosmo::ai::command_consumer::PendingAiShipCommand;
     let mut q = app.world_mut().query::<&PendingAiShipCommand>();
     q.iter(app.world())
-        .find(|p| p.command.kind == kind)
-        .map(|p| p.command.clone())
+        .find(|p| p.kind == kind)
+        .map(|p| (p.kind.clone(), p.target_system, p.ship, p.issuer_empire))
 }
 
 // ---- Rule 2 (survey) — Fleet-scope ShortAgent ---------------------------
@@ -154,35 +156,23 @@ fn short_emits_survey_system_after_cutover() {
         advance_time(&mut app, 1);
     }
 
-    let cmd = find_ship_pending(&mut app, cmd_ids::survey_system())
-        .expect("Short must emit survey_system");
+    let (kind, target_system, ship, issuer_empire) =
+        find_ship_pending(&mut app, cmd_ids::survey_system())
+            .expect("Short must emit survey_system");
     assert_eq!(
-        cmd.kind.as_str(),
+        kind.as_str(),
         "survey_system",
         "wire kind must match the deleted Mid Rule 2"
     );
-    // issuer is FactionId derived from the empire entity.
     assert_eq!(
-        cmd.issuer,
-        macrocosmo_ai::FactionId(empire.index().index()),
-        "issuer must remain the empire FactionId",
+        target_system, frontier,
+        "target_system must be the unsurveyed frontier"
     );
-    match cmd.params.get("target_system") {
-        Some(macrocosmo_ai::CommandValue::System(sys)) => {
-            assert_eq!(sys.0, frontier.to_bits(), "target_system param");
-        }
-        other => panic!("expected target_system = SystemRef; got {:?}", other),
-    }
-    match cmd.params.get("ship_count") {
-        Some(macrocosmo_ai::CommandValue::I64(n)) => assert_eq!(*n, 1, "ship_count"),
-        other => panic!("expected ship_count=1; got {:?}", other),
-    }
-    match cmd.params.get("ship_0") {
-        Some(macrocosmo_ai::CommandValue::Entity(eref)) => {
-            assert_eq!(eref.0, scout.to_bits(), "ship_0 = scout");
-        }
-        other => panic!("expected ship_0 entity; got {:?}", other),
-    }
+    assert_eq!(ship, scout, "ship must be the spawned scout (= ship_0)");
+    assert_eq!(
+        issuer_empire, empire,
+        "issuer_empire must be the empire that owns the scout"
+    );
 }
 
 // ---- Rule 5b (slot fill) — ColonizedSystem-scope ShortAgent --------------

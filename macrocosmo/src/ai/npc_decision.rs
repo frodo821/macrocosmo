@@ -530,20 +530,17 @@ pub fn npc_decision_tick(
     // dedup pass. With survey_system off `AiCommandOutbox`, this is the
     // only place the npc_decision tick can see in-flight surveys during
     // the Ruler→ship courier window. PR-2/3 will add more kinds here as
-    // they migrate.
+    // they migrate — until then the `kind` filter is a no-op (only
+    // survey_system holders exist) but kept so PR-2/3 can layer in
+    // colonize/attack/etc. without re-walking this scan shape.
     for pending in &dedup.pending_ai_ship_commands {
-        let cmd = &pending.command;
-        if cmd.kind.as_str() != survey_kind.as_str() {
+        if pending.kind.as_str() != survey_kind.as_str() {
             continue;
         }
-        let target = match cmd.params.get("target_system") {
-            Some(macrocosmo_ai::CommandValue::System(s)) => from_ai_system(*s),
-            _ => continue,
-        };
         outbox_survey_per_empire
             .entry(pending.issuer_empire)
             .or_default()
-            .insert(target);
+            .insert(pending.target_system);
     }
 
     // #449 PR2b: per-MidAgent loop. We resolve each MidAgent →

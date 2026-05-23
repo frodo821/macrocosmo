@@ -1735,11 +1735,23 @@ pub fn process_ruler_boarding(
 /// `PendingAssignment` marker on `ship` is inserted at the same time the
 /// holder is spawned, *not* at arrival — that keeps the dedup contract at
 /// `npc_decision.rs:566` intact across the courier window.
+///
+/// Fields the drain side actually consumes are stored directly rather
+/// than the full [`macrocosmo_ai::Command`] — the `params` map (for an
+/// N-ship multi-target survey) is ~hundreds of bytes per holder and the
+/// drain only reads `target_system`. PR-2/3 extends this struct with
+/// kind-specific extras (e.g. `target_planet: Option<Entity>` for
+/// `colonize_planet`) rather than cloning the whole command.
 #[derive(Component, Debug)]
 pub struct PendingAiShipCommand {
-    /// The AI bus command that produced this holder. Preserves the full
-    /// parameter map so the drain system can replay any per-arm logic.
-    pub command: macrocosmo_ai::Command,
+    /// Which AI command kind this holder represents. Drain dispatch
+    /// branches on this string-interned id (cheap `Arc<str>` clone).
+    pub kind: macrocosmo_ai::CommandKindId,
+    /// Star system the order targets (= the `target_system` param the
+    /// AI command carried at emission). Used by both the drain
+    /// (for `SurveyRequested.target_system`) and the dedup scan in
+    /// `npc_decision.rs`.
+    pub target_system: Entity,
     /// The specific ship this holder targets. For multi-ship commands the
     /// outbox spawns one `PendingAiShipCommand` per ship, each with its
     /// own Ruler→ship `arrives_at`.
@@ -1763,7 +1775,7 @@ pub struct PendingAiShipCommand {
 /// unexpected kind defensively rather than re-queueing.
 pub fn drain_ai_ship_commands(
     mut commands_buf: Commands,
-    mut pending_q: Query<(Entity, &mut PendingAiShipCommand)>,
+    pending_q: Query<(Entity, &PendingAiShipCommand)>,
     ships: Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     clock: Res<GameClock>,
     mut survey_writer: Option<MessageWriter<SurveyRequested>>,
@@ -1774,74 +1786,92 @@ pub fn drain_ai_ship_commands(
 
     // Collect mature entries first so we can despawn while iterating
     // without invalidating the query cursor.
-    let mut mature: Vec<(Entity, macrocosmo_ai::Command, Entity, Entity)> = Vec::new();
-    for (holder_entity, pending) in &mut pending_q {
+    let mut mature: Vec<(Entity, MaturedHolder)> = Vec::new();
+    for (holder_entity, pending) in &pending_q {
         if pending.arrives_at <= now {
             mature.push((
                 holder_entity,
-                pending.command.clone(),
-                pending.ship,
-                pending.issuer_empire,
+                MaturedHolder {
+                    kind: pending.kind.clone(),
+                    target_system: pending.target_system,
+                    ship: pending.ship,
+                    issuer_empire: pending.issuer_empire,
+                },
             ));
         }
     }
 
-    for (holder_entity, cmd, ship_entity, empire_entity) in mature {
-        let kind_str = cmd.kind.as_str();
-
-        if kind_str == survey_kind.as_str() {
+    for (holder_entity, m) in mature {
+        if m.kind.as_str() == survey_kind.as_str() {
             apply_survey_to_ship(
-                ship_entity,
-                empire_entity,
-                &cmd,
+                m.ship,
+                m.issuer_empire,
+                m.target_system,
                 &ships,
                 survey_writer.as_mut(),
                 &mut next_cmd_id,
+                &mut commands_buf,
                 now,
             );
         } else {
             // Defensive: PR-1 only spawns `survey_system` holders. Any
             // other kind here means an upstream bug — log + drop rather
-            // than silently dispatch through an unknown path.
+            // than silently dispatch through an unknown path. Also
+            // strip the stale `PendingAssignment` so the ship is not
+            // permanently excluded from future AI dispatches.
             debug!(
                 "drain_ai_ship_commands: unexpected kind {} for ship {:?}; dropping",
-                kind_str, ship_entity
+                m.kind, m.ship
             );
+            commands_buf
+                .entity(m.ship)
+                .remove::<crate::ai::assignments::PendingAssignment>();
         }
 
         commands_buf.entity(holder_entity).despawn();
     }
 }
 
+/// #468 PR-1: lightweight snapshot of a matured
+/// [`PendingAiShipCommand`] used inside [`drain_ai_ship_commands`] so the
+/// drain loop can despawn / mutate via `Commands` without holding a
+/// borrow on the source query.
+struct MaturedHolder {
+    kind: macrocosmo_ai::CommandKindId,
+    target_system: Entity,
+    ship: Entity,
+    issuer_empire: Entity,
+}
+
 /// Apply a matured `survey_system` PendingAiShipCommand: validate the ship
 /// is still eligible (owned by the issuer, in-system, idle) and write the
-/// `SurveyRequested` message. The `PendingAssignment` marker is already
-/// in place — it was inserted at outbox-spawn time to preserve dedup.
+/// `SurveyRequested` message.
 ///
-/// Mirrors the per-ship body of the legacy `handle_survey_system` minus
-/// the marker insertion. Extracted as a free function so the outbox can
-/// reuse the eligibility shape if needed and so the drain system stays
-/// small.
+/// The `PendingAssignment` marker was inserted at outbox-spawn time to
+/// preserve dedup across the courier window. On any early-return path
+/// here (ship despawned / owner-changed / non-idle / no writer) the
+/// marker MUST be removed — otherwise the ship is permanently excluded
+/// from future AI survey dispatches because the dedup scan at
+/// `npc_decision.rs:566` filters by `PendingAssignment`. Pre-#468 the
+/// legacy `handle_survey_requested` path cleared the marker on its own
+/// reject branches; on the new path, no `SurveyRequested` is even
+/// written when these gates fail, so we drop the marker ourselves.
 fn apply_survey_to_ship(
     ship_entity: Entity,
     empire_entity: Entity,
-    cmd: &macrocosmo_ai::Command,
+    target_system: Entity,
     ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     survey_writer: Option<&mut MessageWriter<SurveyRequested>>,
     next_cmd_id: &mut NextCommandId,
+    commands_buf: &mut Commands,
     now: i64,
 ) {
     let Some(writer) = survey_writer else {
         warn!("drain_ai_ship_commands: SurveyRequested writer unavailable");
+        commands_buf
+            .entity(ship_entity)
+            .remove::<crate::ai::assignments::PendingAssignment>();
         return;
-    };
-
-    let target_system = match cmd.params.get("target_system") {
-        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
-        _ => {
-            warn!("drain_ai_ship_commands: survey_system holder missing target_system");
-            return;
-        }
     };
 
     let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
@@ -1849,6 +1879,8 @@ fn apply_survey_to_ship(
             "drain_ai_ship_commands: ship {:?} despawned before arrival",
             ship_entity
         );
+        // Ship is gone — the `PendingAssignment` was on its
+        // (despawned) entity, so no further cleanup is required.
         return;
     };
     if ship.owner != Owner::Empire(empire_entity) {
@@ -1856,6 +1888,9 @@ fn apply_survey_to_ship(
             "drain_ai_ship_commands: ship {:?} no longer owned by empire {:?}",
             ship_entity, empire_entity
         );
+        commands_buf
+            .entity(ship_entity)
+            .remove::<crate::ai::assignments::PendingAssignment>();
         return;
     }
     if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
@@ -1864,6 +1899,9 @@ fn apply_survey_to_ship(
             ship_entity,
             queue.commands.len(),
         );
+        commands_buf
+            .entity(ship_entity)
+            .remove::<crate::ai::assignments::PendingAssignment>();
         return;
     }
 

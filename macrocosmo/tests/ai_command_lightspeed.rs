@@ -164,20 +164,8 @@ fn pending_ship_command_holds_survey_for(app: &mut App, target_system: Entity) -
     let now = app.world().resource::<GameClock>().elapsed;
     let kind = cmd_ids::survey_system();
     let mut q = app.world_mut().query::<&PendingAiShipCommand>();
-    q.iter(app.world()).any(|p| {
-        if p.command.kind != kind {
-            return false;
-        }
-        if p.arrives_at <= now {
-            return false;
-        }
-        match p.command.params.get("target_system") {
-            Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
-                target_system.to_bits() == sys_id.0
-            }
-            _ => false,
-        }
-    })
+    q.iter(app.world())
+        .any(|p| p.kind == kind && p.arrives_at > now && p.target_system == target_system)
 }
 
 /// #468 PR-1 core regression: Ruler at home, Scout at home, target
@@ -317,5 +305,135 @@ fn survey_ai_scout_at_home_ruler_remote_delays_by_ruler_to_ship() {
         survey_event_total > 0,
         "no SurveyRequested fired across {} post-threshold ticks — #468 PR-1 symmetric over-gating regression",
         light_delay + 5,
+    );
+}
+
+/// #468 PR-1 BLOCKER regression (adversarial review HIGH #1): when a
+/// matured `PendingAiShipCommand` is rejected at drain time (ship no
+/// longer idle, owner changed, despawned), the `PendingAssignment`
+/// marker stamped at outbox-spawn time must be removed too — otherwise
+/// the ship is permanently excluded from future AI dispatches because
+/// the dedup scan at `npc_decision.rs::dedup_pending_assignments`
+/// filters by `PendingAssignment`.
+///
+/// Pre-fix: `apply_survey_to_ship` early-returned without touching the
+/// marker on any of the reject branches, since no `SurveyRequested`
+/// fired and `handle_survey_requested` (the legacy cleaner) never ran.
+/// Post-fix: the drain explicitly strips the marker on every reject.
+///
+/// Test shape: we don't want the AI to keep re-emitting `survey_system`
+/// in subsequent ticks (that would re-stamp the marker after every
+/// removal). So we set up the holder + marker manually, set the ship
+/// to a non-idle state, then drive the drain to maturity and assert
+/// the marker is gone. The dispatcher path is exercised by the other
+/// tests in this file.
+#[test]
+fn rejected_survey_at_drain_time_releases_pending_assignment() {
+    use macrocosmo::ai::AiBusResource;
+    use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    use macrocosmo::ai::schema::ids::command as cmd_ids;
+    use macrocosmo::ship::{CommandQueue, QueuedCommand};
+
+    let mut app = test_app();
+    // Disable AI policy emission so the test exclusively exercises the
+    // drain reject path — without this the next NPC tick would
+    // re-stamp the marker after we observe its removal.
+    app.insert_resource(AiPlayerMode(false));
+    app.insert_resource(AiBusResource::default());
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Reject Test".into(),
+            },
+            Faction {
+                id: "reject_test".into(),
+                name: "Reject Test".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [5.0, 0.0, 0.0],
+        1.0,
+        false,
+        false,
+    );
+    let scout = spawn_test_ship(
+        app.world_mut(),
+        "Scout-1",
+        "explorer_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    app.world_mut()
+        .entity_mut(scout)
+        .get_mut::<Ship>()
+        .unwrap()
+        .owner = Owner::Empire(empire);
+
+    // Set the ship's CommandQueue to non-empty so apply_survey_to_ship
+    // takes the "queue.commands.is_empty()" reject branch on maturity.
+    {
+        let mut em = app.world_mut().entity_mut(scout);
+        if let Some(mut queue) = em.get_mut::<CommandQueue>() {
+            queue.commands.push(QueuedCommand::MoveTo { system: home });
+        }
+    }
+
+    // Manually spawn the in-flight holder + stamp the marker — same
+    // shape the dispatcher would produce on the survey path.
+    let now = app.world().resource::<GameClock>().elapsed;
+    app.world_mut().spawn(PendingAiShipCommand {
+        kind: cmd_ids::survey_system(),
+        target_system: frontier,
+        ship: scout,
+        issuer_empire: empire,
+        sent_at: now,
+        arrives_at: now + 1,
+    });
+    app.world_mut()
+        .entity_mut(scout)
+        .insert(PendingAssignment {
+            faction: empire,
+            kind: AssignmentKind::Survey,
+            target: AssignmentTarget::System(frontier),
+            since: now,
+        });
+
+    // Sanity: the marker is stamped before the drain runs.
+    assert!(
+        app.world().entity(scout).get::<PendingAssignment>().is_some(),
+        "PendingAssignment must be present pre-drain (test setup invariant)",
+    );
+
+    // Walk the clock so drain_ai_ship_commands fires. arrives_at = now+1,
+    // so a couple of ticks is plenty.
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+    }
+
+    // After rejection: the holder is despawned AND the marker is
+    // removed. Pre-fix this assertion failed — the marker stayed
+    // forever, locking the scout out of future surveys.
+    let holder_remains = {
+        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+        q.iter(app.world()).any(|p| p.ship == scout)
+    };
+    assert!(
+        !holder_remains,
+        "Holder must be drained even on reject path",
+    );
+    assert!(
+        app.world().entity(scout).get::<PendingAssignment>().is_none(),
+        "PendingAssignment must be removed when survey is rejected at drain time \
+         (otherwise the ship is permanently excluded from AI dispatches)",
     );
 }

@@ -742,8 +742,15 @@ fn dispatch_survey_per_ship(
         // a survey for the same target — if the marker waited until
         // arrival, the scan would still need a fallback into the
         // PendingAiShipCommand query (which it now has).
+        //
+        // Only the kind + target_system are stored — the full `cmd`
+        // (with its AHashMap of params and stale ship_<i> list) is not
+        // needed downstream. Per-ship multi-target surveys spawn N
+        // holders here; cloning the whole command would N× the
+        // param-map allocations for no benefit.
         commands_buf.spawn(PendingAiShipCommand {
-            command: cmd.clone(),
+            kind: cmd.kind.clone(),
+            target_system,
             ship: ship_entity,
             issuer_empire: empire_entity,
             sent_at: now,
