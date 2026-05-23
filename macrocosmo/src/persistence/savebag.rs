@@ -1661,10 +1661,20 @@ impl SavedPendingAssignment {
         let kind = match self.kind {
             0 => crate::ai::assignments::AssignmentKind::Survey,
             1 => crate::ai::assignments::AssignmentKind::Colonize,
-            // Unknown future tag from a forward-compatible save: fall back
-            // to `Survey` to keep the load path infallible. SAVE_VERSION
-            // bumps would have been blocked at the schema layer first.
-            _ => crate::ai::assignments::AssignmentKind::Survey,
+            // Unknown tag — SAVE_VERSION should have blocked this at the
+            // schema layer, so reaching here means a forgotten version
+            // bump on a new variant. Warn loudly so the regression is
+            // visible in CI / playtest logs, then fall back to `Survey`
+            // to keep the load path infallible (the marker may dedup
+            // against the wrong target, but the game stays playable).
+            unknown => {
+                bevy::log::warn!(
+                    "SavedPendingAssignment: unknown kind tag {} — falling back to Survey. \
+                     This indicates a missed SAVE_VERSION bump.",
+                    unknown,
+                );
+                crate::ai::assignments::AssignmentKind::Survey
+            }
         };
         let target = match self.target_tag {
             // `System` is the only currently-defined target; same fan-in

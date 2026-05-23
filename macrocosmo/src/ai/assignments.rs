@@ -24,7 +24,7 @@
 //! 1. `handle_survey_requested` Rejected (start_survey failed at handler
 //!    time, e.g. ship gone) — immediate remove (emit failed; AI is free
 //!    to re-emit next tick).
-//! 2. [`sweep_resolved_survey_assignments`] — every tick, checks the
+//! 2. [`sweep_resolved_assignments`] — every tick, checks the
 //!    issuing empire's `KnowledgeStore`. If the target system is now
 //!    `surveyed = true` from that empire's perspective (success arrived
 //!    via fact propagation) → remove.
@@ -125,17 +125,21 @@ impl PendingAssignment {
 /// surveyor loops every 30 hexadies.
 ///
 /// #468 PR-2: covers both `Survey` (target's `surveyed` flag) and
-/// `Colonize` (target's `colonized` flag). The function name retains the
-/// `survey` lead for historical continuity; the body branches on
-/// `AssignmentKind` to pick the relevant resolution predicate.
+/// `Colonize` (target's `colonized` flag). The body branches on
+/// `AssignmentKind` to pick the relevant resolution predicate; PR-3
+/// will extend with further kinds.
 ///
-/// Failure path (ship lost to hostiles before completion) is currently
-/// handled by Bevy's automatic component cleanup on `despawn`. A future
-/// extension may also drop the marker when `KnowledgeStore` records a
-/// `ShipDestroyed` fact for the carrying ship — then the NPC explicitly
-/// knows "scout was lost" and can re-emit immediately rather than waiting
-/// for the ship entity itself to vanish.
-pub fn sweep_resolved_survey_assignments(
+/// Failure path (ship lost to hostiles before completion) is handled
+/// by Bevy's automatic component cleanup on `despawn` for the survey
+/// kind, and explicitly by `handle_colonize_requested`'s reject-branch
+/// marker removal for the colonize kind (the colonize handler runs
+/// after a Ruler→ship courier window so the ship is still alive when
+/// rejections happen). A future extension may also drop the marker
+/// when `KnowledgeStore` records a `ShipDestroyed` fact for the
+/// carrying ship — then the NPC explicitly knows "scout was lost" and
+/// can re-emit immediately rather than waiting for the ship entity
+/// itself to vanish.
+pub fn sweep_resolved_assignments(
     mut commands: Commands,
     assignments: Query<(Entity, &PendingAssignment)>,
     knowledge: Query<&crate::knowledge::KnowledgeStore>,

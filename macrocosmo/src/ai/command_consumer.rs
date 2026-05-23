@@ -880,9 +880,10 @@ fn handle_build_structure(
 // #468 PR-2: `handle_reposition` and `handle_blockade` removed — both
 // kinds are now produced via the per-ship `PendingAiShipCommand`
 // pipeline and consumed by `apply_reposition_to_ship` /
-// `apply_blockade_to_ship`. The shared helper `dispatch_ships_to_target`
-// is retained — PR-3 will use it for `attack_target` and
-// `fortify_system` until those kinds also migrate.
+// `apply_blockade_to_ship`. `dispatch_ships_to_target` was deleted in
+// the PR-2 review fold-in (it had no live callers); PR-3 will choose
+// between `apply_move_to_ship` and a freshly-extracted helper for
+// `attack_target` / `fortify_system` based on whichever shape fits.
 
 // ---------------------------------------------------------------------------
 // Deliverable family handlers (#446)
@@ -1301,85 +1302,6 @@ fn handle_colonize_planet(
         "colonize_planet: ship {:?} → planet {:?} (system {:?}) for faction {:?}",
         ship_entity, target_planet, target_system, issuer
     );
-}
-
-/// Shared logic for "dispatch listed ships to a target system" — the
-/// same pattern as `handle_attack_target`.
-///
-/// #468 PR-2 note: this helper used to be called by `handle_reposition`
-/// and `handle_blockade`; both kinds have since moved to the per-ship
-/// `PendingAiShipCommand` pipeline (`apply_*_to_ship`). The helper is
-/// retained for PR-3 — `attack_target` and `fortify_system` will share
-/// the same shape when they migrate. Marked `#[allow(dead_code)]` so
-/// the PR-2 build doesn't warn while the helper is dormant.
-#[allow(dead_code)]
-fn dispatch_ships_to_target(
-    cmd_name: &str,
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    move_writer: &mut MessageWriter<MoveRequested>,
-    next_cmd_id: &mut NextCommandId,
-    now: i64,
-) {
-    let target_system = match params.get("target_system") {
-        Some(CommandValue::System(sys_ref)) => from_ai_system(*sys_ref),
-        _ => {
-            warn!("{} command missing target_system param", cmd_name);
-            return;
-        }
-    };
-
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!("{}: no empire found for faction {:?}", cmd_name, issuer);
-            return;
-        }
-    };
-
-    let selected_ships = extract_ship_list(params);
-    if selected_ships.is_empty() {
-        debug!(
-            "{}: no ships specified by policy for faction {:?}",
-            cmd_name, issuer
-        );
-        return;
-    }
-
-    let mut dispatched = 0;
-    for ship_entity in selected_ships {
-        let Ok((_, ship, state, queue)) = ships.get(ship_entity) else {
-            continue;
-        };
-        if ship.owner != Owner::Empire(empire_entity) {
-            continue;
-        }
-        if !matches!(state, ShipState::InSystem { .. }) || !queue.commands.is_empty() {
-            continue;
-        }
-        if let ShipState::InSystem { system } = state {
-            if *system == target_system {
-                continue;
-            }
-        }
-
-        move_writer.write(MoveRequested {
-            command_id: next_cmd_id.allocate(),
-            ship: ship_entity,
-            target: target_system,
-            issued_at: now,
-        });
-        dispatched += 1;
-    }
-
-    if dispatched > 0 {
-        info!(
-            "{}: dispatched {} ships from faction {:?} to system {:?}",
-            cmd_name, dispatched, issuer, target_system
-        );
-    }
 }
 
 /// Handle `retreat`: find ships in systems with hostiles and send them
@@ -1949,8 +1871,7 @@ fn apply_colonize_to_ship(
 /// Reposition is a pure movement order — no `PendingAssignment` marker
 /// is involved (the dispatcher passes `None` for `assignment_factory`),
 /// so reject branches simply early-return without marker bookkeeping.
-/// Also skips ships already at `target_system` (legacy
-/// `dispatch_ships_to_target` no-op).
+/// Also skips ships already at `target_system` (= move-to-self no-op).
 fn apply_reposition_to_ship(
     ship_entity: Entity,
     empire_entity: Entity,

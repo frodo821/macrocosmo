@@ -572,6 +572,113 @@ fn colonize_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
     );
 }
 
+/// #468 PR-2 review fold-in (Bug BLOCKER): the `*Requested` event
+/// handler `handle_colonize_requested` also rejects on no-core, not-
+/// idle, target-despawned, and not-a-colony-ship branches. Pre-fix
+/// none of those branches stripped `PendingAssignment::Colonize` —
+/// only the drain-side `apply_colonize_to_ship` did. So a colonize
+/// command that survived the drain (ship was idle) but failed at the
+/// settlement handler (no sovereignty Core in target system, etc.)
+/// would leave the marker stamped forever.
+///
+/// This test pins the handler-side cleanup by:
+///   1. spawning a colony ship at the target system (= drain succeeds,
+///      the auto-MoveTo branch is skipped),
+///   2. spawning the ColonizeRequested event directly (= bypass drain),
+///   3. pre-stamping the marker,
+///   4. observing that handle_colonize_requested rejects (no Core in
+///      the target system) AND removes the marker.
+#[test]
+fn colonize_handler_reject_at_no_core_releases_pending_assignment() {
+    use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+    use macrocosmo::ship::ShipState;
+    use macrocosmo::ship::command_events::ColonizeRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    // One survey system that doubles as the colonize target — the
+    // ship will be placed inside it (= drain succeeds: ship is docked
+    // at target). The system has no sovereignty Core, so the handler
+    // rejects on the no-core branch.
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Handler Reject Test".into(),
+            },
+            Faction {
+                id: "handler_reject_test".into(),
+                name: "Handler Reject Test".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+        ))
+        .id();
+    let target = spawn_test_system(app.world_mut(), "Target", [0.0, 0.0, 0.0], 1.0, true, false);
+    let colony_ship = spawn_test_ship(
+        app.world_mut(),
+        "Colony-1",
+        "colony_ship_mk1",
+        target,
+        [0.0, 0.0, 0.0],
+    );
+    {
+        let mut em = app.world_mut().entity_mut(colony_ship);
+        em.get_mut::<Ship>().unwrap().owner = Owner::Empire(empire);
+        // Ensure FactionOwner so the handler's #299 Core gate is
+        // exercised (not the neutral-bypass path).
+        em.insert(macrocosmo::faction::FactionOwner(empire));
+        if let Some(mut state) = em.get_mut::<ShipState>() {
+            *state = ShipState::InSystem { system: target };
+        }
+    }
+
+    // Stamp the marker as if the dispatcher had emitted the colonize
+    // earlier and the drain had already let it through (= the
+    // realistic state when handle_colonize_requested sees a request).
+    let now = app.world().resource::<GameClock>().elapsed;
+    app.world_mut()
+        .entity_mut(colony_ship)
+        .insert(PendingAssignment {
+            faction: empire,
+            kind: AssignmentKind::Colonize,
+            target: AssignmentTarget::System(target),
+            since: now,
+        });
+
+    // Reset the message queue so we observe only this test's events.
+    app.world_mut()
+        .resource_mut::<Messages<ColonizeRequested>>()
+        .update();
+
+    // Emit ColonizeRequested directly (bypass drain).
+    app.world_mut()
+        .resource_mut::<Messages<ColonizeRequested>>()
+        .write(ColonizeRequested {
+            command_id: macrocosmo::ship::command_events::CommandId(9_999_001),
+            ship: colony_ship,
+            target_system: target,
+            planet: None,
+            issued_at: now,
+        });
+
+    // One tick is enough for handle_colonize_requested to run.
+    for _ in 0..2 {
+        advance_time(&mut app, 1);
+    }
+
+    assert!(
+        app.world()
+            .entity(colony_ship)
+            .get::<PendingAssignment>()
+            .is_none(),
+        "PendingAssignment::Colonize must be removed when handle_colonize_requested \
+         rejects at the no-Core gate — otherwise the ship is permanently excluded \
+         from future AI colonize dispatches even though the drain succeeded",
+    );
+}
+
 /// #468 PR-2: matured `reposition` PendingAiShipCommand at zero light
 /// delay must drain into a `MoveRequested` within the same tick.
 #[test]
