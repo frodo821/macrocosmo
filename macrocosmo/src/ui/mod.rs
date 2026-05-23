@@ -344,6 +344,89 @@ mod font_tests {
     }
 }
 
+#[cfg(test)]
+mod empire_view_tests {
+    use super::{empire_view_knowledge, resolve_viewing_knowledge};
+    use crate::knowledge::KnowledgeStore;
+    use crate::player::{Empire, Faction, PlayerEmpire};
+    use bevy::ecs::system::SystemState;
+    use bevy::prelude::*;
+
+    fn spawn_empire(world: &mut World, name: &str, is_player: bool) -> Entity {
+        let mut e = world.spawn((
+            Empire {
+                name: name.into(),
+            },
+            Faction {
+                id: name.to_lowercase(),
+                name: name.into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+        ));
+        if is_player {
+            e.insert(PlayerEmpire);
+        }
+        e.id()
+    }
+
+    /// #499 invariant: `resolve_viewing_knowledge(Some(empire), q)`
+    /// returns the `KnowledgeStore` of THAT empire, even if multiple
+    /// `Empire` entities exist. Same store regardless of whether the
+    /// entity is the `PlayerEmpire` or a non-player observed empire.
+    #[test]
+    fn resolves_to_passed_empires_knowledge_store_in_observer_mode() {
+        let mut world = World::new();
+        let _player = spawn_empire(&mut world, "Player", true);
+        let observed = spawn_empire(&mut world, "Observed", false);
+
+        let mut state: SystemState<Query<&KnowledgeStore, With<Empire>>> =
+            SystemState::new(&mut world);
+        let q = state.get(&world);
+
+        let resolved = resolve_viewing_knowledge(Some(observed), &q);
+        assert!(
+            resolved.is_some(),
+            "viewing the observed empire must surface its KnowledgeStore"
+        );
+
+        // Sanity: the resolved store is the SAME memory the observed
+        // empire holds (pointer equality through deref).
+        let observed_store = world
+            .entity(observed)
+            .get::<KnowledgeStore>()
+            .expect("observed has store");
+        assert!(std::ptr::eq(resolved.unwrap(), observed_store));
+    }
+
+    /// #499: `None` empire (= no `PlayerEmpire`, no `ObserverView`
+    /// selection yet) yields `None` knowledge — the helper's safe
+    /// early-Startup escape.
+    #[test]
+    fn empty_empire_yields_none() {
+        let mut world = World::new();
+        let _ = spawn_empire(&mut world, "Lonely", false);
+        let mut state: SystemState<Query<&KnowledgeStore, With<Empire>>> =
+            SystemState::new(&mut world);
+        let q = state.get(&world);
+        assert!(resolve_viewing_knowledge(None, &q).is_none());
+    }
+
+    /// #499: `empire_view_knowledge` is the sibling helper for callers
+    /// that have already resolved the `KnowledgeStore` via a multi-
+    /// component query. Today it just wraps in `Some(_)`; the test
+    /// pins the contract so a future omniscient (#490) branch lands
+    /// exclusively in this helper.
+    #[test]
+    fn empire_view_knowledge_wraps_in_some() {
+        let store = KnowledgeStore::default();
+        let resolved = empire_view_knowledge(&store);
+        assert!(resolved.is_some());
+        assert!(std::ptr::eq(resolved.unwrap(), &store));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // #417: Helper to resolve the "active empire" entity for UI purposes.
 // In normal play this is the PlayerEmpire entity; in observer mode it is
@@ -365,6 +448,48 @@ fn resolve_ui_empire_raw(
 /// Convenience wrapper that extracts the active empire from an [`ObserverUiState`].
 fn resolve_ui_empire(obs: &ObserverUiState) -> Option<Entity> {
     resolve_ui_empire_raw(&obs.player_empire_q, &obs.observer_mode, &obs.observer_view)
+}
+
+/// #499: Resolve the viewing empire's `KnowledgeStore` from a query of
+/// all empire stores (e.g. `draw_outline_and_tooltips_system`). The
+/// produced `Option<&KnowledgeStore>` feeds straight into
+/// [`crate::knowledge::ship_view::ship_view`]'s `viewing_knowledge`
+/// argument.
+///
+/// **Caller invariant**: pass `empire` as the entity returned by
+/// [`resolve_ui_empire`] / [`resolve_ui_empire_raw`] (= the
+/// `PlayerEmpire` in normal play, the `ObserverView`-selected empire
+/// in observer mode).
+///
+/// **Future-mode hook (#490 Omniscient)**: when the omniscient
+/// (god-view) mode lands, this helper is one of two single change
+/// points (sibling: [`empire_view_knowledge`]) where the empire-view
+/// contract branches to return `None` for omniscient callers (=
+/// realtime ECS ground truth).
+pub(crate) fn resolve_viewing_knowledge<'a>(
+    empire: Option<Entity>,
+    q: &'a Query<&KnowledgeStore, With<crate::player::Empire>>,
+) -> Option<&'a KnowledgeStore> {
+    empire.and_then(|e| q.get(e).ok())
+}
+
+/// #499: Wrap a pre-resolved viewing-empire `KnowledgeStore` in the
+/// `Option<&KnowledgeStore>` shape expected by panel helpers.
+///
+/// Used by `draw_main_panels_system`, where the viewing empire's
+/// `KnowledgeStore` is already destructured out of a multi-component
+/// `empire_q.get(empire_entity)` and passed to multiple panels
+/// (ship-panel / context-menu / camera-centering). The wrapper is
+/// trivial today (`Some(knowledge)`); its job is to pin the linkage
+/// between those panel call sites and the empire-view contract so a
+/// future re-introduction of an observer-mode gate is centralised.
+///
+/// **Future-mode hook (#490 Omniscient)**: sibling to
+/// [`resolve_viewing_knowledge`]. The omniscient branch lands here
+/// when the panels are reached with a resolved knowledge already in
+/// hand.
+pub(crate) fn empire_view_knowledge(knowledge: &KnowledgeStore) -> Option<&KnowledgeStore> {
+    Some(knowledge)
 }
 
 // ---------------------------------------------------------------------------
@@ -950,14 +1075,14 @@ fn draw_outline_and_tooltips_system(
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    // #417: In observer mode, show ground truth (no KnowledgeStore delay).
-    // In normal play, use the PlayerEmpire's KnowledgeStore.
+    // #499: Empire-view contract — observer mode borrows the viewing
+    // empire's `KnowledgeStore` so projection / snapshot reads stay
+    // light-coherent (= same path as `PlayerEmpire` normal play, just a
+    // different `viewing_empire`). Ground-truth realtime peeks belong to
+    // the future omniscient (god-view) mode (#490). In normal play this
+    // resolves to the `PlayerEmpire`'s store as before.
     let empire_entity = resolve_ui_empire(&obs);
-    let knowledge = if obs.observer_mode.enabled {
-        None // ground truth in observer mode
-    } else {
-        empire_entity.and_then(|e| knowledge_q.get(e).ok())
-    };
+    let knowledge = resolve_viewing_knowledge(empire_entity, &knowledge_q);
     let player_system = ui_state.player_system;
 
     // Resolve the viewed empire's home system for capital checks.
@@ -983,10 +1108,10 @@ fn draw_outline_and_tooltips_system(
         empire_entity,
         obs.observer_mode.enabled,
         home_system_entity,
-        // #487: Pass the viewing empire's KnowledgeStore so the outline
-        // tree's ship-state queries flow through the projection table.
-        // `None` in observer mode (= ground truth) matches the existing
-        // tooltip data path on line above.
+        // #487 / #499: Pass the viewing empire's KnowledgeStore so the
+        // outline tree's ship-state queries flow through the projection
+        // table. Observer mode resolves to the observed empire's store
+        // (= light-coherent empire-view), not realtime ground truth.
         knowledge,
     );
 
@@ -1265,22 +1390,12 @@ fn draw_main_panels_system(
             // InSystem. Loitering coordinates flow through
             // `ShipView::position()`.
             //
-            // #491 PR-6 follow-up: in observer mode we want ground truth
-            // (= realtime ECS) so the omniscient view's camera centers on
-            // where the ship *actually* is, not where the player empire
-            // believes it is. Mirrors the gate pattern used in the
-            // outline-tree (#487) and ship-panel (#491 PR-2)
-            // observer-mode passes.
-            let ship_view_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
-                None
-            } else {
-                Some(knowledge)
-            };
-            let ship_view_empire: Option<Entity> = if selection.observer_mode.enabled {
-                None
-            } else {
-                Some(empire_entity)
-            };
+            // #491 PR-6 / #499: Camera centering reads through the
+            // viewing empire's `ShipView` so observer mode tracks where
+            // the observed empire *believes* the ship is, matching the
+            // outline tree (#487) and ship panel (#491 PR-2). Routed
+            // through `empire_view_knowledge` so the empire-view
+            // contract is pinned at a single change point.
             let ship_pos = ships_query
                 .get(ship_e)
                 .ok()
@@ -1289,8 +1404,8 @@ fn draw_main_panels_system(
                         ship_e,
                         ship,
                         &state,
-                        ship_view_knowledge,
-                        ship_view_empire,
+                        empire_view_knowledge(knowledge),
+                        Some(empire_entity),
                     )?;
                     if let Some(pos) = view.position() {
                         return Some(Position::from(pos));
@@ -1336,20 +1451,12 @@ fn draw_main_panels_system(
             .unwrap_or(false)
     });
 
-    // #491 PR-2: Light-coherent ShipView routing — pass the viewing
-    // empire's `KnowledgeStore` (own ship → projection, foreign ship →
-    // snapshot) and entity to the panel. Observer mode currently passes
-    // `None` for the store to fall through to realtime ECS (= ground
-    // truth); see #499 for the staged migration to empire-view-as-light-
-    // coherent. Mirrors the pattern already in
-    // `draw_outline_and_tooltips_system` where the `knowledge` resolution
-    // applies the same observer-mode → None gate before passing through
-    // to outline / tooltip helpers.
-    let ship_panel_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
-        None
-    } else {
-        Some(knowledge)
-    };
+    // #491 PR-2 / #499: Light-coherent ShipView routing — pass the
+    // viewing empire's `KnowledgeStore` (own ship → projection, foreign
+    // ship → snapshot) and entity to the panel. Observer mode resolves
+    // to the observed empire's store via `resolve_ui_empire_raw`, then
+    // `empire_view_knowledge` pins the contract single change point.
+    let ship_panel_knowledge: Option<&KnowledgeStore> = empire_view_knowledge(knowledge);
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
@@ -1743,19 +1850,12 @@ fn draw_main_panels_system(
     if !selected_ship_is_own {
         selection.context_menu.open = false;
     }
-    // #491 (PR-3) Stage-2: Light-coherent ShipView routing — pass the
-    // viewing empire's `KnowledgeStore` (own ship → projection, foreign
-    // ship → snapshot) and entity to the context menu. Observer mode
-    // currently passes `None` for the store to fall through to realtime
-    // ECS (= ground truth); see #499 for the staged migration to
-    // empire-view-as-light-coherent. Mirrors the gate pattern used in
-    // `draw_outline_and_tooltips_system` and the ship-panel sub-PR
-    // (#491 PR-2).
-    let context_menu_knowledge: Option<&KnowledgeStore> = if selection.observer_mode.enabled {
-        None
-    } else {
-        Some(knowledge)
-    };
+    // #491 (PR-3) Stage-2 / #499: Light-coherent ShipView routing — pass
+    // the viewing empire's `KnowledgeStore` (own ship → projection,
+    // foreign ship → snapshot) and entity to the context menu. Routed
+    // through `empire_view_knowledge` so the empire-view contract is
+    // pinned at a single change point (#490 future-mode hook).
+    let context_menu_knowledge: Option<&KnowledgeStore> = empire_view_knowledge(knowledge);
     let ctx_menu_actions = context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,

@@ -35,8 +35,6 @@ use bevy::prelude::*;
 
 use crate::galaxy::{AtSystem, Hostile, StarSystem};
 use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
-use crate::observer::ObserverMode;
-use crate::player::PlayerEmpire;
 use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
 use crate::ui::ship_view::{ShipView, ShipViewTiming, ship_view_with_timing};
@@ -140,40 +138,19 @@ fn hostile_systems(world: &World) -> HashSet<Entity> {
     out
 }
 
-/// Resolve the player empire entity (= viewing empire). Returns `None`
-/// if no `PlayerEmpire` exists yet (early Startup before the spawn
-/// system runs); callers fall back to the realtime ECS path.
-fn resolve_player_empire(world: &World) -> Option<Entity> {
-    let mut q = world.try_query::<(Entity, &PlayerEmpire)>()?;
-    q.iter(world).next().map(|(e, _)| e)
-}
-
-/// #491 PR-4 follow-up: source-resolved viewing context. The
-/// situation_center collects events from the player empire's
-/// perspective by default; in observer mode we want ground truth
-/// (= realtime ECS), so we pass `None` for both the `KnowledgeStore`
-/// and the viewing empire — `ship_view_with_timing` then falls
-/// through to `realtime_state_to_snapshot`.
+/// #491 PR-4 / #499: source-resolved viewing context. The situation
+/// center collects events from the viewing empire's perspective — own
+/// ships flow through `KnowledgeStore::projections`, foreign ships
+/// through `ship_snapshots`. The empire is resolved via
+/// `crate::observer::resolve_viewing_empire` so the empire-view
+/// contract stays in lockstep with `ui::mod::resolve_ui_empire`.
 struct ViewingContext<'a> {
     knowledge: Option<&'a KnowledgeStore>,
     empire: Option<Entity>,
 }
 
 fn resolve_viewing_context(world: &World) -> ViewingContext<'_> {
-    let observer_mode_enabled = world
-        .get_resource::<ObserverMode>()
-        .map(|o| o.enabled)
-        .unwrap_or(false);
-    if observer_mode_enabled {
-        // Observer mode: omniscient view = realtime ECS = ground truth.
-        // Mirrors the gate pattern in outline-tree (#487), ship-panel
-        // (#491 PR-2), and map tooltip (#491 PR-6) observer paths.
-        return ViewingContext {
-            knowledge: None,
-            empire: None,
-        };
-    }
-    let empire = resolve_player_empire(world);
+    let empire = crate::observer::resolve_viewing_empire(world);
     let knowledge = empire.and_then(|e| world.entity(e).get::<KnowledgeStore>());
     ViewingContext { knowledge, empire }
 }
@@ -567,6 +544,113 @@ mod tests {
         let badge = tab.badge(&world).expect("combat badge");
         assert_eq!(badge.severity, Severity::Warn);
         assert_eq!(badge.count, 1);
+    }
+
+    /// #499 regression: in observer mode the ship-ops tab must read
+    /// through the **observed empire**'s `KnowledgeStore`, not realtime
+    /// ECS. Prior to #499, `resolve_viewing_context` returned
+    /// `(knowledge=None, empire=None)` whenever `ObserverMode.enabled`,
+    /// which fell through to the realtime ECS path inside
+    /// `ship_view_with_timing`. With the migrated contract,
+    /// `ObserverView.viewing` is honoured and the projection becomes
+    /// the canonical source — same path as `PlayerEmpire` normal play.
+    #[test]
+    fn observer_mode_routes_through_observed_empire_knowledge() {
+        use crate::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshotState};
+        use crate::observer::{ObserverMode, ObserverView};
+        use crate::player::{Empire, Faction};
+
+        let mut world = World::new();
+        setup_clock(&mut world, 50);
+
+        // Observer mode active, viewing an empire that is NOT a
+        // PlayerEmpire (= the empire-view contract: borrow another
+        // empire's perspective).
+        world.insert_resource(ObserverMode {
+            enabled: true,
+            ..Default::default()
+        });
+
+        let observed_empire = world
+            .spawn((
+                Empire {
+                    name: "Observed".into(),
+                },
+                Faction {
+                    id: "observed".into(),
+                    name: "Observed".into(),
+                    can_diplomacy: false,
+                    allowed_diplomatic_options: Default::default(),
+                },
+                KnowledgeStore::default(),
+            ))
+            .id();
+        world.insert_resource(ObserverView {
+            viewing: Some(observed_empire),
+        });
+
+        // Realtime ECS: ship is mid-FTL towards a frontier system.
+        let home = spawn_system(&mut world, "Home");
+        let frontier = spawn_system(&mut world, "Frontier");
+        let ship = world
+            .spawn((
+                Ship {
+                    name: "Pinned".into(),
+                    design_id: "corvette".into(),
+                    hull_id: "corvette".into(),
+                    modules: Vec::<EquippedModule>::new(),
+                    owner: Owner::Empire(observed_empire),
+                    sublight_speed: 1.0,
+                    ftl_range: 5.0,
+                    ruler_aboard: false,
+                    home_port: home,
+                    design_revision: 0,
+                    fleet: None,
+                },
+                ShipState::InFTL {
+                    origin_system: home,
+                    destination_system: frontier,
+                    departed_at: 10,
+                    arrival_at: 110,
+                },
+            ))
+            .id();
+
+        // The observed empire's projection says the ship is still
+        // docked at home — the dispatch order has not yet propagated
+        // along light-speed lines. The empire-view contract requires
+        // the tab to honour this stale belief, not the realtime FTL.
+        {
+            let mut em = world.entity_mut(observed_empire);
+            let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+            store.update_projection(ShipProjection {
+                entity: ship,
+                dispatched_at: 0,
+                expected_arrival_at: None,
+                expected_return_at: None,
+                projected_state: ShipSnapshotState::InSystem,
+                projected_system: Some(home),
+                intended_state: None,
+                intended_system: None,
+                intended_takes_effect_at: None,
+            });
+        }
+
+        let events = collect_ship_events(&world);
+
+        // Steady-state per projection ⇒ Docked / Idle, NOT Travel.
+        assert!(
+            events.iter().all(|e| e.kind != EventKind::Travel),
+            "observer mode must hide realtime ECS FTL when the observed empire's \
+             projection says InSystem — events: {:?}",
+            events.iter().map(|e| e.kind).collect::<Vec<_>>()
+        );
+        let other = events
+            .iter()
+            .find(|e| e.kind == EventKind::Other)
+            .expect("docked ship surfaces under Other category");
+        assert!(other.children.iter().any(|c| c.label.contains("Pinned")));
+        assert!(other.children.iter().any(|c| c.label.contains("docked")));
     }
 
     #[test]

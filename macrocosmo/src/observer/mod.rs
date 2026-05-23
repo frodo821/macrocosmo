@@ -40,14 +40,20 @@ pub struct ObserverMode {
     pub read_only: bool,
 }
 
-/// Current faction the observer is inspecting. One-way mirrored to
+/// Current empire the observer is inspecting. One-way mirrored to
 /// `AiDebugUi::governor::GovernorState::faction` so the F10 panel follows
 /// the top-bar selector.
 #[derive(Resource, Debug, Clone, Default, Reflect)]
 #[reflect(Resource)]
 pub struct ObserverView {
-    /// The `Faction` entity being focused. `None` until the selector has
+    /// The `Empire` entity being focused. `None` until the selector has
     /// been initialised from the spawned empire list.
+    ///
+    /// Despite the historical naming (the field outlived an earlier
+    /// design where focus was stored as a `Faction` entity), the
+    /// initialiser (`setup::init_observer_view`) queries
+    /// `With<Empire>` and the top-bar selector iterates `With<Empire>`,
+    /// so consumers can dereference this as an Empire entity.
     pub viewing: Option<Entity>,
 }
 
@@ -56,6 +62,28 @@ pub struct ObserverView {
 #[derive(Resource, Debug, Clone, Copy, Default, Reflect)]
 #[reflect(Resource)]
 pub struct RngSeed(pub Option<u64>);
+
+/// #499: Resolve the viewing empire entity from a `&World`. Returns
+/// the `ObserverView`-selected empire when observer mode is enabled,
+/// otherwise the (singleton) `PlayerEmpire`. Returns `None` during
+/// early Startup before either is wired.
+///
+/// This is the single source of truth for the empire-view contract
+/// across `&World`-accessing call sites (e.g. `situation_center`
+/// tabs). The Query-based mirror is `ui::mod::resolve_ui_empire_raw`,
+/// kept identical in spirit; if the contract changes (e.g. #490 adds
+/// an `Omniscient` mode), update both in lockstep.
+pub fn resolve_viewing_empire(world: &World) -> Option<Entity> {
+    let observer_enabled = world
+        .get_resource::<ObserverMode>()
+        .map(|o| o.enabled)
+        .unwrap_or(false);
+    if observer_enabled {
+        return world.get_resource::<ObserverView>()?.viewing;
+    }
+    let mut q = world.try_query::<(Entity, &crate::player::PlayerEmpire)>()?;
+    q.iter(world).next().map(|(e, _)| e)
+}
 
 /// Run-condition: observer mode is active.
 pub fn in_observer_mode(o: Res<ObserverMode>) -> bool {
