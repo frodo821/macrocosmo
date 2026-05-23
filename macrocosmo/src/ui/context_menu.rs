@@ -404,13 +404,19 @@ pub fn draw_context_menu(
     // ground-truth ECS timeline (which the player can't observe yet).
     // The `light_delay.max(remaining_travel)` envelope is preserved.
     let command_delay: i64 = {
+        // #468: hoist the Ruler → ship light-delay through the shared
+        // `physics::light_delay_ruler_to_ship` helper so the player,
+        // Lua-scripting, and AI paths converge on one definition of
+        // "command travel time".
         let light_delay: i64 = player_q
             .single()
             .ok()
             .and_then(|(_, stationed, _)| {
                 let player_pos = positions.get(stationed.system).ok()?;
-                let dist = physics::distance_ly(player_pos, &ship_pos);
-                Some(physics::light_delay_hexadies(dist))
+                Some(physics::light_delay_ruler_to_ship(
+                    player_pos.as_array(),
+                    ship_pos.as_array(),
+                ))
             })
             .unwrap_or(0);
 

@@ -122,17 +122,39 @@ fn setup_hostile_known_scenario(app: &mut App, target_surveyed: bool) -> (Entity
 }
 
 fn outbox_has_command_for(
-    app: &App,
+    app: &mut App,
     kind: macrocosmo_ai::CommandKindId,
     target_system: Entity,
 ) -> bool {
-    let outbox = app.world().resource::<AiCommandOutbox>();
-    outbox.entries.iter().any(|entry| {
-        let cmd = &entry.command;
-        if cmd.kind != kind {
+    let outbox_hit = {
+        let outbox = app.world().resource::<AiCommandOutbox>();
+        outbox.entries.iter().any(|entry| {
+            let cmd = &entry.command;
+            if cmd.kind != kind {
+                return false;
+            }
+            match cmd.params.get("target_system") {
+                Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
+                    target_system.to_bits() == sys_id.0
+                }
+                _ => false,
+            }
+        })
+    };
+    if outbox_hit {
+        return true;
+    }
+    // #468 PR-1: `survey_system` no longer flows through
+    // `AiCommandOutbox` — check the per-ship pipeline too. Folded into
+    // the same helper so the "did the AI emit X?" question stays a
+    // single call across both pipelines as PR-2/3 migrate more kinds.
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+    q.iter(app.world()).any(|p| {
+        if p.command.kind != kind {
             return false;
         }
-        match cmd.params.get("target_system") {
+        match p.command.params.get("target_system") {
             Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
                 target_system.to_bits() == sys_id.0
             }
@@ -228,7 +250,7 @@ fn ai_does_not_dispatch_survey_to_known_hostile_system() {
     }
 
     assert!(
-        !outbox_has_command_for(&app, cmd_ids::survey_system(), target),
+        !outbox_has_command_for(&mut app, cmd_ids::survey_system(), target),
         "AI emitted survey_system for a system flagged has_hostile=true \
          in its own KnowledgeStore — Bug B regression (the lost-scout \
          loop)."
@@ -280,7 +302,7 @@ fn ai_does_not_dispatch_colonize_to_known_hostile_system() {
     }
 
     assert!(
-        !outbox_has_command_for(&app, cmd_ids::colonize_system(), target),
+        !outbox_has_command_for(&mut app, cmd_ids::colonize_system(), target),
         "AI emitted colonize_system for a system flagged has_hostile=true \
          in its own KnowledgeStore — Bug B regression (settlers into the \
          meat grinder)."
