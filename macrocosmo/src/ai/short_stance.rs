@@ -41,25 +41,40 @@ impl ShortStanceAgent {
         match adapter.scope() {
             ShortScope::Fleet(_fleet_entity) => {
                 // ----- Rule 2: Survey unsurveyed systems.
-                // Mirror of the legacy Mid-side Rule 2: zip
-                // `idle_surveyors × unsurveyed_targets` (one ship per
-                // target, up to whichever runs out first), emit
-                // `survey_system` with `target_system` + `ship_count = 1`
-                // + `ship_0`. The adapter's `unsurveyed_targets` is the
-                // final Rule 2 input — `npc_decision_tick` already
-                // applied the Bug A dedup (`PendingAssignment` ∪
-                // outbox-resident `survey_system` commands) before
-                // building `pending_survey_targets`, so the agent does
-                // **not** re-dedup.
-                let surveyors = adapter.idle_surveyors();
-                let targets = adapter.unsurveyed_targets();
-                if !surveyors.is_empty() && !targets.is_empty() {
-                    for (ship, &target) in surveyors.iter().zip(targets.iter()) {
+                // #469: emission consumes pre-paired
+                // `survey_assignments` (computed by `npc_decision_tick`
+                // via `rank_survey_targets_for_ship` — ship-relative
+                // ETA + greedy 1-pass). One `survey_system` command
+                // per pair. Falls back to the legacy
+                // `idle_surveyors × unsurveyed_targets` zip when no
+                // assignments are provided (test stubs that haven't
+                // migrated, headless callers without star positions).
+                let assignments = adapter.survey_assignments();
+                if !assignments.is_empty() {
+                    for (ship, target) in assignments {
                         let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
-                            .with_param("target_system", CommandValue::System(to_ai_system(target)))
+                            .with_param(
+                                "target_system",
+                                CommandValue::System(to_ai_system(*target)),
+                            )
                             .with_param("ship_count", CommandValue::I64(1))
                             .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
-                        proposals.push(Proposal::at_system(cmd, to_ai_system(target)));
+                        proposals.push(Proposal::at_system(cmd, to_ai_system(*target)));
+                    }
+                } else {
+                    let surveyors = adapter.idle_surveyors();
+                    let targets = adapter.unsurveyed_targets();
+                    if !surveyors.is_empty() && !targets.is_empty() {
+                        for (ship, &target) in surveyors.iter().zip(targets.iter()) {
+                            let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
+                                .with_param(
+                                    "target_system",
+                                    CommandValue::System(to_ai_system(target)),
+                                )
+                                .with_param("ship_count", CommandValue::I64(1))
+                                .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
+                            proposals.push(Proposal::at_system(cmd, to_ai_system(target)));
+                        }
                     }
                 }
             }
@@ -108,6 +123,7 @@ mod tests {
         scope: ShortScope,
         idle_surveyors: Vec<Entity>,
         unsurveyed_targets: Vec<Entity>,
+        survey_assignments: Vec<(Entity, Entity)>,
         free_building_slots: f64,
         net_production_energy: f64,
         net_production_food: f64,
@@ -120,6 +136,7 @@ mod tests {
                 scope: ShortScope::Fleet(fleet),
                 idle_surveyors: vec![],
                 unsurveyed_targets: vec![],
+                survey_assignments: vec![],
                 free_building_slots: 0.0,
                 net_production_energy: 0.0,
                 net_production_food: 0.0,
@@ -132,6 +149,7 @@ mod tests {
                 scope: ShortScope::ColonizedSystem(system),
                 idle_surveyors: vec![],
                 unsurveyed_targets: vec![],
+                survey_assignments: vec![],
                 free_building_slots: 0.0,
                 net_production_energy: 0.0,
                 net_production_food: 0.0,
@@ -151,6 +169,9 @@ mod tests {
         }
         fn unsurveyed_targets(&self) -> &[Entity] {
             &self.unsurveyed_targets
+        }
+        fn survey_assignments(&self) -> &[(Entity, Entity)] {
+            &self.survey_assignments
         }
         fn free_building_slots(&self) -> f64 {
             self.free_building_slots

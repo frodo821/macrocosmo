@@ -531,28 +531,58 @@ pub fn run_short_agents(
         // the trait method `unsurveyed_targets()` can hand out a
         // slice that lives for the call.
         let unsurveyed_filtered: Vec<Entity>;
-        let (idle_surveyors_for_scope, unsurveyed_targets): (&[Entity], &[Entity]) =
-            match agent.scope {
-                ShortScope::Fleet(fleet) => {
-                    let surveyors = inputs
-                        .and_then(|i| i.idle_surveyors_by_fleet.get(&fleet))
-                        .map(|v| v.as_slice())
-                        .unwrap_or(empty.as_slice());
-                    let raw_targets = inputs
-                        .map(|i| i.unsurveyed_targets.as_slice())
-                        .unwrap_or(empty.as_slice());
-                    unsurveyed_filtered = raw_targets
-                        .iter()
-                        .copied()
-                        .filter(|t| !claimed_survey_targets.contains(&(empire, *t)))
-                        .collect();
-                    (surveyors, unsurveyed_filtered.as_slice())
-                }
-                ShortScope::ColonizedSystem(_) => {
-                    unsurveyed_filtered = Vec::new();
-                    (empty.as_slice(), empty.as_slice())
-                }
-            };
+        // #469: per-fleet pre-paired survey assignments (computed
+        // upstream by `rank_survey_targets_for_ship` greedy). Filtered
+        // here against `claimed_survey_targets` so a target claimed by
+        // a sibling Fleet earlier in this loop is dropped — preserves
+        // the per-tick exactly-once-per-target invariant the legacy
+        // `claimed_survey_targets` set originally enforced when the
+        // emission consumed `unsurveyed_targets` directly.
+        let assignments_filtered: Vec<(Entity, Entity)>;
+        let empty_assignments: Vec<(Entity, Entity)> = Vec::new();
+        let (idle_surveyors_for_scope, unsurveyed_targets, survey_assignments): (
+            &[Entity],
+            &[Entity],
+            &[(Entity, Entity)],
+        ) = match agent.scope {
+            ShortScope::Fleet(fleet) => {
+                let surveyors = inputs
+                    .and_then(|i| i.idle_surveyors_by_fleet.get(&fleet))
+                    .map(|v| v.as_slice())
+                    .unwrap_or(empty.as_slice());
+                let raw_targets = inputs
+                    .map(|i| i.unsurveyed_targets.as_slice())
+                    .unwrap_or(empty.as_slice());
+                unsurveyed_filtered = raw_targets
+                    .iter()
+                    .copied()
+                    .filter(|t| !claimed_survey_targets.contains(&(empire, *t)))
+                    .collect();
+                let raw_assignments = inputs
+                    .and_then(|i| i.survey_assignments_by_fleet.get(&fleet))
+                    .map(|v| v.as_slice())
+                    .unwrap_or(empty_assignments.as_slice());
+                assignments_filtered = raw_assignments
+                    .iter()
+                    .copied()
+                    .filter(|(_, t)| !claimed_survey_targets.contains(&(empire, *t)))
+                    .collect();
+                (
+                    surveyors,
+                    unsurveyed_filtered.as_slice(),
+                    assignments_filtered.as_slice(),
+                )
+            }
+            ShortScope::ColonizedSystem(_) => {
+                unsurveyed_filtered = Vec::new();
+                assignments_filtered = Vec::new();
+                (
+                    empty.as_slice(),
+                    empty.as_slice(),
+                    empty_assignments.as_slice(),
+                )
+            }
+        };
         let (free_building_slots, net_production_energy, net_production_food) = match agent.scope {
             ShortScope::ColonizedSystem(_) => inputs
                 .map(|i| {
@@ -570,6 +600,7 @@ pub fn run_short_agents(
             scope: agent.scope,
             idle_surveyors: idle_surveyors_for_scope,
             unsurveyed_targets,
+            survey_assignments,
             free_building_slots,
             net_production_energy,
             net_production_food,

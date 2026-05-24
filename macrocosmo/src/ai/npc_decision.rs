@@ -235,6 +235,12 @@ pub struct ShipInfo {
     pub design_id: String,
     /// The system the ship is currently docked at, or `None` if in transit.
     pub system: Option<Entity>,
+    /// The ship's current world position. For idle docked ships this
+    /// equals the docked system's position; threaded into `NpcContext`
+    /// so `rank_survey_targets_for_ship` (#469) can compute ETAs from
+    /// the ship's actual location rather than a single empire-wide
+    /// reference point.
+    pub position: [f64; 3],
     /// `true` when the ship is `InSystem` with an empty command queue.
     pub is_idle: bool,
     pub can_survey: bool,
@@ -243,6 +249,10 @@ pub struct ShipInfo {
     /// it can participate in combat.
     pub is_combat: bool,
     pub ftl_range: f64,
+    /// Ship-level sublight speed in c (after design lookup). Needed by
+    /// `rank_survey_targets_for_ship` to convert the sublight remainder
+    /// of an FTL+sublight route into hexadies.
+    pub sublight_speed: f64,
     /// `Ship.fleet` back-pointer (#287 γ-1). `None` only for the brief
     /// window between ship spawn and `prune_empty_fleets`. Used by
     /// PR2d's per-fleet `ShortAgent` to partition idle surveyors by
@@ -316,7 +326,26 @@ pub struct EmpireShortInputs {
     /// will key by region. Bug A dedup
     /// (`PendingAssignment` ∪ outbox-resident commands) is already
     /// applied here.
+    ///
+    /// #469: kept for `NpcContext.unsurveyed_systems` /
+    /// `has_unsurveyed_targets` bookkeeping, but Rule 2 emission now
+    /// consumes `survey_assignments_by_fleet` (pre-paired ship→target
+    /// tuples produced by ship-relative ETA ranking). The two views are
+    /// derived from the same candidate pool.
     pub unsurveyed_targets: Vec<Entity>,
+    /// #469: Greedy `(ship, target)` assignments produced inside
+    /// `npc_decision_tick` by `rank_survey_targets_for_ship`. Each entry
+    /// pairs an idle surveyor in `fleet` with its best ETA-ranked
+    /// target. The greedy 1-pass guarantees no two ships in the same
+    /// empire share a target on the same tick; `ShortStanceAgent` emits
+    /// one `survey_system` command per pair.
+    ///
+    /// Pre-pairing happens here (rather than in `ShortStanceAgent`)
+    /// because the ETA score depends on ship position, FTL range, and
+    /// sublight speed — data the engine-agnostic Short layer doesn't
+    /// see. `ShortStanceAgent::decide` consumes the slice for emission
+    /// only.
+    pub survey_assignments_by_fleet: std::collections::HashMap<Entity, Vec<(Entity, Entity)>>,
     /// Empire-wide free building slots (proxied through the
     /// `free_building_slots` faction metric on the bus).
     pub free_building_slots: f64,
@@ -326,8 +355,10 @@ pub struct EmpireShortInputs {
     pub net_production_food: f64,
 }
 
-/// Rank candidate unsurveyed systems by "accessibility" — an approximation
-/// of travel time that's more useful than raw distance.
+/// Rank candidate unsurveyed systems by "accessibility" — a raw-distance
+/// approximation kept for legacy callers and for the empire-level
+/// `NpcContext.unsurveyed_systems` ordering consumed by
+/// `MidStanceAgent`'s `has_unsurveyed_targets` flag.
 ///
 /// FTL routing ([`crate::ship::movement::plan_ftl_route`]) rejects
 /// unsurveyed destinations, so reaching an unsurveyed star always ends in
@@ -343,6 +374,12 @@ pub struct EmpireShortInputs {
 /// When the empire has no surveyed systems at all (fresh start, pre-capital),
 /// gap collapses to raw distance from the reference position — good enough
 /// for the first dispatch.
+///
+/// #469: per-ship survey dispatch no longer goes through this helper —
+/// `rank_survey_targets_for_ship` is the ETA-based ranker that drives
+/// `survey_system` emission. This function is retained for the
+/// "empire has any unsurveyed targets at all?" presence check the Mid
+/// layer reads via `has_unsurveyed_targets`, where order doesn't matter.
 ///
 /// Returns entity ids in rank order (best first).
 pub fn rank_survey_targets(
@@ -371,6 +408,142 @@ pub fn rank_survey_targets(
             .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
     });
     scored.into_iter().map(|(e, _, _)| e).collect()
+}
+
+/// #469: Estimated travel time (in hexadies) for `ship` to reach a
+/// single unsurveyed `target_pos`, accounting for the FTL/sublight
+/// movement model.
+///
+/// Mirrors the dispatch path used by `start_ftl_travel_full` +
+/// `start_sublight_travel_with_bonus` without actually executing any
+/// movement:
+///
+/// 1. **Direct sublight** — straight-line `ship_pos → target_pos` at
+///    `ship_sublight_speed`. Always considered; used as the baseline /
+///    fallback when no FTL hop helps.
+/// 2. **FTL-assisted** — for each surveyed waypoint reachable from
+///    `ship_pos` in one FTL jump (within `ship_ftl_range`), compute
+///    FTL leg time + sublight remainder from waypoint to target.
+///    Picks the minimum across all waypoints.
+///
+/// Multi-hop FTL chains are intentionally not modelled here. The
+/// dispatcher's `plan_full_route` does walk multi-hop FTL when the
+/// destination is surveyed, but unsurveyed targets always end in a
+/// sublight leg from *some* surveyed point — and the closest such
+/// waypoint to the target is what matters for ETA ranking. The
+/// 1-hop greedy approximation is accurate enough for rank ordering
+/// while staying cheap: O(surveyed_count) per (ship, target) call.
+///
+/// Returns `None` when the target is unreachable — either the ship has
+/// neither sublight nor FTL propulsion, or no candidate route yields a
+/// finite ETA.
+///
+/// Speeds use the same unit conventions as
+/// [`crate::physics::sublight_travel_hexadies`] (sublight as a fraction
+/// of c) and `start_ftl_travel_full` (FTL as multiples of c, with
+/// `base_ftl_speed_c == INITIAL_FTL_SPEED_C` matching the unbonused
+/// dispatcher default).
+pub fn score_survey_target_eta(
+    target_pos: [f64; 3],
+    ship_pos: [f64; 3],
+    ship_ftl_range: f64,
+    ship_sublight_speed: f64,
+    surveyed_positions: &[[f64; 3]],
+) -> Option<i64> {
+    use crate::physics::{distance_ly_arr, sublight_travel_hexadies};
+    use crate::ship::INITIAL_FTL_SPEED_C;
+    use crate::time_system::HEXADIES_PER_YEAR;
+
+    let mut best: Option<i64> = None;
+
+    // Pure sublight baseline — only meaningful if the ship can move
+    // sublight at all.
+    if ship_sublight_speed > 0.0 {
+        let dist = distance_ly_arr(ship_pos, target_pos);
+        let t = sublight_travel_hexadies(dist, ship_sublight_speed);
+        best = Some(t);
+    }
+
+    // FTL-assisted: hop to the surveyed waypoint that minimises
+    // (ftl_leg + sublight_remainder). Skip if the ship has no FTL
+    // (matches the dispatcher: `ship.ftl_range <= 0.0` rejects FTL).
+    if ship_ftl_range > 0.0 {
+        for waypoint in surveyed_positions {
+            let to_waypoint = distance_ly_arr(ship_pos, *waypoint);
+            if to_waypoint > ship_ftl_range {
+                continue;
+            }
+            // FTL leg time using INITIAL_FTL_SPEED_C and ceil semantics
+            // to mirror `start_ftl_travel_full`.
+            let ftl_hexadies =
+                (to_waypoint * HEXADIES_PER_YEAR as f64 / INITIAL_FTL_SPEED_C).ceil() as i64;
+            // Sublight remainder from waypoint to target. If the ship
+            // can't move sublight, an FTL hop that doesn't land us on
+            // the target is useless — skip.
+            if ship_sublight_speed <= 0.0 {
+                // Only count if the waypoint *is* the target. Targets
+                // are unsurveyed and waypoints are surveyed, so they
+                // never coincide — but guard anyway for symmetry.
+                let dist = distance_ly_arr(*waypoint, target_pos);
+                if dist < 1e-9 {
+                    let candidate = ftl_hexadies;
+                    best = Some(best.map_or(candidate, |b| b.min(candidate)));
+                }
+                continue;
+            }
+            let sublight_remainder = distance_ly_arr(*waypoint, target_pos);
+            let sublight_hexadies =
+                sublight_travel_hexadies(sublight_remainder, ship_sublight_speed);
+            let candidate = ftl_hexadies + sublight_hexadies;
+            best = Some(best.map_or(candidate, |b| b.min(candidate)));
+        }
+    }
+
+    best
+}
+
+/// #469: Rank unsurveyed `candidates` for a specific surveyor by
+/// ship-relative ETA. Tie-break is `(score, Entity::index())` lex order
+/// — deterministic across runs given Bevy's deterministic Entity
+/// allocation.
+///
+/// Targets for which `score_survey_target_eta` returns `None`
+/// (unreachable) are dropped. A `ruler_to_ship_delay` term is included
+/// in the score to model the courier window the AI dispatch path
+/// (`PendingAiShipCommand`, #468) waits before the ship can execute —
+/// for co-located ruler/ship it's 0, but for ships out at the frontier
+/// it lets a closer ship's ranking dominate over a far-from-ship target
+/// the ruler happens to be sitting next to.
+pub fn rank_survey_targets_for_ship(
+    candidates: &[(Entity, [f64; 3])],
+    surveyed_positions: &[[f64; 3]],
+    ship_pos: [f64; 3],
+    ship_ftl_range: f64,
+    ship_sublight_speed: f64,
+    ruler_pos: [f64; 3],
+) -> Vec<(Entity, i64)> {
+    use crate::physics::{distance_ly_arr, light_delay_hexadies};
+
+    let courier_delay = light_delay_hexadies(distance_ly_arr(ruler_pos, ship_pos));
+
+    let mut scored: Vec<(Entity, i64)> = candidates
+        .iter()
+        .filter_map(|(e, pos)| {
+            score_survey_target_eta(
+                *pos,
+                ship_pos,
+                ship_ftl_range,
+                ship_sublight_speed,
+                surveyed_positions,
+            )
+            .map(|eta| (*e, courier_delay.saturating_add(eta)))
+        })
+        .collect();
+    // Deterministic tie-break: same ETA → lower Entity index wins.
+    // `Entity::index()` is stable per allocation, so the sort order
+    // is reproducible across runs for a deterministic spawn order.
+    scored.sort_by_key(|(e, score)| (*score, e.index()));
+    scored
 }
 
 pub fn npc_decision_tick(
@@ -770,6 +943,21 @@ pub fn npc_decision_tick(
                     crate::ship::ShipState::InSystem { system } => Some(*system),
                     _ => None,
                 };
+                // #469: resolve the ship's world position. Idle ships
+                // (the only ones Rule 2 emits for) are always
+                // `InSystem`, so the docked system's position is
+                // authoritative. In-transit / surveying ships fall
+                // back to [0,0,0]; they're filtered out of the idle
+                // surveyor set anyway, so the value is never consumed
+                // for ranking.
+                let position = system
+                    .and_then(|sys| {
+                        star_positions
+                            .iter()
+                            .find(|(e, _)| *e == sys)
+                            .map(|(_, p)| p.as_array())
+                    })
+                    .unwrap_or([0.0, 0.0, 0.0]);
                 let has_pending = pending_assigned_ships.contains(&ship_entity);
                 let is_idle = system.is_some() && queue.commands.is_empty() && !has_pending;
                 let can_survey = design_registry
@@ -783,11 +971,13 @@ pub fn npc_decision_tick(
                     entity: ship_entity,
                     design_id: ship.design_id.clone(),
                     system,
+                    position,
                     is_idle,
                     can_survey,
                     can_colonize,
                     is_combat,
                     ftl_range: ship.ftl_range,
+                    sublight_speed: ship.sublight_speed,
                     fleet: ship.fleet,
                 }
             })
@@ -896,6 +1086,70 @@ pub fn npc_decision_tick(
                     .push(ship.entity);
             }
         }
+
+        // #469: build per-ship greedy survey assignments using
+        // ship-relative ETA scoring. Each idle surveyor is paired with
+        // its lowest-ETA target; once a target is claimed it is
+        // removed from the candidate pool so two ships in the same
+        // empire never share a target on the same tick. The Mid-side
+        // `pending_survey_targets` dedup (`PendingAssignment` ∪
+        // outbox-resident commands) is already applied to `candidates`
+        // upstream, so this greedy pass only competes within the
+        // current tick's fresh dispatches.
+        //
+        // Per-ship rebuilds of the candidate slice (one per surveyor)
+        // are O(idle_surveyors × candidates × surveyed) — bounded
+        // small for realistic empire sizes. A bipartite assignment
+        // (Hungarian) is overkill; greedy is correct enough per the
+        // issue brief.
+        let mut survey_assignments_by_fleet: std::collections::HashMap<
+            Entity,
+            Vec<(Entity, Entity)>,
+        > = std::collections::HashMap::new();
+        let mut claimed_targets: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
+        let candidate_pool: Vec<(Entity, [f64; 3])> = candidates.clone();
+        // Iterate idle surveyors in a deterministic order so that when
+        // two ships could compete for the same target, the
+        // lower-Entity-index ship gets first pick. Without this the
+        // greedy result depends on ECS iteration order.
+        let mut surveyors_in_order: Vec<&ShipInfo> = context
+            .ships
+            .iter()
+            .filter(|s| s.is_idle && s.can_survey && s.fleet.is_some())
+            .collect();
+        surveyors_in_order.sort_by_key(|s| s.entity.index());
+        for ship in surveyors_in_order {
+            let fleet = match ship.fleet {
+                Some(f) => f,
+                None => continue,
+            };
+            // Filter out targets already claimed by a sibling ship
+            // earlier in this loop.
+            let remaining: Vec<(Entity, [f64; 3])> = candidate_pool
+                .iter()
+                .filter(|(t, _)| !claimed_targets.contains(t))
+                .copied()
+                .collect();
+            if remaining.is_empty() {
+                continue;
+            }
+            let ranked = rank_survey_targets_for_ship(
+                &remaining,
+                &surveyed_positions,
+                ship.position,
+                ship.ftl_range,
+                ship.sublight_speed,
+                reference_pos,
+            );
+            if let Some((best, _)) = ranked.first().copied() {
+                survey_assignments_by_fleet
+                    .entry(fleet)
+                    .or_default()
+                    .push((ship.entity, best));
+                claimed_targets.insert(best);
+            }
+        }
         let fid = to_ai_faction(entity);
         let metric_id = |base: &str| crate::ai::schema::ids::metric::for_faction(base, fid);
         let free_building_slots = bus
@@ -915,6 +1169,7 @@ pub fn npc_decision_tick(
             EmpireShortInputs {
                 idle_surveyors_by_fleet,
                 unsurveyed_targets: context.unsurveyed_systems.clone(),
+                survey_assignments_by_fleet,
                 free_building_slots,
                 net_production_energy,
                 net_production_food,
