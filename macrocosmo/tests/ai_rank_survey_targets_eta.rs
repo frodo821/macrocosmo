@@ -56,13 +56,13 @@ fn rank_prefers_target_reachable_via_ftl_hub_over_pure_sublight() {
     let ship_ftl_range = 25.0; // can reach the waypoint
     let ship_sublight = 0.5;
 
+    let _ = ruler_pos; // #469 fold-in: ruler_pos no longer affects ranking.
     let ranked = rank_survey_targets_for_ship(
         &candidates,
         &surveyed,
         ship_pos,
         ship_ftl_range,
         ship_sublight,
-        ruler_pos,
     );
 
     assert_eq!(ranked.len(), 2);
@@ -104,6 +104,7 @@ fn rank_prefers_ship_nearest_target_when_ship_far_from_ruler() {
 
     let ship_ftl_range = 0.0; // no FTL → only sublight matters
     let ship_sublight = 0.5;
+    let _ = ruler_pos; // #469 fold-in: ruler_pos no longer affects ranking.
 
     let ranked = rank_survey_targets_for_ship(
         &candidates,
@@ -111,7 +112,6 @@ fn rank_prefers_ship_nearest_target_when_ship_far_from_ruler() {
         ship_pos,
         ship_ftl_range,
         ship_sublight,
-        ruler_pos,
     );
 
     assert_eq!(ranked.len(), 2);
@@ -164,7 +164,7 @@ fn greedy_per_ship_assigns_each_ship_to_its_nearest_target() {
             .filter(|(t, _)| !claimed.contains(t))
             .collect();
         let ranked = rank_survey_targets_for_ship(
-            &remaining, &surveyed, pos, ftl_range, sublight, ruler_pos,
+            &remaining, &surveyed, pos, ftl_range, sublight,
         );
         let (best, _) = ranked.first().copied().expect("at least one target");
         assignments.push((ship, best));
@@ -215,8 +215,8 @@ fn tiebreak_resolves_same_score_by_entity_index_and_is_stable() {
     );
     let candidates = vec![(hi_index, [5.0, 0.0, 0.0]), (lo_index, [-5.0, 0.0, 0.0])];
 
-    let run1 = rank_survey_targets_for_ship(&candidates, &surveyed, ship_pos, 0.0, 0.5, ruler_pos);
-    let run2 = rank_survey_targets_for_ship(&candidates, &surveyed, ship_pos, 0.0, 0.5, ruler_pos);
+    let run1 = rank_survey_targets_for_ship(&candidates, &surveyed, ship_pos, 0.0, 0.5);
+    let run2 = rank_survey_targets_for_ship(&candidates, &surveyed, ship_pos, 0.0, 0.5);
 
     assert_eq!(run1.len(), 2);
     assert_eq!(run1[0].1, run1[1].1, "test setup: ETAs must match");
@@ -281,6 +281,86 @@ fn score_ftl_beats_sublight_when_hub_available() {
     );
 }
 
+/// #469 review fold-in (BLOCKER): the legacy
+/// `idle_surveyors × unsurveyed_targets` zip fallback in
+/// `ShortStanceAgent` enabled a cross-fleet race — fleet2 visited
+/// first in the empire loop would fall back to the zip path and emit
+/// a survey for any target in `unsurveyed_targets`, including targets
+/// that `npc_decision_tick`'s greedy had pre-assigned to a higher-ETA
+/// ship in fleet1. `claimed_survey_targets` was populated only AFTER
+/// each Fleet ShortAgent emitted, so a fleet visited first could not
+/// see siblings' future claims.
+///
+/// Fix: delete the fallback entirely. Post-fix the only emission path
+/// is `survey_assignments` (pre-paired by greedy); a fleet without an
+/// entry stays silent. This test pins the contract by exercising the
+/// stub directly: presence of `idle_surveyors` + `unsurveyed_targets`
+/// without `survey_assignments` must NOT emit.
+///
+/// (The drop is observed via the absent fallback path in
+/// `short_stance.rs::ShortStanceAgent::decide`; this regression test
+/// lives here so the cross-PR contract — npc_decision pre-pairs +
+/// short_stance consumes pairs only — has a single failure-surface.)
+#[test]
+fn cross_fleet_race_blocked_when_no_assignments() {
+    use macrocosmo::ai::ShortScope;
+    use macrocosmo::ai::short_adapter::ShortGameAdapter;
+    use macrocosmo::ai::short_stance::ShortStanceAgent;
+    use macrocosmo_ai::FactionId;
+
+    struct StubNoAssignments {
+        empire: Entity,
+        scope: ShortScope,
+        idle: Vec<Entity>,
+        targets: Vec<Entity>,
+    }
+
+    impl ShortGameAdapter for StubNoAssignments {
+        fn empire(&self) -> Entity {
+            self.empire
+        }
+        fn scope(&self) -> &ShortScope {
+            &self.scope
+        }
+        fn idle_surveyors(&self) -> &[Entity] {
+            &self.idle
+        }
+        fn unsurveyed_targets(&self) -> &[Entity] {
+            &self.targets
+        }
+        fn survey_assignments(&self) -> &[(Entity, Entity)] {
+            &[]
+        }
+        fn free_building_slots(&self) -> f64 {
+            0.0
+        }
+        fn net_production_energy(&self) -> f64 {
+            0.0
+        }
+        fn net_production_food(&self) -> f64 {
+            0.0
+        }
+    }
+
+    let mut world = World::new();
+    let fleet = world.spawn_empty().id();
+    let ship = world.spawn_empty().id();
+    let target = world.spawn_empty().id();
+    let empire = world.spawn_empty().id();
+    let stub = StubNoAssignments {
+        empire,
+        scope: ShortScope::Fleet(fleet),
+        idle: vec![ship],
+        targets: vec![target],
+    };
+    let proposals = ShortStanceAgent::decide(&stub, FactionId(99), 0);
+    assert!(
+        proposals.is_empty(),
+        "without survey_assignments, ShortStanceAgent must stay silent — \
+         otherwise a cross-fleet race re-opens (PR #508 BLOCKER fold-in)"
+    );
+}
+
 #[test]
 fn rank_drops_unreachable_targets() {
     let mut world = World::new();
@@ -293,14 +373,14 @@ fn rank_drops_unreachable_targets() {
     ];
     // Ship has no propulsion → every target unreachable → both dropped.
     let ranked =
-        rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.0, [0.0, 0.0, 0.0]);
+        rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.0);
     assert!(ranked.is_empty(), "no propulsion → no rankable targets");
 
     // Restore propulsion — both targets are reachable now (they're at
     // the same distance, so deterministic tie-break orders them by
     // Entity::index()).
     let ranked =
-        rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.5, [0.0, 0.0, 0.0]);
+        rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.5);
     assert_eq!(ranked.len(), 2);
     let _ = (reachable, unreachable);
 }

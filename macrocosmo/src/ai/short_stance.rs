@@ -45,37 +45,27 @@ impl ShortStanceAgent {
                 // `survey_assignments` (computed by `npc_decision_tick`
                 // via `rank_survey_targets_for_ship` — ship-relative
                 // ETA + greedy 1-pass). One `survey_system` command
-                // per pair. Falls back to the legacy
-                // `idle_surveyors × unsurveyed_targets` zip when no
-                // assignments are provided (test stubs that haven't
-                // migrated, headless callers without star positions).
-                let assignments = adapter.survey_assignments();
-                if !assignments.is_empty() {
-                    for (ship, target) in assignments {
-                        let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
-                            .with_param(
-                                "target_system",
-                                CommandValue::System(to_ai_system(*target)),
-                            )
-                            .with_param("ship_count", CommandValue::I64(1))
-                            .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
-                        proposals.push(Proposal::at_system(cmd, to_ai_system(*target)));
-                    }
-                } else {
-                    let surveyors = adapter.idle_surveyors();
-                    let targets = adapter.unsurveyed_targets();
-                    if !surveyors.is_empty() && !targets.is_empty() {
-                        for (ship, &target) in surveyors.iter().zip(targets.iter()) {
-                            let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
-                                .with_param(
-                                    "target_system",
-                                    CommandValue::System(to_ai_system(target)),
-                                )
-                                .with_param("ship_count", CommandValue::I64(1))
-                                .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
-                            proposals.push(Proposal::at_system(cmd, to_ai_system(target)));
-                        }
-                    }
+                // per pair.
+                //
+                // #469 review fold-in: the legacy
+                // `idle_surveyors × unsurveyed_targets` zip fallback
+                // was removed. It enabled a cross-fleet race where
+                // fleet2's fallback emit could overrun a target that
+                // `npc_decision_tick`'s greedy had already assigned
+                // to a higher-ETA ship in fleet1 (the per-tick
+                // `claimed_survey_targets` set is populated only AFTER
+                // each Fleet ShortAgent emits, so a fleet visited
+                // first in the empire loop could not see siblings'
+                // future claims). With the fallback gone the only
+                // emission path is the pre-paired greedy assignment;
+                // a fleet without an entry in
+                // `survey_assignments_by_fleet` stays silent that tick.
+                for (ship, target) in adapter.survey_assignments() {
+                    let cmd = Command::new(cmd_ids::survey_system(), faction_id, now)
+                        .with_param("target_system", CommandValue::System(to_ai_system(*target)))
+                        .with_param("ship_count", CommandValue::I64(1))
+                        .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
+                    proposals.push(Proposal::at_system(cmd, to_ai_system(*target)));
                 }
             }
             ShortScope::ColonizedSystem(_system_entity) => {
@@ -187,15 +177,18 @@ mod tests {
     // ---- Rule 2 (Fleet scope) ----
 
     #[test]
-    fn fleet_scope_emits_survey_per_zip_pair() {
+    fn fleet_scope_emits_survey_per_assignment_pair() {
+        // #469 review fold-in: the legacy zip path was deleted (it
+        // enabled a cross-fleet race in production); ShortStanceAgent
+        // now consumes only the pre-paired survey assignments produced
+        // upstream by `rank_survey_targets_for_ship`.
         let fleet = Entity::from_raw_u32(10).unwrap();
         let target_a = Entity::from_raw_u32(50).unwrap();
         let target_b = Entity::from_raw_u32(51).unwrap();
         let surveyor_a = Entity::from_raw_u32(200).unwrap();
         let surveyor_b = Entity::from_raw_u32(201).unwrap();
         let stub = StubAdapter {
-            idle_surveyors: vec![surveyor_a, surveyor_b],
-            unsurveyed_targets: vec![target_a, target_b],
+            survey_assignments: vec![(surveyor_a, target_a), (surveyor_b, target_b)],
             ..StubAdapter::fleet(fleet)
         };
         let proposals = ShortStanceAgent::decide(&stub, FactionId(7), 10);
@@ -217,28 +210,28 @@ mod tests {
         }
     }
 
+    /// #469 review fold-in: `idle_surveyors` + `unsurveyed_targets`
+    /// without `survey_assignments` no longer emits. The greedy
+    /// upstream is the only legal source for survey commands; anything
+    /// else would re-open the cross-fleet race.
     #[test]
-    fn fleet_scope_silent_without_surveyors() {
+    fn fleet_scope_silent_without_assignments() {
         let fleet = Entity::from_raw_u32(10).unwrap();
         let target = Entity::from_raw_u32(50).unwrap();
+        let surveyor = Entity::from_raw_u32(200).unwrap();
+        // Even with both surveyors and targets in the adapter, no
+        // assignments means no emit. Pre-fix this hit the legacy zip
+        // fallback and emitted (surveyor, target).
         let stub = StubAdapter {
+            idle_surveyors: vec![surveyor],
             unsurveyed_targets: vec![target],
             ..StubAdapter::fleet(fleet)
         };
         let proposals = ShortStanceAgent::decide(&stub, FactionId(7), 10);
-        assert!(proposals.is_empty());
-    }
-
-    #[test]
-    fn fleet_scope_silent_without_targets() {
-        let fleet = Entity::from_raw_u32(10).unwrap();
-        let surveyor = Entity::from_raw_u32(200).unwrap();
-        let stub = StubAdapter {
-            idle_surveyors: vec![surveyor],
-            ..StubAdapter::fleet(fleet)
-        };
-        let proposals = ShortStanceAgent::decide(&stub, FactionId(7), 10);
-        assert!(proposals.is_empty());
+        assert!(
+            proposals.is_empty(),
+            "without survey_assignments the Fleet ShortAgent must stay silent",
+        );
     }
 
     // ---- Rule 5b (ColonizedSystem scope) ----

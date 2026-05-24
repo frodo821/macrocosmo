@@ -505,27 +505,26 @@ pub fn score_survey_target_eta(
 /// #469: Rank unsurveyed `candidates` for a specific surveyor by
 /// ship-relative ETA. Tie-break is `(score, Entity::index())` lex order
 /// — deterministic across runs given Bevy's deterministic Entity
-/// allocation.
+/// allocation within a single process. (Save/reload reassigns indices
+/// so the tie-break is not stable across persistence boundaries; this
+/// is acceptable for AI dispatch which has no save-format guarantee.)
 ///
 /// Targets for which `score_survey_target_eta` returns `None`
-/// (unreachable) are dropped. A `ruler_to_ship_delay` term is included
-/// in the score to model the courier window the AI dispatch path
-/// (`PendingAiShipCommand`, #468) waits before the ship can execute —
-/// for co-located ruler/ship it's 0, but for ships out at the frontier
-/// it lets a closer ship's ranking dominate over a far-from-ship target
-/// the ruler happens to be sitting next to.
+/// (unreachable) are dropped.
+///
+/// #469 review fold-in: the previous `courier_delay` term added
+/// `light_delay_hexadies(ruler→ship)` to every candidate's score for a
+/// single ship call. A constant offset within a per-ship ranking has
+/// no effect on rank order — the term was dead weight that wasted two
+/// `distance_ly_arr` calls per surveyor without changing any output.
+/// Removed; `ruler_pos` parameter dropped from the signature.
 pub fn rank_survey_targets_for_ship(
     candidates: &[(Entity, [f64; 3])],
     surveyed_positions: &[[f64; 3]],
     ship_pos: [f64; 3],
     ship_ftl_range: f64,
     ship_sublight_speed: f64,
-    ruler_pos: [f64; 3],
 ) -> Vec<(Entity, i64)> {
-    use crate::physics::{distance_ly_arr, light_delay_hexadies};
-
-    let courier_delay = light_delay_hexadies(distance_ly_arr(ruler_pos, ship_pos));
-
     let mut scored: Vec<(Entity, i64)> = candidates
         .iter()
         .filter_map(|(e, pos)| {
@@ -536,12 +535,10 @@ pub fn rank_survey_targets_for_ship(
                 ship_sublight_speed,
                 surveyed_positions,
             )
-            .map(|eta| (*e, courier_delay.saturating_add(eta)))
+            .map(|eta| (*e, eta))
         })
         .collect();
     // Deterministic tie-break: same ETA → lower Entity index wins.
-    // `Entity::index()` is stable per allocation, so the sort order
-    // is reproducible across runs for a deterministic spawn order.
     scored.sort_by_key(|(e, score)| (*score, e.index()));
     scored
 }
@@ -1140,8 +1137,8 @@ pub fn npc_decision_tick(
                 ship.position,
                 ship.ftl_range,
                 ship.sublight_speed,
-                reference_pos,
             );
+            let _ = reference_pos; // #469 fold-in: ruler_pos no longer needed (courier_delay dropped).
             if let Some((best, _)) = ranked.first().copied() {
                 survey_assignments_by_fleet
                     .entry(fleet)
