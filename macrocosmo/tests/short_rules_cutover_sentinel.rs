@@ -136,6 +136,31 @@ fn short_emits_survey_system_after_cutover() {
     // would dispatch + despawn the holder in the same tick the
     // Short layer emitted the command.
     let loiter = spawn_test_system(app.world_mut(), "Loiter", [0.0, 5.0, 0.0], 1.0, true, false);
+    // #469: the ETA-based ranker (`rank_survey_targets_for_ship`)
+    // computes ship-relative travel time, so a scout parked at
+    // `loiter` would score loiter as ETA=0 and survey it instead of
+    // the frontier — unless loiter is already in the empire's
+    // KnowledgeStore as surveyed (then `npc_decision_tick` filters it
+    // out of the candidate pool). Mark loiter surveyed here so the
+    // candidate set collapses to just `frontier`, matching the test's
+    // intent.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: loiter,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Loiter".into(),
+                position: [0.0, 5.0, 0.0],
+                surveyed: true,
+                colonized: false,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+    }
     let scout = spawn_test_ship(
         app.world_mut(),
         "Scout-1",

@@ -48,7 +48,22 @@ pub trait ShortGameAdapter {
     /// upstream still owns this filter chain (`pending_survey_targets`
     /// in `npc_decision.rs`), so the per-fleet ShortAgent simply
     /// slices into the same set.
+    ///
+    /// #469: kept for diagnostics / fallback only — Rule 2 emission
+    /// now consumes [`Self::survey_assignments`] (pre-paired
+    /// `(ship, target)` tuples computed with ship-relative ETA).
     fn unsurveyed_targets(&self) -> &[Entity];
+
+    /// #469: Greedy `(ship, target)` assignments produced by
+    /// `npc_decision_tick` for this fleet using ship-relative ETA
+    /// ranking. `ShortStanceAgent`'s Fleet branch emits one
+    /// `survey_system` command per pair, replacing the legacy
+    /// `surveyors.zip(targets)` pattern that pre-#469 ignored ship
+    /// position and FTL geometry.
+    ///
+    /// Empty slice for non-Fleet scopes and for Fleet scopes with no
+    /// reachable targets after dedup.
+    fn survey_assignments(&self) -> &[(Entity, Entity)];
 
     // ---- ColonizedSystem scope ----
 
@@ -85,6 +100,10 @@ pub struct BevyShortAgentAdapter<'a> {
     /// scopes). Same upstream dedup as the Mid-side `unsurveyed_systems`
     /// (`pending_survey_targets` filter applied in `npc_decision_tick`).
     pub unsurveyed_targets: &'a [Entity],
+    /// #469: Pre-paired `(ship, target)` greedy assignments produced
+    /// by `npc_decision_tick` for this fleet. Empty slice for non-Fleet
+    /// scopes and for Fleet scopes with no reachable targets.
+    pub survey_assignments: &'a [(Entity, Entity)],
     /// Pre-resolved metrics for ColonizedSystem scope (zero for
     /// non-ColonizedSystem scopes).
     pub free_building_slots: f64,
@@ -107,6 +126,10 @@ impl<'a> ShortGameAdapter for BevyShortAgentAdapter<'a> {
 
     fn unsurveyed_targets(&self) -> &[Entity] {
         self.unsurveyed_targets
+    }
+
+    fn survey_assignments(&self) -> &[(Entity, Entity)] {
+        self.survey_assignments
     }
 
     fn free_building_slots(&self) -> f64 {
