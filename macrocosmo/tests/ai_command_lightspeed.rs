@@ -398,6 +398,7 @@ fn rejected_survey_at_drain_time_releases_pending_assignment() {
     app.world_mut().spawn(PendingAiShipCommand {
         kind: cmd_ids::survey_system(),
         target_system: frontier,
+        target_planet: None,
         ship: scout,
         issuer_empire: empire,
         sent_at: now,
@@ -528,6 +529,7 @@ fn spawn_matured_holder(
     app.world_mut().spawn(PendingAiShipCommand {
         kind,
         target_system,
+        target_planet: None,
         ship,
         issuer_empire,
         sent_at: now,
@@ -816,6 +818,7 @@ fn rejected_colonize_at_drain_time_releases_pending_assignment() {
     app.world_mut().spawn(PendingAiShipCommand {
         kind: cmd_ids::colonize_system(),
         target_system: frontier,
+        target_planet: None,
         ship: colony_ship,
         issuer_empire: empire,
         sent_at: now,
@@ -858,6 +861,473 @@ fn rejected_colonize_at_drain_time_releases_pending_assignment() {
         "PendingAssignment::Colonize must be removed when colonize_system is \
          rejected at drain time (otherwise the ship is permanently excluded \
          from future AI colonize dispatches)",
+    );
+}
+
+// ---------------------------------------------------------------------------
+// #468 PR-3: zero-delay regressions for the newly-migrated kinds
+// (`attack_target`, `move_ruler`, `load_deliverable`, `unload_deliverable`,
+// `colonize_planet`). Shape mirrors PR-2's reposition / blockade /
+// colonize_system tests: stage a ship + spawn a matured holder + drive
+// one tick + assert the typed `*Requested` event fired.
+// ---------------------------------------------------------------------------
+
+/// #468 PR-3: matured `attack_target` PendingAiShipCommand at zero
+/// light delay must drain into a `MoveRequested` within the same
+/// tick. Pre-PR-3 the AI paid Ruler→target light delay before firing;
+/// post-PR-3 the wire-up to `drain_ai_ship_commands` releases the
+/// event the instant the holder matures.
+#[test]
+fn attack_target_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
+    use macrocosmo::ship::command_events::MoveRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, _home, target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    spawn_matured_holder(&mut app, cmd_ids::attack_target(), ship, target, empire);
+
+    app.world_mut()
+        .resource_mut::<Messages<MoveRequested>>()
+        .update();
+
+    let mut move_event_total = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        move_event_total += {
+            let messages = app.world().resource::<Messages<MoveRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+    }
+    assert!(
+        move_event_total > 0,
+        "matured attack_target PendingAiShipCommand at zero light delay must drain \
+         into MoveRequested within 3 ticks — #468 PR-3 regression"
+    );
+}
+
+/// #468 PR-3: matured `load_deliverable` PendingAiShipCommand at zero
+/// light delay must drain into a `LoadDeliverableRequested` within
+/// the same tick.
+#[test]
+fn load_deliverable_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
+    use macrocosmo::ship::command_events::LoadDeliverableRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, _home, target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    spawn_matured_holder(&mut app, cmd_ids::load_deliverable(), ship, target, empire);
+
+    app.world_mut()
+        .resource_mut::<Messages<LoadDeliverableRequested>>()
+        .update();
+
+    let mut event_total = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        event_total += {
+            let messages = app.world().resource::<Messages<LoadDeliverableRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+    }
+    assert!(
+        event_total > 0,
+        "matured load_deliverable PendingAiShipCommand at zero light delay must drain \
+         into LoadDeliverableRequested within 3 ticks — #468 PR-3 regression"
+    );
+}
+
+/// #468 PR-3: matured `unload_deliverable` PendingAiShipCommand at
+/// zero light delay must drain into a `DeployDeliverableRequested`
+/// within the same tick. The deploy event's position is read from
+/// the ship's realtime `Position` so the downstream handler's
+/// position equality check passes.
+#[test]
+fn unload_deliverable_ai_ship_at_home_ruler_at_home_zero_delay() {
+    use macrocosmo::ship::command_events::DeployDeliverableRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, home, _target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    // unload has no target system — use home as a sentinel (mirrors
+    // the dispatcher's `ship.home_port` fallback).
+    spawn_matured_holder(&mut app, cmd_ids::unload_deliverable(), ship, home, empire);
+
+    app.world_mut()
+        .resource_mut::<Messages<DeployDeliverableRequested>>()
+        .update();
+
+    let mut event_total = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        event_total += {
+            let messages = app
+                .world()
+                .resource::<Messages<DeployDeliverableRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+    }
+    assert!(
+        event_total > 0,
+        "matured unload_deliverable PendingAiShipCommand at zero light delay must drain \
+         into DeployDeliverableRequested within 3 ticks — #468 PR-3 regression"
+    );
+}
+
+/// #468 PR-3: matured `move_ruler` PendingAiShipCommand at zero
+/// light delay must (a) push `PendingRulerBoarding` for
+/// `process_ruler_boarding` to apply and (b) emit a `MoveRequested`
+/// for the transport ship. The dispatcher's ship-selection step
+/// ensures the chosen ship is at the Ruler's system, but this test
+/// bypasses the dispatcher and constructs the holder directly — so
+/// we set the world up so the ship and the Ruler share a system.
+#[test]
+fn move_ruler_ai_ship_at_ruler_system_zero_delay_pushes_boarding() {
+    use macrocosmo::ai::command_consumer::PendingRulerBoarding;
+    use macrocosmo::ship::command_events::MoveRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, _home, target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    spawn_matured_holder(&mut app, cmd_ids::move_ruler(), ship, target, empire);
+
+    app.world_mut()
+        .resource_mut::<Messages<MoveRequested>>()
+        .update();
+
+    let mut move_event_total = 0usize;
+    let mut boarding_seen = false;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        move_event_total += {
+            let messages = app.world().resource::<Messages<MoveRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+        // `PendingRulerBoarding` is drained the same tick by
+        // `process_ruler_boarding` — we check it has been observed
+        // at least once across the window by looking for the
+        // AboardShip insertion + ship.ruler_aboard side effect.
+        let aboard_set = {
+            let entity = app.world().entity(ship);
+            entity
+                .get::<macrocosmo::ship::Ship>()
+                .map(|s| s.ruler_aboard)
+                .unwrap_or(false)
+        };
+        if aboard_set {
+            boarding_seen = true;
+        }
+        // Also accept the queue not being empty pre-drain.
+        let pending_remaining = app
+            .world()
+            .resource::<PendingRulerBoarding>()
+            .requests
+            .len();
+        if pending_remaining > 0 {
+            boarding_seen = true;
+        }
+    }
+    assert!(
+        move_event_total > 0,
+        "matured move_ruler PendingAiShipCommand at zero light delay must drain \
+         into MoveRequested within 3 ticks — #468 PR-3 regression"
+    );
+    assert!(
+        boarding_seen,
+        "matured move_ruler PendingAiShipCommand must push PendingRulerBoarding \
+         (observed via `ship.ruler_aboard = true` after `process_ruler_boarding` \
+         drains) — #468 PR-3 regression"
+    );
+}
+
+/// #468 PR-3: matured `colonize_planet` PendingAiShipCommand at zero
+/// light delay must drain into a `ColonizeRequested` whose `planet`
+/// field is `Some(target_planet)` — distinguishing it from
+/// `colonize_system`, which writes `planet: None` and lets the
+/// settlement handler pick. This is the planet-target marker shape
+/// pin.
+#[test]
+fn colonize_planet_ai_ship_at_home_ruler_at_home_target_planet_set() {
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    use macrocosmo::galaxy::Planet;
+    use macrocosmo::ship::command_events::ColonizeRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, _home, target, ship) =
+        setup_matured_holder_world(&mut app, "colony_ship_mk1", 5.0);
+    // colonize_planet targets a Planet, not a System. Pull the first
+    // planet of the target system (spawn_test_system makes one).
+    let planet = {
+        let mut q = app.world_mut().query::<(Entity, &Planet)>();
+        q.iter(app.world())
+            .find(|(_, p)| p.system == target)
+            .map(|(e, _)| e)
+            .expect("spawn_test_system should create one planet under the target system")
+    };
+
+    let now = app.world().resource::<GameClock>().elapsed;
+    app.world_mut().spawn(PendingAiShipCommand {
+        kind: cmd_ids::colonize_planet(),
+        target_system: target,
+        target_planet: Some(planet),
+        ship,
+        issuer_empire: empire,
+        sent_at: now,
+        arrives_at: now,
+    });
+
+    app.world_mut()
+        .resource_mut::<Messages<ColonizeRequested>>()
+        .update();
+
+    let mut planet_set_count = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        let messages = app.world().resource::<Messages<ColonizeRequested>>();
+        for ev in messages.iter_current_update_messages() {
+            if ev.planet == Some(planet) {
+                planet_set_count += 1;
+            }
+        }
+    }
+    assert!(
+        planet_set_count > 0,
+        "matured colonize_planet PendingAiShipCommand must emit ColonizeRequested \
+         with planet=Some(target_planet) within 3 ticks — #468 PR-3 regression"
+    );
+}
+
+/// #468 PR-3 fold-in: when a matured `colonize_planet`
+/// `PendingAiShipCommand` is rejected at drain time, the
+/// `PendingAssignment::Colonize { target: Planet(p) }` marker
+/// stamped at outbox-spawn time MUST be removed too. Same dedup
+/// contract as `colonize_system` — without marker cleanup the ship
+/// is permanently excluded from future AI colonize dispatches.
+#[test]
+fn rejected_colonize_planet_at_drain_time_releases_pending_assignment() {
+    use macrocosmo::ai::AiBusResource;
+    use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    use macrocosmo::galaxy::Planet;
+    use macrocosmo::ship::{CommandQueue, QueuedCommand};
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+    app.insert_resource(AiBusResource::default());
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Reject Colonize Planet".into(),
+            },
+            Faction {
+                id: "reject_colonize_planet".into(),
+                name: "Reject Colonize Planet".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [5.0, 0.0, 0.0],
+        1.0,
+        false,
+        false,
+    );
+    // Resolve the planet entity spawned under `frontier` by
+    // `spawn_test_system`.
+    let planet = {
+        let mut q = app.world_mut().query::<(Entity, &Planet)>();
+        q.iter(app.world())
+            .find(|(_, p)| p.system == frontier)
+            .map(|(e, _)| e)
+            .expect("spawn_test_system should create one planet under the frontier system")
+    };
+    let colony_ship = spawn_test_ship(
+        app.world_mut(),
+        "Colony-1",
+        "colony_ship_mk1",
+        home,
+        [0.0, 0.0, 0.0],
+    );
+    app.world_mut()
+        .entity_mut(colony_ship)
+        .get_mut::<Ship>()
+        .unwrap()
+        .owner = Owner::Empire(empire);
+
+    // Force the ship into a non-idle state so apply_colonize_to_ship
+    // takes the queue-not-empty reject branch on maturity.
+    {
+        let mut em = app.world_mut().entity_mut(colony_ship);
+        if let Some(mut queue) = em.get_mut::<CommandQueue>() {
+            queue.commands.push(QueuedCommand::MoveTo { system: home });
+        }
+    }
+
+    let now = app.world().resource::<GameClock>().elapsed;
+    app.world_mut().spawn(PendingAiShipCommand {
+        kind: cmd_ids::colonize_planet(),
+        target_system: frontier,
+        target_planet: Some(planet),
+        ship: colony_ship,
+        issuer_empire: empire,
+        sent_at: now,
+        arrives_at: now + 1,
+    });
+    app.world_mut()
+        .entity_mut(colony_ship)
+        .insert(PendingAssignment {
+            faction: empire,
+            kind: AssignmentKind::Colonize,
+            target: AssignmentTarget::Planet(planet),
+            since: now,
+        });
+
+    assert!(
+        app.world()
+            .entity(colony_ship)
+            .get::<PendingAssignment>()
+            .is_some(),
+        "PendingAssignment::Colonize{{Planet}} must be present pre-drain (test invariant)",
+    );
+
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+    }
+
+    let holder_remains = {
+        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
+        q.iter(app.world()).any(|p| p.ship == colony_ship)
+    };
+    assert!(
+        !holder_remains,
+        "colonize_planet holder must be drained even on reject path",
+    );
+    assert!(
+        app.world()
+            .entity(colony_ship)
+            .get::<PendingAssignment>()
+            .is_none(),
+        "PendingAssignment{{Planet}} must be removed when colonize_planet is \
+         rejected at drain time (otherwise the ship is permanently excluded from \
+         future AI colonize dispatches)",
+    );
+}
+
+/// #468 PR-3: `fortify_system` was mis-categorised as a spatial
+/// (target-bound) command pre-PR-3. It's actually a BUILD order
+/// (queue a combat ship at a shipyard) routed to the empire's
+/// capital. This test pins the new contract: the courier delay is
+/// Ruler→capital, NOT Ruler→target_system.
+///
+/// Shape: spawn an empire with the Ruler at home (capital) and a
+/// far-away target system. Emit `fortify_system { target_system =
+/// far }`. The command should land in the outbox with `arrives_at`
+/// = capital-bound (== now, since Ruler IS at the capital) — not
+/// Ruler→far delay.
+#[test]
+fn fortify_system_pays_ruler_to_capital_delay_not_ruler_to_target() {
+    use macrocosmo::ai::AiBusResource;
+    use macrocosmo::ai::command_outbox::AiCommandOutbox;
+    use macrocosmo::ai::schema::ids::command as cmd_ids;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Fortify Capital Test".into(),
+            },
+            Faction {
+                id: "fortify_capital_test".into(),
+                name: "Fortify Capital Test".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+        ))
+        .id();
+
+    let capital = spawn_test_system(app.world_mut(), "Capital", [0.0, 0.0, 0.0], 1.0, true, true);
+    // Mark the capital as the empire's home system so the
+    // capital-resolution fallback chain picks it up.
+    app.world_mut()
+        .entity_mut(empire)
+        .insert(macrocosmo::galaxy::HomeSystem(capital));
+    let far_target = spawn_test_system(
+        app.world_mut(),
+        "FarTarget",
+        [50.0, 0.0, 0.0],
+        1.0,
+        true,
+        false,
+    );
+
+    spawn_test_ruler(app.world_mut(), empire, capital);
+
+    let now = app.world().resource::<GameClock>().elapsed;
+    let cmd = macrocosmo_ai::Command::new(
+        cmd_ids::fortify_system(),
+        macrocosmo::ai::convert::to_ai_faction(empire),
+        now,
+    )
+    .with_param(
+        "target_system",
+        macrocosmo_ai::CommandValue::System(macrocosmo::ai::convert::to_ai_system(far_target)),
+    );
+    app.world_mut()
+        .resource_mut::<AiBusResource>()
+        .0
+        .emit_command(cmd);
+
+    // One tick: AiTickSet::Reason runs dispatch_ai_pending_commands
+    // which moves the bus entry into the outbox.
+    advance_time(&mut app, 1);
+
+    // Capture the outbox entry. Ruler is at the capital, so the
+    // arrival plan collapses to ~0 light delay
+    // (Ruler→capital == 0). Pre-PR-3 this was Ruler→far_target
+    // ≈ light_delay_hexadies(50) → many ticks.
+    let outbox = app.world().resource::<AiCommandOutbox>();
+    let fortify_entries: Vec<&macrocosmo::ai::command_outbox::PendingAiCommand> = outbox
+        .entries
+        .iter()
+        .filter(|e| e.command.kind == cmd_ids::fortify_system())
+        .collect();
+    // Note: an entry whose arrives_at <= now would have already been
+    // released by `process_ai_pending_commands` in the same tick.
+    // Either way the assertion holds: if the entry is gone, the
+    // delay was ~0 (Ruler at capital); if it's still here, its
+    // `arrives_at` must be at-most-1 hex away from `now` (rounding
+    // for tick boundary), NOT a multi-hundred-hex Ruler→target delay.
+    let observed_now = app.world().resource::<GameClock>().elapsed;
+    for entry in &fortify_entries {
+        let delay = entry.arrives_at - entry.sent_at;
+        assert!(
+            delay <= 2,
+            "fortify_system Ruler→capital delay must be ~0 (Ruler is at capital); got {delay} hexadies",
+        );
+    }
+    // Also assert it's not still queued with a multi-hundred-hex delay.
+    let any_long_delay = fortify_entries
+        .iter()
+        .any(|e| e.arrives_at - e.sent_at > 10);
+    assert!(
+        !any_long_delay,
+        "fortify_system must not pay Ruler→target light delay (≈ {observed_now} hex for 50 ly); \
+         #468 PR-3 mis-categorisation regression",
     );
 }
 
@@ -919,6 +1389,7 @@ fn rejected_reposition_at_drain_time_despawns_holder() {
     app.world_mut().spawn(PendingAiShipCommand {
         kind: cmd_ids::reposition(),
         target_system: target,
+        target_planet: None,
         ship,
         issuer_empire: empire,
         sent_at: now,

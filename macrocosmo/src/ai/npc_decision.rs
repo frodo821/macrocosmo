@@ -46,6 +46,11 @@ pub struct DedupParams<'w, 's> {
     /// Ruler→ship courier window. PR-2/3 will expand coverage.
     pub pending_ai_ship_commands:
         Query<'w, 's, &'static crate::ai::command_consumer::PendingAiShipCommand>,
+    /// #468 PR-3: planet → system resolver, used by the
+    /// `AssignmentTarget::Planet` arm of the marker scan to fold
+    /// `colonize_planet` assignments into the per-empire
+    /// `pending_colonize_targets` set keyed on system.
+    pub planet_systems: Query<'w, 's, &'static crate::galaxy::Planet>,
 }
 
 /// Marker component: this empire's decisions are made by the AI policy.
@@ -526,30 +531,38 @@ pub fn npc_decision_tick(
         }
     }
 
-    // #468 PR-1/PR-2: union in `PendingAiShipCommand` entries for the
-    // same dedup pass. With survey_system + colonize_system off
-    // `AiCommandOutbox`, this is the only place the npc_decision tick
-    // can see in-flight survey / colonize during the Ruler→ship
-    // courier window. PR-3 will add more kinds here as they migrate.
+    // #468 PR-1/PR-2/PR-3: union in `PendingAiShipCommand` entries for
+    // the same dedup pass. With survey_system + colonize_system +
+    // colonize_planet off `AiCommandOutbox`, this is the only place
+    // the npc_decision tick can see in-flight survey / colonize during
+    // the Ruler→ship courier window.
     //
-    // `reposition` / `blockade` holders also exist but they don't
-    // participate in a per-empire dedup map — movement orders aren't
-    // "decisions" the AI remembers it already made, so we ignore them
-    // here (the marker-less dispatch path means there's no
-    // double-dispatch problem to dedup against in the first place).
+    // `reposition` / `blockade` / `attack_target` / `move_ruler` /
+    // `load_deliverable` / `unload_deliverable` holders also exist but
+    // they don't participate in a per-empire dedup map — movement /
+    // boarding / cargo-shuffling orders aren't "decisions" the AI
+    // remembers it already made, so we ignore them here (the
+    // marker-less dispatch path means there's no double-dispatch
+    // problem to dedup against in the first place).
+    //
+    // PR-3 folds `colonize_planet` into the same per-empire colonize
+    // dedup set as `colonize_system`: both kinds say "this empire is
+    // already trying to colonize that system" and a second emission
+    // is exactly the leak we want to suppress.
+    let colonize_planet_kind = cmd_ids::colonize_planet();
     for pending in &dedup.pending_ai_ship_commands {
         let kind_str = pending.kind.as_str();
-        let target_set = if kind_str == survey_kind.as_str() {
-            &mut outbox_survey_per_empire
-        } else if kind_str == colonize_kind.as_str() {
-            &mut outbox_colonize_per_empire
-        } else {
-            continue;
-        };
-        target_set
-            .entry(pending.issuer_empire)
-            .or_default()
-            .insert(pending.target_system);
+        if kind_str == survey_kind.as_str() {
+            outbox_survey_per_empire
+                .entry(pending.issuer_empire)
+                .or_default()
+                .insert(pending.target_system);
+        } else if kind_str == colonize_kind.as_str() || kind_str == colonize_planet_kind.as_str() {
+            outbox_colonize_per_empire
+                .entry(pending.issuer_empire)
+                .or_default()
+                .insert(pending.target_system);
+        }
     }
 
     // #449 PR2b: per-MidAgent loop. We resolve each MidAgent →
@@ -621,10 +634,31 @@ pub fn npc_decision_tick(
                     if let AssignmentTarget::System(sys) = pa.target {
                         pending_survey_targets.insert(sys);
                     }
+                    // Survey markers never target planets; the
+                    // `Planet` arm is colonize-only by construction.
                 }
                 AssignmentKind::Colonize => {
-                    if let AssignmentTarget::System(sys) = pa.target {
-                        pending_colonize_targets.insert(sys);
+                    match pa.target {
+                        AssignmentTarget::System(sys) => {
+                            pending_colonize_targets.insert(sys);
+                        }
+                        // #468 PR-3: `colonize_planet` markers fold
+                        // into the same per-empire dedup set as
+                        // `colonize_system` after resolving the
+                        // planet's parent system. The two kinds are
+                        // semantically equivalent for "don't
+                        // double-dispatch a colony attempt to this
+                        // system" — `colonize_system` picks the
+                        // best planet at handler time;
+                        // `colonize_planet` names it explicitly. A
+                        // planet entity that no longer exists is
+                        // silently skipped (the ship will despawn
+                        // soon and Bevy clears the marker).
+                        AssignmentTarget::Planet(planet) => {
+                            if let Ok(p) = dedup.planet_systems.get(planet) {
+                                pending_colonize_targets.insert(p.system);
+                            }
+                        }
                     }
                 }
             }

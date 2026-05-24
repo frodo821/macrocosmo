@@ -8,6 +8,13 @@ pub mod fixture;
 // the fixture set without per-test boilerplate.
 pub mod wire_format;
 
+// #468 PR-3 (HIGH D fold-in): shared `count_ai_commitments` /
+// `has_ai_commitment` helpers used by every dedup-style test. Hoisted
+// out of the per-file `count_outbox_for` copies in
+// `ai_npc_outbox_dedup`, `ai_per_region_npc_smoke`, and
+// `mid_agent_member_filter`.
+pub mod ai_commitment;
+
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
 use macrocosmo::amount::Amt;

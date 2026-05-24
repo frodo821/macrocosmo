@@ -29,7 +29,6 @@ mod common;
 use bevy::prelude::*;
 
 use macrocosmo::ai::AiPlayerMode;
-use macrocosmo::ai::command_outbox::AiCommandOutbox;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
 use macrocosmo::components::Position;
 use macrocosmo::faction::FactionOwner;
@@ -41,48 +40,8 @@ use macrocosmo::knowledge::{
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{CoreShip, Owner, Ship};
 
+use common::ai_commitment::count_ai_commitments;
 use common::{advance_time, spawn_test_ruler, spawn_test_ship, spawn_test_system, test_app};
-
-fn count_outbox_for(
-    app: &mut App,
-    kind: macrocosmo_ai::CommandKindId,
-    target_system: Entity,
-) -> usize {
-    let outbox_count = {
-        let outbox = app.world().resource::<AiCommandOutbox>();
-        outbox
-            .entries
-            .iter()
-            .filter(|entry| {
-                let cmd = &entry.command;
-                if cmd.kind != kind {
-                    return false;
-                }
-                match cmd.params.get("target_system") {
-                    Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
-                        target_system.to_bits() == sys_id.0
-                    }
-                    _ => false,
-                }
-            })
-            .count()
-    };
-
-    // #468 PR-1: `survey_system` migrated off `AiCommandOutbox` onto
-    // `PendingAiShipCommand` (one entry per ship). The dedup test
-    // cares about "is there *any* in-flight survey to this target?"
-    // — fold both sources together so the assertion stays valid as
-    // PR-2/3 migrate other kinds.
-    let ship_command_count = {
-        use macrocosmo::ai::command_consumer::PendingAiShipCommand;
-        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
-        q.iter(app.world())
-            .filter(|p| p.kind == kind && p.target_system == target_system)
-            .count()
-    };
-
-    outbox_count + ship_command_count
-}
 
 /// Spawn an AI-controlled empire at `home` (capital, surveyed in its
 /// own KnowledgeStore) plus a far-away `frontier` system at `[d, 0, 0]`
@@ -278,7 +237,7 @@ fn outbox_dedups_survey_system_during_light_delay_window() {
         advance_time(&mut app, 1);
     }
 
-    let after_first = count_outbox_for(&mut app, cmd_ids::survey_system(), frontier);
+    let after_first = count_ai_commitments(&mut app, cmd_ids::survey_system(), frontier);
     assert_eq!(
         after_first, 1,
         "expected exactly 1 in-flight survey command after first decision \
@@ -294,7 +253,7 @@ fn outbox_dedups_survey_system_during_light_delay_window() {
         advance_time(&mut app, 1);
     }
 
-    let after_second = count_outbox_for(&mut app, cmd_ids::survey_system(), frontier);
+    let after_second = count_ai_commitments(&mut app, cmd_ids::survey_system(), frontier);
     assert_eq!(
         after_second, 1,
         "expected exactly 1 in-flight survey command for the frontier \
@@ -350,7 +309,7 @@ fn outbox_dedups_colonize_system_during_light_delay_window() {
         advance_time(&mut app, 1);
     }
 
-    let after_first = count_outbox_for(&mut app, cmd_ids::colonize_system(), frontier);
+    let after_first = count_ai_commitments(&mut app, cmd_ids::colonize_system(), frontier);
     assert_eq!(
         after_first, 1,
         "expected exactly 1 in-flight colonize command after first decision \
@@ -362,7 +321,7 @@ fn outbox_dedups_colonize_system_during_light_delay_window() {
         advance_time(&mut app, 1);
     }
 
-    let after_second = count_outbox_for(&mut app, cmd_ids::colonize_system(), frontier);
+    let after_second = count_ai_commitments(&mut app, cmd_ids::colonize_system(), frontier);
     assert_eq!(
         after_second, 1,
         "expected exactly 1 in-flight colonize command for the \

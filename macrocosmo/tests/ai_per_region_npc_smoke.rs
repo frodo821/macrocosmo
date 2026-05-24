@@ -384,25 +384,13 @@ fn outbox_entries_for(
         .collect()
 }
 
-/// #468 PR-2: counts in-flight commands across both the legacy
-/// `AiCommandOutbox` and the per-ship `PendingAiShipCommand` surfaces.
-/// Migrated kinds (`survey_system`, `colonize_system`, `reposition`,
-/// `blockade`) only land on the latter; non-migrated kinds still land
-/// on the former. Mirrors the helper in
-/// `tests/ai_npc_outbox_dedup.rs::count_outbox_for`.
-///
-/// Takes `&mut App` because Bevy 0.18's `World::query::<T>` requires a
-/// mutable World to build the QueryState. The `&App` outbox lookup
-/// upstream is preserved by destructuring up front.
+/// #468 PR-3: now a thin alias for
+/// [`common::ai_commitment::count_ai_commitments`] (HIGH D fold-in
+/// hoisted the per-file body into a shared module). Kept under the
+/// old name for diff readability across PR-3 — call sites use the
+/// shared helper directly in PR-4+ cleanup.
 fn count_outbox_for(app: &mut App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
-    let outbox_count = outbox_entries_for(app, kind.clone(), target).len();
-    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
-    let mut q = app.world_mut().query::<&PendingAiShipCommand>();
-    let ship_command_count = q
-        .iter(app.world())
-        .filter(|p| p.kind == kind && p.target_system == target)
-        .count();
-    outbox_count + ship_command_count
+    common::ai_commitment::count_ai_commitments(app, kind, target)
 }
 
 /// #468 PR-2: durable "AI has committed to this target" surface for
@@ -507,6 +495,10 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
                 .filter(|(_, pa)| matches!(pa.kind, AssignmentKind::Colonize))
                 .filter_map(|(ship, pa)| match pa.target {
                     AssignmentTarget::System(t) => Some((t, ship)),
+                    // #468 PR-3: colonize_planet markers carry a Planet
+                    // entity — the per-region smoke test exercises
+                    // colonize_system, not colonize_planet, so skip.
+                    AssignmentTarget::Planet(_) => None,
                 })
                 .collect()
         };

@@ -59,12 +59,17 @@ pub enum AssignmentKind {
     Colonize,
 }
 
-/// Where the assignment is targeted. Reserved for future expansion (planet-
-/// level colonization, deep-space coordinates, etc.).
+/// Where the assignment is targeted. Reserved for future expansion (deep-
+/// space coordinates, etc.).
 #[derive(Debug, Clone, Copy, Reflect)]
 pub enum AssignmentTarget {
     /// A specific star system.
     System(Entity),
+    /// A specific planet — used by `colonize_planet` (#468 PR-3). The
+    /// settlement handler resolves the parent system from the planet's
+    /// `Planet::system` field; `sweep_resolved_assignments` reads the
+    /// planet's own colonization state rather than the system's.
+    Planet(Entity),
 }
 
 /// AI-side mirror of "this faction's ship has already been ordered to do
@@ -114,6 +119,25 @@ impl PendingAssignment {
             since: now,
         }
     }
+
+    /// #468 PR-3: convenience constructor for a colonize-planet
+    /// assignment. Identical to [`colonize_system`] except the
+    /// `target` is a planet entity rather than a system —
+    /// `sweep_resolved_assignments` resolves the planet's parent
+    /// system to read the colonization flag, and the npc_decision
+    /// dedup pools `colonize_planet` markers into the same per-empire
+    /// set as `colonize_system` (the two kinds are semantically
+    /// equivalent for dedup purposes — both say "this empire has
+    /// already dispatched a colony attempt for that planet's
+    /// system").
+    pub fn colonize_planet(faction: Entity, planet: Entity, now: i64) -> Self {
+        Self {
+            faction,
+            kind: AssignmentKind::Colonize,
+            target: AssignmentTarget::Planet(planet),
+            since: now,
+        }
+    }
 }
 
 /// Knowledge-driven cleanup: remove a `PendingAssignment` once the issuing
@@ -143,20 +167,33 @@ pub fn sweep_resolved_assignments(
     mut commands: Commands,
     assignments: Query<(Entity, &PendingAssignment)>,
     knowledge: Query<&crate::knowledge::KnowledgeStore>,
+    planets: Query<&crate::galaxy::Planet>,
 ) {
     for (ship_entity, pa) in &assignments {
-        let target = match pa.target {
+        // #468 PR-3: resolve the system to look up in the issuing
+        // empire's KnowledgeStore. For `System` targets it's the
+        // target directly; for `Planet` targets (colonize_planet) we
+        // follow the planet's parent-system reference, since
+        // SystemSnapshot.colonized is keyed per-system not
+        // per-planet.
+        let system = match pa.target {
             AssignmentTarget::System(t) => t,
+            AssignmentTarget::Planet(p) => match planets.get(p) {
+                Ok(planet) => planet.system,
+                Err(_) => continue, // planet despawned — Bevy will clear marker on ship despawn
+            },
         };
         let Ok(store) = knowledge.get(pa.faction) else {
             continue;
         };
-        let snapshot = store.get(target);
-        // #468 PR-2: extended to drop the marker when the kind's
+        let snapshot = store.get(system);
+        // #468 PR-2/PR-3: extended to drop the marker when the kind's
         // target-state has been learned by the issuing empire. For
         // `Survey` that's `surveyed = true`; for `Colonize` that's
-        // `colonized = true`. Either flag becoming true means the AI no
-        // longer needs the marker to dedup against in-flight work.
+        // `colonized = true` (covers both colonize_system AND
+        // colonize_planet — both succeed when *any* planet in the
+        // system is colonized, which is the granularity of
+        // `SystemSnapshot.colonized`).
         let resolved = match pa.kind {
             AssignmentKind::Survey => snapshot.map(|sk| sk.data.surveyed).unwrap_or(false),
             AssignmentKind::Colonize => snapshot.map(|sk| sk.data.colonized).unwrap_or(false),
@@ -180,6 +217,7 @@ mod tests {
         assert!(matches!(pa.kind, AssignmentKind::Survey));
         match pa.target {
             AssignmentTarget::System(e) => assert_eq!(e, target),
+            AssignmentTarget::Planet(_) => panic!("expected System target"),
         }
         assert_eq!(pa.since, 100);
     }
@@ -193,7 +231,28 @@ mod tests {
         assert!(matches!(pa.kind, AssignmentKind::Colonize));
         match pa.target {
             AssignmentTarget::System(e) => assert_eq!(e, target),
+            AssignmentTarget::Planet(_) => panic!("expected System target"),
         }
         assert_eq!(pa.since, 200);
+    }
+
+    /// #468 PR-3: planet-target colonize marker carries the planet entity
+    /// (not the system) so the sweeper can resolve the parent system via
+    /// the `Planet` component when reading the empire's KnowledgeStore.
+    #[test]
+    fn colonize_planet_constructor_sets_planet_target() {
+        let faction = Entity::from_raw_u32(5).unwrap();
+        let planet = Entity::from_raw_u32(6).unwrap();
+        let pa = PendingAssignment::colonize_planet(faction, planet, 300);
+        assert_eq!(pa.faction, faction);
+        // Kind is the same Colonize variant — dedup pools `colonize_planet`
+        // with `colonize_system` per #468 PR-3 (both mean "this empire
+        // already dispatched a colony attempt for that system").
+        assert!(matches!(pa.kind, AssignmentKind::Colonize));
+        match pa.target {
+            AssignmentTarget::Planet(e) => assert_eq!(e, planet),
+            AssignmentTarget::System(_) => panic!("expected Planet target"),
+        }
+        assert_eq!(pa.since, 300);
     }
 }

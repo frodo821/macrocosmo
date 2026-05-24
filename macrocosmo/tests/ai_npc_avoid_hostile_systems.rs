@@ -160,6 +160,10 @@ fn pending_survey_targets(app: &mut App, empire: Entity) -> Vec<Entity> {
         .filter(|pa| pa.faction == empire && pa.kind == AssignmentKind::Survey)
         .filter_map(|pa| match pa.target {
             AssignmentTarget::System(e) => Some(e),
+            // #468 PR-3: Survey markers never carry a Planet target;
+            // the Planet variant is exclusive to colonize_planet (kind
+            // = Colonize). Skip defensively.
+            AssignmentTarget::Planet(_) => None,
         })
         .collect()
 }

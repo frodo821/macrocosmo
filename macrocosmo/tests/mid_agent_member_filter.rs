@@ -13,7 +13,6 @@ mod common;
 
 use bevy::prelude::*;
 
-use macrocosmo::ai::command_outbox::AiCommandOutbox;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
 use macrocosmo::ai::{AiPlayerMode, MidAgent};
 use macrocosmo::components::Position;
@@ -230,39 +229,19 @@ fn setup_two_region_empire(
     )
 }
 
-/// Count outbox entries of `kind` whose `target_system` matches.
+/// Count outbox + per-ship + marker entries of `kind` whose
+/// `target_system` matches.
 ///
-/// #468 PR-2: also folds in the per-ship `PendingAiShipCommand`
-/// pipeline + the durable `PendingAssignment` marker, since several
-/// kinds (survey_system, colonize_system, reposition, blockade) no
-/// longer flow through `AiCommandOutbox`.
+/// #468 PR-3 (HIGH D fold-in): wraps the shared
+/// `common::ai_commitment::count_ai_commitments` and adds the durable
+/// `PendingAssignment` marker count — the marker survives a zero
+/// light-delay window where the holder despawns same-tick, so this
+/// test (which exercises the zero-delay region-isolation case) needs
+/// the marker layer too. The other dedup tests use the unsuffixed
+/// shared helper because their courier windows are wide enough that
+/// the holder is always present.
 fn count_outbox_for(app: &mut App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
-    let outbox_count = {
-        let outbox = app.world().resource::<AiCommandOutbox>();
-        outbox
-            .entries
-            .iter()
-            .filter(|entry| {
-                let cmd = &entry.command;
-                if cmd.kind != kind {
-                    return false;
-                }
-                match cmd.params.get("target_system") {
-                    Some(macrocosmo_ai::CommandValue::System(sys_id)) => {
-                        target.to_bits() == sys_id.0
-                    }
-                    _ => false,
-                }
-            })
-            .count()
-    };
-    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
-    let ship_command_count = {
-        let mut q = app.world_mut().query::<&PendingAiShipCommand>();
-        q.iter(app.world())
-            .filter(|p| p.kind == kind && p.target_system == target)
-            .count()
-    };
+    let base = common::ai_commitment::count_ai_commitments(app, kind.clone(), target);
     // PendingAssignment marker is the durable surface — survives a
     // zero light-delay window where the holder despawns same-tick.
     use macrocosmo::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
@@ -283,7 +262,7 @@ fn count_outbox_for(app: &mut App, kind: macrocosmo_ai::CommandKindId, target: E
     } else {
         0
     };
-    outbox_count + ship_command_count + assignment_count
+    base + assignment_count
 }
 
 #[test]
@@ -349,6 +328,11 @@ fn each_mid_agent_only_dispatches_within_its_own_region() {
                 .filter(|(_, pa)| matches!(pa.kind, AssignmentKind::Colonize))
                 .filter_map(|(ship, pa)| match pa.target {
                     AssignmentTarget::System(t) => Some((t, ship)),
+                    // #468 PR-3: colonize_planet markers carry a Planet
+                    // entity. The two-region member-filter test
+                    // exercises colonize_system, not colonize_planet,
+                    // so the Planet arm is unreachable here — skip.
+                    AssignmentTarget::Planet(_) => None,
                 })
                 .collect()
         };
