@@ -292,7 +292,7 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
     // tick → outbox dispatch → outbox release → consumer drain → handler
     // event chain all collapses into a single Bevy `Update`.
     let npc_empire = spawn_npc_empire(app.world_mut());
-    let (home, _home_planet) =
+    let (home, home_planet) =
         spawn_test_system_with_planet(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true);
     let (target, target_planet) =
         spawn_test_system_with_planet(app.world_mut(), "Target", [0.0, 0.0, 0.0], 0.8, false);
@@ -307,12 +307,21 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
     // the sovereignty derivation, just `(CoreShip, AtSystem,
     // FactionOwner)`).
     spawn_mock_core_ship(app.world_mut(), home, npc_empire);
-    // `BuildQueue` is the per-system order accumulator the
-    // build_deliverable arm pushes into. It survives the `update_sovereignty`
-    // pass because that system only mutates `Sovereignty`.
-    app.world_mut()
-        .entity_mut(home)
-        .insert(BuildQueue::default());
+    // #470: `BuildQueue` is the per-**colony** order accumulator the
+    // build_deliverable arm pushes into (not per-system — that was the
+    // bug fixed in #470). Spawn a host colony at the home planet with
+    // FactionOwner so `handle_build_deliverable` can route the order.
+    let home_colony = app
+        .world_mut()
+        .spawn((
+            macrocosmo::colony::Colony {
+                planet: home_planet,
+                growth_rate: 0.0,
+            },
+            BuildQueue::default(),
+            macrocosmo::faction::FactionOwner(npc_empire),
+        ))
+        .id();
 
     // `HomeSystem` is the canonical capital pointer used by the AI
     // outbox's `resolve_capital_system` chain. Without it, capital
@@ -412,8 +421,8 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
     {
         let queue = app
             .world()
-            .get::<BuildQueue>(home)
-            .expect("home system should have BuildQueue");
+            .get::<BuildQueue>(home_colony)
+            .expect("home colony should have BuildQueue (#470)");
         assert_eq!(
             queue.queue.len(),
             1,
