@@ -58,7 +58,35 @@ pub struct PendingRulerBoarding {
 pub struct BuildResearchParams<'w, 's> {
     design_registry: Option<Res<'w, ShipDesignRegistry>>,
     building_registry: Option<Res<'w, BuildingRegistry>>,
-    build_queues: Query<'w, 's, &'static mut BuildQueue>,
+    /// #470: Ship build orders live on the **Colony** entity (mirror of the
+    /// player UI in `system_panel::mod.rs` — the player-facing flow always
+    /// picks the first colony in the system as the host). Pre-#470 the AI
+    /// queried `Query<&mut BuildQueue>` keyed by `StarSystem` entity, which
+    /// always returned `Err` because `BuildQueue` is spawned only on Colony
+    /// — `queue_ship_at_shipyard` / `handle_build_deliverable` silently
+    /// dropped every order.
+    ///
+    /// **Stricter than the player UI**: the AI's host-colony pick filters
+    /// on `FactionOwner == issuing empire` in addition to the system
+    /// match (see [`pick_host_colony`]). Player UI relies on an upstream
+    /// `is_own_system` gate (only the player's own systems show the
+    /// ship-construction panel), so its first-colony pick is safe by
+    /// construction. The AI does NOT have an equivalent upstream gate —
+    /// `dispatch_ai_pending_commands` and the outbox accept any owned
+    /// system, and a colony in that system may belong to a different
+    /// empire in conquered / split-ownership scenarios. The stricter
+    /// filter here prevents an AI from pushing build orders into another
+    /// faction's production queue.
+    build_queues: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static Colony,
+            &'static crate::faction::FactionOwner,
+            &'static mut BuildQueue,
+        ),
+    >,
     station_ships: Query<
         'w,
         's,
@@ -287,6 +315,44 @@ pub(crate) fn extract_ship_list(params: &macrocosmo_ai::CommandParams) -> Vec<En
 // canonical dispatch path is the per-ship `PendingAiShipCommand`
 // pipeline + `apply_colonize_to_ship`.
 
+/// #470 fold-in: pick the first colony hosted in `sys` whose
+/// `FactionOwner` matches `empire`. Returns the colony entity + a `Mut`
+/// handle to its `BuildQueue` so the caller can `push_order` or run a
+/// dedup scan before pushing.
+///
+/// Mirrors the player UI's host-colony pattern in
+/// `ui/system_panel/mod.rs:1390-1413` but with a stricter owner check:
+/// the AI must not push orders onto a colony whose owner diverges from
+/// the issuing empire (relevant in conquered systems where
+/// `Sovereignty.owner != colony.FactionOwner` — see
+/// `BuildResearchParams::build_queues` docstring for full rationale).
+///
+/// Used by both `queue_ship_at_shipyard` (ship orders) and
+/// `handle_build_deliverable` (deliverable orders); both flows share the
+/// same colony-level `BuildQueue` distinguished only by `BuildKind`.
+fn pick_host_colony<'a>(
+    sys: Entity,
+    empire: Entity,
+    build_queues: &'a mut Query<(
+        Entity,
+        &'static Colony,
+        &'static crate::faction::FactionOwner,
+        &'static mut BuildQueue,
+    )>,
+    planets: &Query<&Planet>,
+) -> Option<(Entity, Mut<'a, BuildQueue>)> {
+    for (colony_entity, colony, faction_owner, build_queue) in build_queues.iter_mut() {
+        if colony.system(planets) != Some(sys) {
+            continue;
+        }
+        if faction_owner.0 != empire {
+            continue;
+        }
+        return Some((colony_entity, build_queue));
+    }
+    None
+}
+
 /// Queue a ship build order at a system owned by the faction that has a
 /// shipyard. Returns true if the order was queued successfully.
 fn queue_ship_at_shipyard(
@@ -360,17 +426,46 @@ fn queue_ship_at_shipyard(
         build_time_remaining: build_time,
     };
 
-    if let Ok(mut build_queue) = br.build_queues.get_mut(sys_entity) {
+    // #470: `BuildQueue` lives on the Colony, not the StarSystem. The
+    // helper walks colonies and picks the first one whose host system
+    // matches the chosen shipyard system AND whose `FactionOwner`
+    // matches the issuing empire (mirrors the player UI but stricter on
+    // ownership — see `BuildResearchParams::build_queues`).
+    let host_colony =
+        pick_host_colony(sys_entity, empire_entity, &mut br.build_queues, &br.planets);
+
+    if let Some((colony_entity, mut build_queue)) = host_colony {
+        // #470 fold-in (HIGH B): dedup same-design `Ship` orders at this
+        // colony. Rule 6 in `mid_stance.rs` (`combat_count < 3 &&
+        // shipyard_capacity > 0`) re-emits `build_ship` every Reason
+        // tick; without dedup the same design stacks up while the first
+        // ship is still in the 30-hexadie build window, turning the
+        // #470 fix from "AI doesn't build" into "AI floods one design".
+        // Mirrors the existing `BuildKind::Deliverable` dedup in
+        // `handle_build_deliverable`. `fortify_system` also benefits
+        // (it calls into this function and re-emits the same
+        // auto-picked combat design).
+        if build_queue
+            .queue
+            .iter()
+            .any(|o| matches!(o.kind, BuildKind::Ship) && o.design_id == design_id)
+        {
+            debug!(
+                "build_ship/fortify: '{}' already queued at colony {:?} (system {:?}), skipping duplicate emission",
+                design_id, colony_entity, sys_entity
+            );
+            return false;
+        }
         build_queue.push_order(order);
         info!(
-            "build_ship/fortify: queued '{}' at system {:?} for empire {:?}",
-            design_id, sys_entity, empire_entity
+            "build_ship/fortify: queued '{}' at colony {:?} (system {:?}) for empire {:?}",
+            design_id, colony_entity, sys_entity, empire_entity
         );
         true
     } else {
-        debug!(
-            "build_ship/fortify: system {:?} has no BuildQueue component",
-            sys_entity
+        warn!(
+            "build_ship/fortify: shipyard system {:?} has no owned colony to host build order (empire {:?})",
+            sys_entity, empire_entity
         );
         false
     }
@@ -789,9 +884,11 @@ fn handle_build_deliverable(
         _ => None,
     });
 
-    // Owned-systems gate (mirrors handle_build_ship). The deliverable build
-    // queue lives on the StarSystem (BuildQueue), not on the colony — same
-    // queue used by ship orders, just with `BuildKind::Deliverable`.
+    // Owned-systems gate (mirrors handle_build_ship). #470: The deliverable
+    // build queue lives on the **Colony** entity (same `BuildQueue` ship
+    // orders use, distinguished by `BuildKind::Deliverable`). The previous
+    // docstring claimed the queue was on the StarSystem — that was wrong
+    // and caused every deliverable order to be silently dropped.
     let owned_systems: Vec<Entity> = sovereignty
         .iter()
         .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
@@ -841,29 +938,35 @@ fn handle_build_deliverable(
         build_time_remaining: build_time,
     };
 
-    if let Ok(mut bq) = br.build_queues.get_mut(sys_entity) {
+    // #470: Walk colonies and pick the first one hosted in the chosen
+    // system AND owned by the issuing empire (shared helper with
+    // `queue_ship_at_shipyard`).
+    let host_colony =
+        pick_host_colony(sys_entity, empire_entity, &mut br.build_queues, &br.planets);
+
+    if let Some((colony_entity, mut bq)) = host_colony {
         // Dedup: skip if the same deliverable is already queued at this
-        // system. Mirrors the system-building dedup in handle_build_structure
+        // colony. Mirrors the system-building dedup in handle_build_structure
         // — without it, AI re-emits the same build_deliverable every tick
         // until the metric flips, stacking duplicates in the queue.
         if bq.queue.iter().any(|o| {
             matches!(o.kind, BuildKind::Deliverable { .. }) && o.design_id == definition_id
         }) {
             debug!(
-                "build_deliverable: '{}' already queued at system {:?}, skipping",
-                definition_id, sys_entity
+                "build_deliverable: '{}' already queued at colony {:?} (system {:?}), skipping",
+                definition_id, colony_entity, sys_entity
             );
             return;
         }
         bq.push_order(order);
         info!(
-            "build_deliverable: queued '{}' at system {:?} for empire {:?}",
-            definition_id, sys_entity, empire_entity
+            "build_deliverable: queued '{}' at colony {:?} (system {:?}) for empire {:?}",
+            definition_id, colony_entity, sys_entity, empire_entity
         );
     } else {
-        debug!(
-            "build_deliverable: system {:?} has no BuildQueue component",
-            sys_entity
+        warn!(
+            "build_deliverable: chosen system {:?} has no owned colony to host '{}' (empire {:?})",
+            sys_entity, definition_id, empire_entity
         );
     }
 }
@@ -2213,8 +2316,27 @@ mod tests {
                     owner: Some(Owner::Empire(empire_entity)),
                     control_score: 1.0,
                 },
-                BuildQueue::default(),
                 sys_mods,
+            ))
+            .id();
+
+        // #470: BuildQueue lives on Colony, not StarSystem. Spawn a planet
+        // + colony so `queue_ship_at_shipyard` can find a host colony.
+        let planet_entity = world
+            .spawn((crate::galaxy::Planet {
+                name: "Home I".into(),
+                system: sys_entity,
+                planet_type: "terrestrial".into(),
+            },))
+            .id();
+        let colony_entity = world
+            .spawn((
+                Colony {
+                    planet: planet_entity,
+                    growth_rate: 0.0,
+                },
+                BuildQueue::default(),
+                crate::faction::FactionOwner(empire_entity),
             ))
             .id();
 
@@ -2246,8 +2368,8 @@ mod tests {
         app.add_systems(Update, drain_ai_commands);
         app.update();
 
-        // Check that a build order was added
-        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        // Check that a build order was added to the colony's BuildQueue.
+        let queue = app.world().get::<BuildQueue>(colony_entity).unwrap();
         assert_eq!(queue.queue.len(), 1, "should have 1 build order");
         assert_eq!(queue.queue[0].design_id, "corvette_mk1");
     }
@@ -2665,8 +2787,26 @@ mod tests {
                     owner: Some(Owner::Empire(empire_entity)),
                     control_score: 1.0,
                 },
-                BuildQueue::default(),
                 sys_mods,
+            ))
+            .id();
+
+        // #470: BuildQueue lives on Colony, not StarSystem.
+        let planet_entity = world
+            .spawn((crate::galaxy::Planet {
+                name: "Home I".into(),
+                system: sys_entity,
+                planet_type: "terrestrial".into(),
+            },))
+            .id();
+        let colony_entity = world
+            .spawn((
+                Colony {
+                    planet: planet_entity,
+                    growth_rate: 0.0,
+                },
+                BuildQueue::default(),
+                crate::faction::FactionOwner(empire_entity),
             ))
             .id();
 
@@ -2697,7 +2837,7 @@ mod tests {
         app.add_systems(Update, drain_ai_commands);
         app.update();
 
-        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        let queue = app.world().get::<BuildQueue>(colony_entity).unwrap();
         assert_eq!(queue.queue.len(), 1, "fortify should queue 1 ship");
         assert_eq!(queue.queue[0].design_id, "corvette_mk1");
     }
@@ -3055,7 +3195,25 @@ mod tests {
                     owner: Some(Owner::Empire(empire_entity)),
                     control_score: 1.0,
                 },
+            ))
+            .id();
+
+        // #470: BuildQueue (incl. Deliverable orders) lives on Colony.
+        let planet_entity = world
+            .spawn((crate::galaxy::Planet {
+                name: "Home I".into(),
+                system: sys_entity,
+                planet_type: "terrestrial".into(),
+            },))
+            .id();
+        let colony_entity = world
+            .spawn((
+                Colony {
+                    planet: planet_entity,
+                    growth_rate: 0.0,
+                },
                 BuildQueue::default(),
+                crate::faction::FactionOwner(empire_entity),
             ))
             .id();
 
@@ -3066,7 +3224,7 @@ mod tests {
         app.add_systems(Update, drain_ai_commands);
         app.update();
 
-        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        let queue = app.world().get::<BuildQueue>(colony_entity).unwrap();
         assert_eq!(queue.queue.len(), 1, "should have queued 1 deliverable");
         assert_eq!(queue.queue[0].design_id, "infra_core");
         assert!(
@@ -3105,7 +3263,25 @@ mod tests {
                     owner: Some(Owner::Empire(empire_entity)),
                     control_score: 1.0,
                 },
+            ))
+            .id();
+
+        // #470: BuildQueue lives on Colony.
+        let planet_entity = world
+            .spawn((crate::galaxy::Planet {
+                name: "Home I".into(),
+                system: sys_entity,
+                planet_type: "terrestrial".into(),
+            },))
+            .id();
+        let colony_entity = world
+            .spawn((
+                Colony {
+                    planet: planet_entity,
+                    growth_rate: 0.0,
+                },
                 BuildQueue::default(),
+                crate::faction::FactionOwner(empire_entity),
             ))
             .id();
 
@@ -3119,7 +3295,7 @@ mod tests {
         app.add_systems(Update, drain_ai_commands);
         app.update();
 
-        let queue = app.world().get::<BuildQueue>(sys_entity).unwrap();
+        let queue = app.world().get::<BuildQueue>(colony_entity).unwrap();
         assert_eq!(
             queue.queue.len(),
             1,
