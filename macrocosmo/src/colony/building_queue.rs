@@ -372,13 +372,19 @@ pub fn tick_build_queue(
     last_tick: Res<LastProductionTick>,
     design_registry: Res<crate::ship_design::ShipDesignRegistry>,
     building_registry: Res<crate::scripting::building_api::BuildingRegistry>,
-    mut colonies: Query<(&Colony, &mut BuildQueue, &crate::faction::FactionOwner)>,
+    mut colonies: Query<(
+        Entity,
+        &Colony,
+        &mut BuildQueue,
+        &crate::faction::FactionOwner,
+    )>,
     mut stockpiles: Query<&mut ResourceStockpile, With<StarSystem>>,
     mut deliverable_stockpiles: Query<&mut DeliverableStockpile, With<StarSystem>>,
     positions: Query<&Position>,
     stars: Query<&StarSystem>,
     planets: Query<&Planet>,
     sys_mods_q: Query<&crate::galaxy::SystemModifiers, With<StarSystem>>,
+    mut speed_acc: ResMut<super::ShipyardSpeedAccumulators>,
     mut events: MessageWriter<GameEvent>,
     mut fact_sys: FactSysParam,
     // Round 9 PR #1 Step 3: per-faction routing.
@@ -415,19 +421,69 @@ pub fn tick_build_queue(
 
     let mut results: Vec<BuildResult> = Vec::new();
 
-    for (colony, mut build_queue, faction_owner) in &mut colonies {
+    for (colony_entity, colony, mut build_queue, faction_owner) in &mut colonies {
         let Some(sys) = colony.system(&planets) else {
             continue;
         };
 
-        // #35: Skip ship construction if system has no shipyard capability.
-        // Deliverables also require a shipyard.
-        let has_shipyard = sys_mods_q
-            .get(sys)
-            .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
-            .unwrap_or(false);
-        if !build_queue.queue.is_empty() && !has_shipyard {
+        // #35 / #445: Skip construction if the system has zero parallel
+        // shipyard slots. The "has shipyard" gate is now identical to
+        // "parallel_slots > 0" — a system with N shipyards builds up to N
+        // orders in parallel from the head of the queue (was binary
+        // before: any extra shipyards beyond the first were inert).
+        let sm = sys_mods_q.get(sys).ok();
+        let parallel_slots_amt = sm
+            .map(|m| m.shipyard_build_parallel_slots.value().final_value())
+            .unwrap_or(crate::amount::Amt::ZERO);
+        // `whole()` truncates fractional slots — a half-built shipyard
+        // shouldn't grant partial parallelism. With integer `base_add` from
+        // the Lua modifier this matches shipyard count exactly.
+        let parallel_slots: usize = parallel_slots_amt.whole() as usize;
+        if !build_queue.queue.is_empty() && parallel_slots == 0 {
             warn!("System lacks a Shipyard; skipping construction");
+            // Clear the accumulator while paused — a queue that resumes
+            // later should not get a free "save up" boost from progress
+            // accrued while it had no shipyard at all.
+            speed_acc.0.remove(&colony_entity);
+            continue;
+        }
+
+        // #445: Speed multiplier on the per-hexadie countdown. Default
+        // base = 1.0 so untouched systems behave exactly as before.
+        // Future modules/techs (e.g. mass-production line) can push
+        // positive `base_add` to speed throughput. `ScopedModifiers`
+        // math already clamps to >=0 (a -1.0 base_add yields 0× = full
+        // stop).
+        let speed_mult_amt: Amt = sm
+            .map(|m| m.shipyard_build_speed.value().final_value())
+            .unwrap_or(Amt::units(1));
+
+        // #445 (BLOCKER fold-in): fractional accumulator. Replaces the
+        // legacy `effective_delta = max(1, round(delta * speed))` floor
+        // that nullified sub-1.0 speed modifiers at GameSpeed=1. Each
+        // tick we add `delta * speed` (as fixed-point Amt) to the
+        // accumulator, extract the integer whole-part as the tick's
+        // effective progress, and keep the sub-unit remainder for the
+        // next tick. Two ticks at 0.5× ⇒ 1 hexadie of progress total.
+        //
+        // `mul_u64(delta as u64)` is safe: `delta` is `clock.elapsed -
+        // last_tick.0`, both i64, and we already returned early on
+        // `delta <= 0`. The fixed-point product stays within u64 range
+        // for any realistic delta (`u64::MAX / SCALE` ≈ 1.8e16).
+        let raw_progress: Amt = speed_mult_amt.mul_u64(delta.max(0) as u64);
+        let acc_entry = speed_acc.0.entry(colony_entity).or_insert(Amt::ZERO);
+        *acc_entry = acc_entry.add(raw_progress);
+        let effective_delta: i64 = acc_entry.whole() as i64;
+        // Keep the sub-unit remainder. `frac()` returns the milli part
+        // (0..1000) as u64; wrapping it back into Amt preserves it
+        // across ticks.
+        *acc_entry = Amt(acc_entry.frac());
+
+        if effective_delta == 0 {
+            // No whole hexadie of progress accrued yet — skip this tick
+            // entirely. Floor 1 fallback is gone: a 0.3× debuff now
+            // takes ~3 GameSpeed=1 ticks to clear one hexadie, matching
+            // the displayed multiplier exactly.
             continue;
         }
 
@@ -441,40 +497,94 @@ pub fn tick_build_queue(
         let mut total_energy_consumed = Amt::ZERO;
         let mut completed: Vec<Completion> = Vec::new();
 
-        for _ in 0..delta {
+        for _ in 0..effective_delta {
             if build_queue.queue.is_empty() {
                 break;
             }
-            let order = &mut build_queue.queue[0];
+            // #445: Each effective hexadie, advance up to `parallel_slots`
+            // orders from the head. Completed orders pop off, shifting the
+            // queue forward so subsequent iterations naturally pick the
+            // next pending head.
+            let active_this_tick = parallel_slots.min(build_queue.queue.len());
+            for idx in 0..active_this_tick {
+                let order = &mut build_queue.queue[idx];
 
-            let minerals_needed = order.minerals_cost.sub(order.minerals_invested);
-            let minerals_transfer = minerals_needed.min(available_minerals);
-            order.minerals_invested = order.minerals_invested.add(minerals_transfer);
-            available_minerals = available_minerals.sub(minerals_transfer);
-            total_minerals_consumed = total_minerals_consumed.add(minerals_transfer);
+                // #445 (HIGH fold-in): per-tick prorated cost. Previous
+                // greedy "transfer up to (cost - invested) every tick"
+                // meant slot 0 swallowed the whole stockpile, leaving
+                // slots 1+ with funding=0 but their `build_time` still
+                // decremented — when resources arrived later, those
+                // back-slots would instant-complete.
+                //
+                // Now each slot needs `(cost / build_time_total)` per
+                // hexadie. If the system can't afford that share for a
+                // given slot, that slot stalls (no resource transfer,
+                // no build_time decrement). The `is_complete()` gate
+                // still requires both `invested == cost` and
+                // `build_time <= 0`, so a partially funded order can't
+                // complete until both ledgers agree.
+                let build_time_total = order.build_time_total.max(1) as u64;
+                let mineral_share = order.minerals_cost.div_amt(Amt::units(build_time_total));
+                let energy_share = order.energy_cost.div_amt(Amt::units(build_time_total));
 
-            let energy_needed = order.energy_cost.sub(order.energy_invested);
-            let energy_transfer = energy_needed.min(available_energy);
-            order.energy_invested = order.energy_invested.add(energy_transfer);
-            available_energy = available_energy.sub(energy_transfer);
-            total_energy_consumed = total_energy_consumed.add(energy_transfer);
+                let minerals_remaining = order.minerals_cost.sub(order.minerals_invested);
+                let energy_remaining = order.energy_cost.sub(order.energy_invested);
+                let mineral_demand = mineral_share.min(minerals_remaining);
+                let energy_demand = energy_share.min(energy_remaining);
 
-            // #32: Decrement build time
-            order.build_time_remaining -= 1;
+                let mineral_affordable = available_minerals >= mineral_demand;
+                let energy_affordable = available_energy >= energy_demand;
+                if !mineral_affordable || !energy_affordable {
+                    // Slot stalls — neither resource transfer nor
+                    // build_time decrement. Avoids the "instant complete
+                    // on resource refill" regression.
+                    continue;
+                }
 
-            if build_queue.queue[0].is_complete() {
-                let completed_order = build_queue.queue.remove(0);
-                match completed_order.kind {
-                    BuildKind::Ship => completed.push(Completion::Ship {
-                        design_id: completed_order.design_id,
-                        display_name: completed_order.display_name,
-                    }),
-                    BuildKind::Deliverable { .. } => {
-                        completed.push(Completion::Deliverable {
-                            definition_id: completed_order.design_id,
+                order.minerals_invested = order.minerals_invested.add(mineral_demand);
+                available_minerals = available_minerals.sub(mineral_demand);
+                total_minerals_consumed = total_minerals_consumed.add(mineral_demand);
+
+                order.energy_invested = order.energy_invested.add(energy_demand);
+                available_energy = available_energy.sub(energy_demand);
+                total_energy_consumed = total_energy_consumed.add(energy_demand);
+
+                // #32 / #445: Decrement build time only when this
+                // slot's per-tick cost share was actually funded.
+                // Clamp at zero — an under-time order is "ready to
+                // finish" as soon as cost catches up.
+                order.build_time_remaining = (order.build_time_remaining - 1).max(0);
+            }
+
+            // Sweep all completed orders in the active window. In normal
+            // play queue[0] finishes first (it's been getting resource
+            // and time priority), but a parallel slot may finish an
+            // order out-of-order if a near-complete order is queued
+            // behind a much larger one (e.g. tests / save-restored
+            // mid-flight orders). Walk the active window in head-first
+            // order and pop each completion; popping shifts indices so
+            // we re-check the current index.
+            let mut i = 0;
+            while i < build_queue.queue.len() && i < active_this_tick {
+                if build_queue.queue[i].is_complete() {
+                    let completed_order = build_queue.queue.remove(i);
+                    match completed_order.kind {
+                        BuildKind::Ship => completed.push(Completion::Ship {
+                            design_id: completed_order.design_id,
                             display_name: completed_order.display_name,
-                        });
+                        }),
+                        BuildKind::Deliverable { .. } => {
+                            completed.push(Completion::Deliverable {
+                                definition_id: completed_order.design_id,
+                                display_name: completed_order.display_name,
+                            });
+                        }
                     }
+                    // Don't advance i — next order shifted into this slot.
+                    // `active_this_tick` shrinks effectively because we now
+                    // have one fewer order to consider in the window.
+                } else {
+                    i += 1;
                 }
             }
         }

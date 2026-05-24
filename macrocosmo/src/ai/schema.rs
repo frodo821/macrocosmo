@@ -425,7 +425,15 @@ fn declare_metrics(bus: &mut AiBus) {
         spec(
             MetricType::Gauge,
             Retention::Long,
-            "count of owned systems with a functioning shipyard",
+            "set-count of owned systems with at least one shipyard slot (#445: was a sum of parallel-slot counts; renamed-back to set-count semantics)",
+        ),
+    );
+    bus.declare_metric(
+        m::total_shipyard_slots(),
+        spec(
+            MetricType::Gauge,
+            Retention::Long,
+            "#445: sum of `shipyard_build_parallel_slots` across the empire's owned systems (= effective build throughput)",
         ),
     );
     bus.declare_metric(

@@ -51,7 +51,7 @@ use common::{advance_time, spawn_mock_core_ship, spawn_test_ruler, test_app};
 // ---------------------------------------------------------------------------
 
 /// Build a single-system NPC empire with:
-///   - one shipyard-capable system (via a `SystemModifiers.shipyard_capacity`
+///   - one shipyard-capable system (via a `SystemModifiers.shipyard_build_parallel_slots`
 ///     entry — equivalent to having an active shipyard station for
 ///     `has_shipyard_check` purposes)
 ///   - one planet under that system
@@ -100,7 +100,7 @@ fn build_npc_with_shipyard_colony(app: &mut App) -> (Entity, Entity, Entity, Ent
     // without needing to spawn an actual station Ship + station design.
     let mut sys_mods = SystemModifiers::default();
     sys_mods
-        .shipyard_capacity
+        .shipyard_build_parallel_slots
         .push_modifier(macrocosmo::modifier::Modifier {
             id: "fixture_shipyard".into(),
             label: "Fixture Shipyard".into(),
@@ -485,7 +485,7 @@ fn build_ship_warns_when_shipyard_system_has_no_owned_colony() {
     // `empire_b` so it does not match the issuer.
     let mut sys_mods = SystemModifiers::default();
     sys_mods
-        .shipyard_capacity
+        .shipyard_build_parallel_slots
         .push_modifier(macrocosmo::modifier::Modifier {
             id: "conquered_shipyard".into(),
             label: "Conquered Shipyard".into(),

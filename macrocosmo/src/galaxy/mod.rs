@@ -293,8 +293,18 @@ pub struct SystemModifiers {
     pub ship_speed: ScopedModifiers,
     pub ship_attack: ScopedModifiers,
     pub ship_defense: ScopedModifiers,
-    /// Shipyard capacity: >0 means "has shipyard". Each shipyard adds +1.
-    pub shipyard_capacity: ScopedModifiers,
+    /// #445: Parallel build slots at this system's shipyards. Each shipyard
+    /// building contributes +1 slot. `tick_build_queue` processes up to
+    /// `final_value()` orders in parallel from the head of the queue, so
+    /// adding more shipyards actually lets the system build more ships at
+    /// once (was previously a binary "has shipyard" gate).
+    pub shipyard_build_parallel_slots: ScopedModifiers,
+    /// #445: Multiplier on `build_time_remaining` decrement per tick.
+    /// Default base = 1.0 (multiplier identity). Reserved for future
+    /// "mass production line" modules or speed-boost techs; shipyard
+    /// buildings themselves do NOT contribute to speed (use parallel
+    /// slots for that).
+    pub shipyard_build_speed: ScopedModifiers,
     /// Port FTL range bonus (light-years). Base=0, port adds +10.
     pub port_ftl_range_bonus: ScopedModifiers,
     /// Port travel time factor. Base=1.0 (no port), port adds -0.2 → 0.8.
@@ -309,7 +319,10 @@ impl Default for SystemModifiers {
             ship_speed: ScopedModifiers::default(),
             ship_attack: ScopedModifiers::default(),
             ship_defense: ScopedModifiers::default(),
-            shipyard_capacity: ScopedModifiers::default(),
+            shipyard_build_parallel_slots: ScopedModifiers::default(),
+            // Identity multiplier so `effective_delta = delta * 1.0 = delta`
+            // when no modifiers are attached. Matches `port_travel_time_factor`.
+            shipyard_build_speed: ScopedModifiers::new(Amt::units(1)),
             port_ftl_range_bonus: ScopedModifiers::default(),
             port_travel_time_factor: ScopedModifiers::new(Amt::units(1)),
             port_repair: ScopedModifiers::default(),

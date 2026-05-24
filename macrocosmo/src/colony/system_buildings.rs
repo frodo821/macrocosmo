@@ -520,7 +520,8 @@ pub fn sync_system_capability_modifiers(
 
     for (sys_entity, mut sys_mods) in &mut systems {
         // Clear previous building-sourced modifiers (prefix "syscap:")
-        clear_prefixed(&mut sys_mods.shipyard_capacity, "syscap:");
+        clear_prefixed(&mut sys_mods.shipyard_build_parallel_slots, "syscap:");
+        clear_prefixed(&mut sys_mods.shipyard_build_speed, "syscap:");
         clear_prefixed(&mut sys_mods.port_ftl_range_bonus, "syscap:");
         clear_prefixed(&mut sys_mods.port_travel_time_factor, "syscap:");
         clear_prefixed(&mut sys_mods.port_repair, "syscap:");
@@ -544,8 +545,18 @@ pub fn sync_system_capability_modifiers(
                 let id = format!("syscap:{}[{:?}]:{}", def.id, ship_entity, pm.target);
                 let modifier = pm.to_modifier(id, &def.name);
                 match pm.target.as_str() {
-                    "system.shipyard_capacity" => {
-                        sys_mods.shipyard_capacity.push_modifier(modifier);
+                    // #445: New canonical target. `shipyard_capacity` (the old
+                    // name) is intentionally NOT accepted — Lua scripts must
+                    // migrate. If any save / mod still emits the old string we
+                    // silently drop it; the test fixtures and bundled scripts
+                    // have all been updated.
+                    "system.shipyard_build_parallel_slots" => {
+                        sys_mods
+                            .shipyard_build_parallel_slots
+                            .push_modifier(modifier);
+                    }
+                    "system.shipyard_build_speed" => {
+                        sys_mods.shipyard_build_speed.push_modifier(modifier);
                     }
                     "system.port_ftl_range_bonus" => {
                         sys_mods.port_ftl_range_bonus.push_modifier(modifier);
@@ -556,7 +567,36 @@ pub fn sync_system_capability_modifiers(
                     "system.port_repair" => {
                         sys_mods.port_repair.push_modifier(modifier);
                     }
-                    _ => {} // Not a system capability target — handled by colony sync
+                    other => {
+                        // #445 (MEDIUM fold-in): warn on unknown
+                        // `system.*` targets so Lua modders catch the
+                        // rename instead of silently shipping broken
+                        // modifiers. `colony.*` / `job:*` / other
+                        // namespaces are handled by sibling sync
+                        // functions, so we stay silent for those.
+                        if let Some(stripped) = other.strip_prefix("system.") {
+                            // Hint: old `shipyard_capacity` was renamed
+                            // by #445 to `shipyard_build_parallel_slots`.
+                            // Any other unknown target indicates a
+                            // typo, a removed field, or a new modifier
+                            // pending a Rust-side handler.
+                            let hint = if stripped == "shipyard_capacity" {
+                                " (renamed by #445 to 'system.shipyard_build_parallel_slots' — \
+                                 please update your Lua building definition)"
+                            } else {
+                                " (#445 fold-in: did the target get renamed? \
+                                 unknown `system.*` modifiers are dropped on the floor)"
+                            };
+                            bevy::log::warn!(
+                                "sync_system_capability_modifiers: unknown system modifier \
+                                 target '{}' on building '{}' — silently dropped{}",
+                                other,
+                                def.id,
+                                hint,
+                            );
+                        }
+                        // Not a system capability target — handled by colony sync
+                    }
                 }
             }
         }

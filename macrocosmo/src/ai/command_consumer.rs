@@ -437,7 +437,7 @@ fn queue_ship_at_shipyard(
     if let Some((colony_entity, mut build_queue)) = host_colony {
         // #470 fold-in (HIGH B): dedup same-design `Ship` orders at this
         // colony. Rule 6 in `mid_stance.rs` (`combat_count < 3 &&
-        // shipyard_capacity > 0`) re-emits `build_ship` every Reason
+        // shipyard_build_parallel_slots > 0`) re-emits `build_ship` every Reason
         // tick; without dedup the same design stacks up while the first
         // ship is still in the 30-hexadie build window, turning the
         // #470 fix from "AI doesn't build" into "AI floods one design".
@@ -475,7 +475,7 @@ fn queue_ship_at_shipyard(
 fn has_shipyard_check(system: Entity, sys_mods_q: &Query<&crate::galaxy::SystemModifiers>) -> bool {
     sys_mods_q
         .get(system)
-        .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
         .unwrap_or(false)
 }
 
@@ -2258,7 +2258,7 @@ mod tests {
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
             modifiers: vec![crate::modifier::ParsedModifier {
-                target: "system.shipyard_capacity".into(),
+                target: "system.shipyard_build_parallel_slots".into(),
                 base_add: 1.0,
                 multiplier: 0.0,
                 add: 0.0,
@@ -2289,10 +2289,10 @@ mod tests {
 
         let faction_id = to_ai_faction(empire_entity);
 
-        // SystemModifiers with shipyard_capacity seeded so has_shipyard check passes.
+        // SystemModifiers with shipyard_build_parallel_slots seeded so has_shipyard check passes.
         let mut sys_mods = crate::galaxy::SystemModifiers::default();
         sys_mods
-            .shipyard_capacity
+            .shipyard_build_parallel_slots
             .push_modifier(crate::modifier::Modifier {
                 id: "test_shipyard".into(),
                 label: "Test Shipyard".into(),
@@ -2730,7 +2730,7 @@ mod tests {
             production_bonus_research: Amt::ZERO,
             production_bonus_food: Amt::ZERO,
             modifiers: vec![crate::modifier::ParsedModifier {
-                target: "system.shipyard_capacity".into(),
+                target: "system.shipyard_build_parallel_slots".into(),
                 base_add: 1.0,
                 multiplier: 0.0,
                 add: 0.0,
@@ -2763,7 +2763,7 @@ mod tests {
 
         let mut sys_mods = crate::galaxy::SystemModifiers::default();
         sys_mods
-            .shipyard_capacity
+            .shipyard_build_parallel_slots
             .push_modifier(crate::modifier::Modifier {
                 id: "test_shipyard".into(),
                 label: "Test Shipyard".into(),

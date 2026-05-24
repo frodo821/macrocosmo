@@ -2,14 +2,20 @@
 //!
 //! Bug: production Lua building definitions for `shipyard`, `port`, and
 //! `orbital_research_lab` lacked the `capabilities = { ... }` field. The AI
-//! emitter (`ai/emitters.rs:198-220`) reads `def.capabilities.contains_key("shipyard")`
-//! / `"port"` to compute `systems_with_shipyard` / `can_build_ships`. With the
-//! capability missing, `can_build_ships` was permanently 0.0, causing
-//! NPC empires to be unable to build ships and Rule 5a to spam-construct
-//! shipyards forever.
+//! emitter (`ai/emitters.rs:198-220`) used to read
+//! `def.capabilities.contains_key("shipyard")` / `"port"` to compute
+//! `systems_with_shipyard` / `can_build_ships`. With the capability
+//! missing, `can_build_ships` was permanently 0.0, causing NPC empires to
+//! be unable to build ships and Rule 5a to spam-construct shipyards forever.
 //!
-//! Fix: production Lua now declares the canonical capability name on each
-//! system building (matches the test fixture in `tests/fixtures/buildings_test.lua`).
+//! Fix: production Lua declares the canonical capability name on each
+//! system building (matches the test fixture in
+//! `tests/fixtures/buildings_test.lua`). #445 then migrated the *shipyard*
+//! emitter path to read `SystemModifiers.shipyard_build_parallel_slots`
+//! directly — port / research_lab still use capability presence pending a
+//! follow-up refactor, so this test still guards both. The `capabilities`
+//! entry on `shipyard` is now also load-bearing for backward-compat tests
+//! that haven't yet migrated; see follow-up issue.
 
 use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::building_api::parse_building_definitions;

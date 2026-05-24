@@ -354,9 +354,7 @@ mod empire_view_tests {
 
     fn spawn_empire(world: &mut World, name: &str, is_player: bool) -> Entity {
         let mut e = world.spawn((
-            Empire {
-                name: name.into(),
-            },
+            Empire { name: name.into() },
             Faction {
                 id: name.to_lowercase(),
                 name: name.into(),
@@ -2745,7 +2743,7 @@ pub fn apply_design_refit(
     // any colony — inconsistent with construction rules.
     let has_shipyard = sys_mods_q
         .get(system_entity)
-        .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
         .unwrap_or(false);
     if !has_shipyard {
         return;

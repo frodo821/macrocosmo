@@ -182,6 +182,14 @@ pub fn emit_economic_metrics(
     tech_tree: Option<Res<TechTree>>,
     ai_building_registry: Option<Res<crate::colony::BuildingRegistry>>,
     core_ships: Query<(&crate::galaxy::AtSystem, &FactionOwner), With<crate::ship::CoreShip>>,
+    // #445: Per-system shipyard parallel-slot count, sourced from the
+    // canonical `SystemModifiers` rather than capability presence.
+    // Drives two distinct metrics: `systems_with_shipyard` (set count
+    // — number of systems with at least one slot) and
+    // `total_shipyard_slots` (sum across the empire — total build
+    // throughput). `can_build_ships` re-uses the set count so existing
+    // policy gates compare against a 0 / ≥1 binary.
+    sys_mods_q: Query<(Entity, &crate::galaxy::SystemModifiers, &Sovereignty), With<StarSystem>>,
 ) {
     // Per-empire: set of systems with at least one Core-equipped ship.
     // Used to gate system-building construction (Infrastructure Core is
@@ -195,8 +203,40 @@ pub fn emit_economic_metrics(
     }
 
     // Pre-compute system-level building info per owner empire, keyed by empire entity.
-    let mut shipyard_counts: HashMap<Entity, f64> = HashMap::new();
+    // #445 (HIGH fold-in): two distinct metrics with explicit semantics.
+    //
+    // - `systems_with_shipyard` = **set-count** of owned systems that
+    //   have at least one shipyard slot. Restored from the pre-#445
+    //   "binary 'has shipyard' per system" reading after consumers got
+    //   silently broken when the value was changed to a sum of slots.
+    // - `total_shipyard_slots` = **sum** of `shipyard_build_parallel_slots`
+    //   across the empire's owned systems (= total parallel build
+    //   throughput). New metric — future policies that want
+    //   throughput-aware decisions should read this.
+    //
+    // `can_build_ships` continues to carry the *set count* (numerically
+    // equal to `systems_with_shipyard`) so existing `mid_stance` Rule
+    // 5a / 6 gates (`< 1.0` / `>= 1.0`) stay binary-compatible. Port
+    // still uses the capability path until #445 follow-up gives port a
+    // similar canonical numeric modifier.
+    let mut shipyard_set_counts: HashMap<Entity, f64> = HashMap::new();
+    let mut shipyard_slot_totals: HashMap<Entity, f64> = HashMap::new();
     let mut port_counts: HashMap<Entity, f64> = HashMap::new();
+    for (_sys_entity, sm, sov) in &sys_mods_q {
+        let Some(Owner::Empire(owner)) = sov.owner else {
+            continue;
+        };
+        let slots = sm.shipyard_build_parallel_slots.value().final_value();
+        if slots > crate::amount::Amt::ZERO {
+            // Set-count: this system has shipyard capacity, regardless
+            // of how many slots.
+            *shipyard_set_counts.entry(owner).or_default() += 1.0;
+            // Slot total: `whole()` keeps the count as integer
+            // shipyards. Fractional future modifiers (unlikely) round
+            // down.
+            *shipyard_slot_totals.entry(owner).or_default() += slots.whole() as f64;
+        }
+    }
     if let Some(ref registry) = ai_building_registry {
         let reverse = crate::colony::system_buildings::build_reverse_design_map(registry);
         for (_entity, ship, state, _slot) in &ai_station_ships {
@@ -208,9 +248,6 @@ pub fn emit_economic_metrics(
             if let Owner::Empire(owner) = ship.owner {
                 if let Some(bid) = reverse.get(&ship.design_id) {
                     if let Some(def) = registry.get(bid.as_str()) {
-                        if def.capabilities.contains_key("shipyard") {
-                            *shipyard_counts.entry(owner).or_default() += 1.0;
-                        }
                         if def.capabilities.contains_key("port") {
                             *port_counts.entry(owner).or_default() += 1.0;
                         }
@@ -420,11 +457,26 @@ pub fn emit_economic_metrics(
         );
 
         // Infrastructure metrics
-        let sys_shipyard = shipyard_counts.get(&empire_entity).copied().unwrap_or(0.0);
+        // #445 (HIGH fold-in): emit set-count and total-slots as two
+        // distinct metrics. `can_build_ships` re-uses the set-count
+        // value so existing `mid_stance` Rule 5a / 6 gates keep their
+        // binary semantics (`< 1.0` / `>= 1.0`).
+        let sys_shipyard_set = shipyard_set_counts
+            .get(&empire_entity)
+            .copied()
+            .unwrap_or(0.0);
+        let sys_shipyard_slots = shipyard_slot_totals
+            .get(&empire_entity)
+            .copied()
+            .unwrap_or(0.0);
         let sys_port = port_counts.get(&empire_entity).copied().unwrap_or(0.0);
         writer.emit(
             &metric::for_faction("systems_with_shipyard", fid),
-            sys_shipyard,
+            sys_shipyard_set,
+        );
+        writer.emit(
+            &metric::for_faction("total_shipyard_slots", fid),
+            sys_shipyard_slots,
         );
         writer.emit(&metric::for_faction("systems_with_port", fid), sys_port);
         let sys_core = core_systems_per_empire
@@ -438,9 +490,13 @@ pub fn emit_economic_metrics(
             &metric::for_faction("free_building_slots", fid),
             max_slots - used_slots,
         );
+        // `can_build_ships` carries the set-count (0 = no shipyard
+        // anywhere, ≥ 1 = at least one). Numerically identical to
+        // `systems_with_shipyard`. Consumers comparing `< 1.0` /
+        // `>= 1.0` work unchanged.
         writer.emit(
             &metric::for_faction("can_build_ships", fid),
-            if sys_shipyard > 0.0 { 1.0 } else { 0.0 },
+            sys_shipyard_set,
         );
 
         // Technology metrics — currently global TechTree, emitted for each empire.

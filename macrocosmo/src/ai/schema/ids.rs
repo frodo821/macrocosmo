@@ -82,6 +82,7 @@ pub mod metric {
         "research_output_ratio",
         // 1.7 Infrastructure
         "systems_with_shipyard",
+        "total_shipyard_slots",
         "systems_with_port",
         "systems_with_core",
         "max_building_slots",
@@ -225,6 +226,14 @@ pub mod metric {
     // 1.7 Infrastructure ------------------------------------------------
     pub fn systems_with_shipyard() -> MetricId {
         MetricId::from("systems_with_shipyard")
+    }
+    /// #445 (HIGH fold-in): sum of `shipyard_build_parallel_slots`
+    /// across the empire's owned systems. Distinct from
+    /// `systems_with_shipyard` (which is a *set count* — number of
+    /// systems with ≥1 slot). Both are emitted so that future policy
+    /// rules can pick the semantic they need.
+    pub fn total_shipyard_slots() -> MetricId {
+        MetricId::from("total_shipyard_slots")
     }
     pub fn systems_with_port() -> MetricId {
         MetricId::from("systems_with_port")

@@ -47,9 +47,12 @@ pub trait MidGameAdapter {
     /// `NpcContext.ruler_aboard == false && ruler_entity.is_some()`.
     fn ruler_movable(&self) -> bool;
 
-    /// Per-faction `can_build_ships` metric (0.0 / 1.0 today). Rule
-    /// 5a fires only when this is below 1.0 — i.e. the empire still
-    /// lacks a usable shipyard.
+    /// Per-faction `can_build_ships` metric. Numerically equal to
+    /// `systems_with_shipyard` (a set count): `0.0` = no shipyard
+    /// anywhere, `>= 1.0` = at least one owned shipyard. Rule 5a
+    /// fires only when this is below 1.0 — i.e. the empire still
+    /// lacks a usable shipyard. For total parallel build throughput
+    /// use `total_shipyard_slots` instead (#445 fold-in).
     fn can_build_ships(&self) -> f64;
 
     /// Per-faction `systems_with_core` metric. Rule 5a's #370 gate:

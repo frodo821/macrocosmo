@@ -23,9 +23,19 @@ local shipyard = define_building {
     build_time = 30,
     maintenance = 1.0,
     is_system_building = true,
+    -- #445 follow-up: the `shipyard` capability is retained for backward
+    -- compat (some tests still inspect it). All runtime callers now read
+    -- `system.shipyard_build_parallel_slots` from `SystemModifiers`.
+    -- A separate issue removes the capability entry entirely.
     capabilities = { shipyard = {} },
     modifiers = {
-        { target = "system.shipyard_capacity", base_add = 1 },
+        -- #445: Renamed from `shipyard_capacity`. Each shipyard adds +1
+        -- parallel build slot; `tick_build_queue` processes that many
+        -- orders simultaneously from the queue head.
+        { target = "system.shipyard_build_parallel_slots", base_add = 1 },
+        -- Speed is intentionally NOT modified here — shipyard buildings
+        -- contribute parallelism, not throughput. Future mass-production
+        -- modules / techs target `system.shipyard_build_speed`.
     },
     ship_design_id = "station_shipyard_v1",
 }
