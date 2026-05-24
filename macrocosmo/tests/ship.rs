@@ -352,10 +352,15 @@ fn test_build_queue_spawns_ship() {
                 kind: macrocosmo::colony::BuildKind::default(),
                 design_id: "explorer_mk1".to_string(),
                 display_name: "Explorer".to_string(),
+                // #445 (HIGH fold-in): cost is prorated per tick, so a
+                // single-tick completion requires the order to be
+                // **already fully invested** in both ledgers. Mimics
+                // "an almost-done build" — the build_queue tick should
+                // recognise both conditions met and pop it off.
                 minerals_cost: Amt::units(50),
-                minerals_invested: Amt::ZERO,
+                minerals_invested: Amt::units(50),
                 energy_cost: Amt::units(30),
-                energy_invested: Amt::ZERO,
+                energy_invested: Amt::units(30),
                 build_time_total: 60,
                 build_time_remaining: 0, // set to 0 so it completes with resources
             }],

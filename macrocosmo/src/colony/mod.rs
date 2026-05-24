@@ -32,12 +32,36 @@ pub struct ColonyPlugin;
 #[reflect(Resource)]
 pub struct LastProductionTick(pub i64);
 
+/// #445 (BLOCKER fold-in): fractional accumulator for
+/// `shipyard_build_speed` multipliers under 1.0×. Keyed by colony Entity
+/// (= 1:1 with `BuildQueue`).
+///
+/// When `speed_mult < 1.0`, a single tick's raw progress (e.g.
+/// `delta=1 * 0.5 = 0.5`) would round down to `effective_delta = 0` and
+/// the queue would never advance (previously the code force-floored to
+/// 1, which **nullified** sub-1.0 modifiers — a punitive debuff with
+/// `speed=0.3` behaved identically to no debuff at `GameSpeed=1`).
+///
+/// The accumulator carries the fractional remainder across ticks: each
+/// tick we add `delta * speed_mult` (as `Amt`) to the accumulator,
+/// extract the integer whole-part into `effective_delta`, and keep the
+/// sub-unit remainder for next tick. Two ticks at 0.5× yield 1 hexadie
+/// of progress total, which matches the displayed multiplier.
+///
+/// Held as a `Resource` (runtime-only `HashMap`) rather than a field
+/// on `BuildQueue` to avoid bumping `SAVE_VERSION`. Save/reload zeroes
+/// the accumulator — acceptable in pre-alpha because a single hexadie
+/// of fractional drift is invisible at gameplay scale.
+#[derive(Resource, Default)]
+pub struct ShipyardSpeedAccumulators(pub std::collections::HashMap<Entity, Amt>);
+
 impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
             .init_resource::<BuildingRegistry>()
             .init_resource::<AlertCooldowns>()
             .init_resource::<PendingSovereigntyChanges>()
+            .init_resource::<ShipyardSpeedAccumulators>()
             .add_systems(
                 Startup,
                 load_building_registry.after(crate::scripting::load_all_scripts),

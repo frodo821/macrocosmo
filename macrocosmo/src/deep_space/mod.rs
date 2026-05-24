@@ -951,11 +951,15 @@ pub fn relay_knowledge_propagate_system(
     // #216: Star system data for FTL-relayed SystemKnowledge updates. Mirrors
     // the queries used by `propagate_knowledge` so the snapshot payload is
     // identical to the direct-light path.
+    // #445: Co-queried `SystemModifiers` lets the relay path read
+    // `shipyard_build_parallel_slots` without consuming a separate
+    // system-param slot (the function is already at the 16-param limit).
     system_q: Query<(
         Entity,
         &crate::galaxy::StarSystem,
         &crate::components::Position,
         Option<&crate::colony::ResourceStockpile>,
+        Option<&crate::galaxy::SystemModifiers>,
     )>,
     colonies: crate::knowledge::ColonySnapshotQuery,
     planets: Query<&crate::galaxy::Planet>,
@@ -1120,22 +1124,32 @@ pub fn relay_knowledge_propagate_system(
         }
 
         // #216: FTL-relayed SystemKnowledge.
-        for (sys_entity, star, sys_pos, stockpile) in &system_q {
+        for (sys_entity, star, sys_pos, stockpile, sys_mods) in &system_q {
             let dist = crate::physics::distance_ly(source_pos, sys_pos);
             if source_range > 0.0 && dist > source_range {
                 continue;
             }
 
+            // Port stays on the capability path for now — port carries three
+            // distinct modifiers (ftl_range_bonus / travel_time_factor /
+            // repair) whose binary "has port" gate doesn't map cleanly to a
+            // single threshold. Separate refactor tracked.
             let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
                 slot.is_some()
                     && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
                     && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("port"))
             });
-            let relay_has_shipyard = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
-                slot.is_some()
-                    && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
-                    && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("shipyard"))
-            });
+            // #445: Shipyard presence now derives from
+            // `shipyard_build_parallel_slots` so the relayed snapshot
+            // matches the production-side gate (one source of truth for
+            // "does this system have a shipyard"). Treats 0 slots as
+            // "no shipyard" whether the system never had one or the
+            // building was destroyed.
+            let relay_has_shipyard = sys_mods
+                .map(|m| {
+                    m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO
+                })
+                .unwrap_or(false);
 
             // #457: Build a snapshot per receiving empire because hostile_map
             // is receiver-specific (directional faction relations).

@@ -76,6 +76,7 @@ fn metric_groups() -> Vec<(&'static str, Vec<MetricId>)> {
             "Infrastructure",
             vec![
                 m::systems_with_shipyard(),
+                m::total_shipyard_slots(),
                 m::systems_with_port(),
                 m::max_building_slots(),
                 m::used_building_slots(),

@@ -129,10 +129,11 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         ship_design_id: Some("station_research_lab_v1".into()),
         colony_slots: None,
     });
-    // Helper for capability-tagged buildings: the AI emitters rely
-    // on `def.capabilities.contains_key("shipyard")` /
-    // `contains_key("port")` to count operational system buildings;
-    // production Lua sets these via `capability "shipyard" {}`.
+    // Helper for capability-tagged buildings: port still uses
+    // `def.capabilities.contains_key("port")` in the AI emitter
+    // (#445 only migrated the shipyard emitter to the modifier path).
+    // Shipyard keeps its capability entry for back-compat with tests
+    // that haven't yet switched to the modifier-driven query.
     let cap_shipyard: HashMap<String, CapabilityParams> = {
         let mut m = HashMap::new();
         m.insert("shipyard".into(), CapabilityParams::default());
@@ -155,7 +156,7 @@ pub fn create_test_building_registry() -> macrocosmo::colony::BuildingRegistry {
         production_bonus_energy: Amt::ZERO,
         production_bonus_research: Amt::ZERO,
         production_bonus_food: Amt::ZERO,
-        modifiers: vec![pm("system.shipyard_capacity", 1.0)],
+        modifiers: vec![pm("system.shipyard_build_parallel_slots", 1.0)],
         is_system_building: true,
         capabilities: cap_shipyard,
         upgrade_to: Vec::new(),
@@ -423,6 +424,11 @@ pub fn test_app() -> App {
     // on it at runtime) always observes the test clock.
     app.add_plugins(macrocosmo::ai::AiPlugin);
     app.insert_resource(LastProductionTick(0));
+    // #445 (BLOCKER fold-in): fractional accumulator resource for
+    // sub-1.0 shipyard speed multipliers. `tick_build_queue` takes
+    // this as `ResMut`, so tests must seed it (or the system panics
+    // with "Resource does not exist").
+    app.init_resource::<macrocosmo::colony::ShipyardSpeedAccumulators>();
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
     app.insert_resource(EventBus::default());
@@ -801,6 +807,10 @@ pub fn full_test_app() -> App {
     // introduced by AI systems at CI time.
     app.add_plugins(macrocosmo::ai::AiPlugin);
     app.insert_resource(LastProductionTick(0));
+    // #445 (BLOCKER fold-in): fractional accumulator resource for
+    // sub-1.0 shipyard speed multipliers. Mirror of the seeding in
+    // `test_app` so `full_test_app`-based tests don't panic.
+    app.init_resource::<macrocosmo::colony::ShipyardSpeedAccumulators>();
     app.insert_resource(EventLog::default());
     app.insert_resource(EventSystem::default());
     app.init_resource::<species::SpeciesRegistry>();

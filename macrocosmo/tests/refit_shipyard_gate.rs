@@ -143,14 +143,15 @@ fn spawn_test_ship(world: &mut World, system: Entity, design_revision: u64) -> E
 }
 
 /// Attach a `SystemModifiers` component to `sys` with the given shipyard
-/// capacity (>0 means "has shipyard").
-fn install_system_modifiers(world: &mut World, sys: Entity, shipyard_capacity_units: u64) {
+/// parallel build slots (>0 means "has shipyard"). Renamed from
+/// `shipyard_capacity_units` after #445.
+fn install_system_modifiers(world: &mut World, sys: Entity, shipyard_parallel_slots: u64) {
     let mut mods = SystemModifiers::default();
-    if shipyard_capacity_units > 0 {
-        mods.shipyard_capacity.push_modifier(Modifier {
+    if shipyard_parallel_slots > 0 {
+        mods.shipyard_build_parallel_slots.push_modifier(Modifier {
             id: "test_shipyard".into(),
             label: "test shipyard".into(),
-            base_add: macrocosmo::amount::SignedAmt::from_amt(Amt::units(shipyard_capacity_units)),
+            base_add: macrocosmo::amount::SignedAmt::from_amt(Amt::units(shipyard_parallel_slots)),
             multiplier: macrocosmo::amount::SignedAmt::ZERO,
             add: macrocosmo::amount::SignedAmt::ZERO,
             expires_at: None,

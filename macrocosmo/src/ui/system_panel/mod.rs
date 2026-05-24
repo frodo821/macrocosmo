@@ -1378,7 +1378,9 @@ fn draw_right_panel(
         // Determine shipyard availability via capability check on station ships.
         let has_shipyard = sys_mods_q
             .get(sel_entity)
-            .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+            .map(|m| {
+                m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO
+            })
             .unwrap_or(false);
 
         // Collect colonies in this system along with a snapshot of their build queues.
@@ -2128,7 +2130,7 @@ pub fn ship_build_host_colony(
 ) -> Option<Entity> {
     let has_shipyard = sys_mods_q
         .get(system_entity)
-        .map(|m| m.shipyard_capacity.value().final_value() > crate::amount::Amt::ZERO)
+        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
         .unwrap_or(false);
     if !has_shipyard {
         return None;

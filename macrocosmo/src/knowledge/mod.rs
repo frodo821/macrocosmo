@@ -1920,7 +1920,7 @@ pub fn propagate_knowledge(
                 .map(|m| m.port_repair.value().final_value() > Amt::ZERO)
                 .unwrap_or(false);
             let sys_has_shipyard = sys_mods
-                .map(|m| m.shipyard_capacity.value().final_value() > Amt::ZERO)
+                .map(|m| m.shipyard_build_parallel_slots.value().final_value() > Amt::ZERO)
                 .unwrap_or(false);
             let snapshot = build_system_snapshot(
                 entity,
