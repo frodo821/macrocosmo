@@ -61,7 +61,7 @@ fn main() {
     };
     let rng_seed = RngSeed(cli.seed);
 
-    if observer_mode.enabled() {
+    if observer_mode.is_empire_view() {
         let source = if cli.observer {
             "--observer"
         } else {
@@ -86,7 +86,7 @@ fn main() {
     let new_game_params = NewGameParams {
         seed: cli.seed,
         scenario_id: None,
-        observer_mode: observer_mode.enabled(),
+        observer_mode: observer_mode.is_empire_view(),
         faction_override: None,
     };
 

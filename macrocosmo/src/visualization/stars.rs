@@ -105,12 +105,22 @@ pub fn spawn_star_visuals(
 
     let knowledge = empire_q.iter().next();
     let player_system = player_q.iter().next().map(|s| s.system);
-    // #417 parity: observer mode collapses the knowledge gate so every
-    // star is rendered as if the player had direct visibility.
-    // #490: Omniscient mode also opens the gate. EmpireView preserves
-    // pre-#490 observer behaviour here pending the per-panel
-    // light-coherence migration (separate issue).
-    let god_view = observer_mode.enabled();
+    // #214 / #417 / #490 fold-in: `spawn_star_visuals` queries only
+    // the `PlayerEmpire`'s `KnowledgeStore`, which is absent in
+    // `--no-player` observer mode. The original fix collapsed the
+    // gate when observer mode was active so the boot pass produced
+    // visible labels (the per-viewer `update_star_colors` then
+    // refines visibility tick-by-tick via `ViewingEmpireResolver`,
+    // which IS viewer-aware).
+    //
+    // After #490 fold-in the `is_god_view` semantics on the
+    // viewer-aware resolver is `Omniscient`-only, but this initial-
+    // spawn path stays on `is_any_observer()`: the only alternative
+    // would be plumbing the observed empire's `KnowledgeStore`
+    // through this system, which is outside fold-in scope. The
+    // overshoot is invisible in practice because `update_star_colors`
+    // overwrites the visuals on the next frame.
+    let god_view = observer_mode.is_any_observer();
 
     for (entity, star, pos) in &stars {
         let x = pos.x as f32 * view.scale;
@@ -481,7 +491,7 @@ impl<'w, 's> ViewingEmpireResolver<'w, 's> {
         // through `ObserverView.viewing` (light-coherent #499 path).
         if self.observer_mode.is_omniscient() {
             None
-        } else if self.observer_mode.enabled() {
+        } else if self.observer_mode.is_empire_view() {
             self.observer_view.viewing
         } else {
             self.player_empire.single().ok()
@@ -489,19 +499,16 @@ impl<'w, 's> ViewingEmpireResolver<'w, 's> {
     }
 
     /// True when the galaxy map should render ground-truth realtime
-    /// state (= no `KnowledgeStore` gate). Includes both pre-#490
-    /// observer-mode parity and the new Omniscient (#490) branch.
+    /// state, **bypassing the `KnowledgeStore` gate entirely**. This is
+    /// now `Omniscient`-only (#490 fold-in / DESIGN BLOCKER 3): the
+    /// EmpireView branch routes through the observed empire's
+    /// `KnowledgeStore` (= the light-coherent contract `#499`
+    /// established), so collapsing it to ground truth here would
+    /// regress that fix.
+    ///
+    /// Use [`Self::resolve`] to get the viewing empire entity in
+    /// EmpireView (= the per-empire knowledge gate's source of truth).
     pub fn is_god_view(&self) -> bool {
-        self.observer_mode.enabled()
-    }
-
-    /// #490: True specifically when the active mode is
-    /// [`crate::observer::ObserverModeKind::Omniscient`]. Distinct from
-    /// `is_god_view()` which also includes the legacy
-    /// `EmpireView` map-rendering parity. Kept for the per-panel UX
-    /// migration that the #490 issue scoped out as a follow-up.
-    #[allow(dead_code)]
-    pub fn is_omniscient(&self) -> bool {
         self.observer_mode.is_omniscient()
     }
 }

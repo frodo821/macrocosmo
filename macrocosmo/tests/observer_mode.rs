@@ -34,7 +34,9 @@ fn observer_app(mode: ObserverMode) -> App {
 #[test]
 fn test_observer_mode_resource_defaults() {
     let m = ObserverMode::default();
-    assert!(!m.enabled());
+    assert!(!m.is_any_observer());
+    assert!(!m.is_empire_view());
+    assert!(!m.is_omniscient());
     assert!(m.seed.is_none());
     assert!(m.time_horizon.is_none());
     assert!(m.initial_speed.is_none());
@@ -62,11 +64,16 @@ fn test_observer_run_conditions_reflect_flag() {
 // Local helpers mirroring the run-condition bodies so we can call them
 // outside of a Bevy SystemParam context. If these drift from the real
 // functions the test catches the behaviour change.
+//
+// #490 fold-in: `in_observer_mode` now means "spawn-architecture
+// observer mode" (= `is_empire_view()`) and explicitly excludes the
+// runtime `Omniscient` toggle, so that's what the simple helper
+// mirrors here too.
 fn in_observer_mode_simple(m: &ObserverMode) -> bool {
-    m.enabled()
+    m.is_empire_view()
 }
 fn not_in_observer_mode_simple(m: &ObserverMode) -> bool {
-    !m.enabled()
+    !m.is_empire_view()
 }
 
 #[test]

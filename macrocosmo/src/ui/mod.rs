@@ -449,7 +449,7 @@ fn resolve_ui_empire_raw(
     // ECS path.
     if observer_mode.is_omniscient() {
         observer_view.viewing.or_else(|| player_q.single().ok())
-    } else if observer_mode.enabled() {
+    } else if observer_mode.is_empire_view() {
         observer_view.viewing
     } else {
         player_q.single().ok()
@@ -535,15 +535,8 @@ pub fn empire_view_knowledge_omniscient(
     }
 }
 
-/// #490: True when omniscient (god-view) mode is active. Convenience
-/// wrapper around [`ObserverMode::is_omniscient`] kept here so call
-/// sites that already import `ui::*` don't need to also reach into
-/// `crate::observer`. Useful for the per-panel UX migration that the
-/// issue scoped out as a follow-up.
-#[allow(dead_code)]
-pub fn is_omniscient_mode(observer: &ObserverMode) -> bool {
-    observer.is_omniscient()
-}
+// #490 fold-in: deleted `is_omniscient_mode` (dead `#[allow(dead_code)]`
+// wrapper). Call sites use `observer.is_omniscient()` directly.
 
 // ---------------------------------------------------------------------------
 // #440: observer read-only gates for write paths in panels.
@@ -659,13 +652,15 @@ fn compute_ui_state(
     ui_state.player_entity = player_info.map(|(e, _, _)| e);
     ui_state.ruler_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
 
-    // #398: In observer mode with a viewed empire, show that empire's
-    // ground-truth resource totals (no light-speed delay). In normal play,
-    // use the PlayerEmpire's KnowledgeStore as before.
-    // #490: Omniscient mode follows the same path — it uses
-    // `ObserverView.viewing` (= the empire currently selected) as the
-    // resource frame of reference.
-    if observer_mode.enabled() {
+    // #398: In observer mode (`EmpireView`) with a viewed empire, show
+    // that empire's ground-truth resource totals (no light-speed delay).
+    // In normal play, use the PlayerEmpire's KnowledgeStore as before.
+    // #490 fold-in (BUG BLOCKER 1): Omniscient toggled on top of a
+    // normal session keeps the PlayerEmpire path so the top-bar
+    // resources don't zero out when `ObserverView.viewing` is unset.
+    // The map-rendering god-view still bypasses the per-empire
+    // knowledge gate via `ViewingEmpireResolver::is_god_view`.
+    if observer_mode.is_empire_view() {
         let viewed_home = observer_view
             .viewing
             .and_then(|e| home_systems.get(e).ok())
@@ -960,7 +955,13 @@ fn draw_top_bar_system(
     factions.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut selected = observer_view.viewing;
-    let observer_state = if observer_mode.enabled() {
+    // #490 fold-in (NICE-TO-FIX 5d): hide the empire selector while
+    // Omniscient is active — god-view bypasses per-empire selection,
+    // and surfacing the selector here would let the player silently
+    // mutate `ObserverView.viewing` (= the previous_kind restore target
+    // for EmpireView ↔ Omniscient flicks). EmpireView keeps the
+    // selector visible.
+    let observer_state = if observer_mode.is_empire_view() {
         Some(top_bar::ObserverBarState {
             enabled: true,
             read_only: observer_mode.read_only,
@@ -1165,7 +1166,10 @@ fn draw_outline_and_tooltips_system(
         &outline_q.fleets,
         &outline_q.faction_owners,
         empire_entity,
-        obs.observer_mode.enabled(),
+        // #490 fold-in: outline's `is_observer` toggles the "show every
+        // empire's colonies/ships" branch — true for both observer-mode
+        // kinds (`EmpireView` and `Omniscient`), false for normal play.
+        obs.observer_mode.is_any_observer(),
         home_system_entity,
         // #487 / #499: Pass the viewing empire's KnowledgeStore so the
         // outline tree's ship-state queries flow through the projection
@@ -1336,12 +1340,12 @@ fn draw_main_panels_system(
         .map(|sys| world.core_ships.iter().any(|(at, _)| at.0 == sys))
         .unwrap_or(false);
     // #392: Compute visibility tier for selected system.
-    // #417 / #490: In observer mode (including Omniscient), grant full
-    // visibility (ground truth). EmpireView keeps the legacy parity
-    // pending the per-panel light-coherence migration; Omniscient is
-    // by definition ground truth.
+    // #417 / #490 fold-in: in observer mode (`EmpireView` keeps legacy
+    // parity pending the per-panel light-coherence migration;
+    // `Omniscient` is by definition ground truth) grant full
+    // visibility. Normal play uses the per-empire visibility map.
     let selected_vis_tier = selection.selected_system.0.map(|sys| {
-        if selection.observer_mode.enabled() {
+        if selection.observer_mode.is_any_observer() {
             crate::knowledge::SystemVisibilityTier::Local
         } else {
             vis_map_opt
@@ -1388,7 +1392,10 @@ fn draw_main_panels_system(
         selected_system_has_core,
         selected_vis_tier,
         empire_entity,
-        selection.observer_mode.enabled(),
+        // #490 fold-in: system-panel `is_observer` opens the
+        // cross-empire "show everything" branch — true for both
+        // observer-mode kinds.
+        selection.observer_mode.is_any_observer(),
         &world.faction_owners,
     );
 
@@ -1817,23 +1824,29 @@ fn draw_main_panels_system(
         })
         .collect();
     // #176/#293: Build hostile_systems using real-time for local, KnowledgeStore for remote.
-    // #417 / #490: In observer mode (incl. Omniscient), use ground
-    // truth (all Hostile entities) directly.
+    // #490 fold-in (BUG BLOCKER 3): only `Omniscient` collapses to
+    // ground truth (= all `Hostile` entities). `EmpireView` routes
+    // through the observed empire's `KnowledgeStore` — same
+    // light-coherent contract `#499` established for `is_god_view`.
     let hostile_systems: std::collections::HashSet<Entity> = {
         let mut set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-        if selection.observer_mode.enabled() {
+        if selection.observer_mode.is_omniscient() {
             // Ground truth: all hostile entities
             for (at_system, _owner) in world.hostile_presence.iter() {
                 set.insert(at_system.0);
             }
         } else {
             // Local system: (AtSystem, FactionOwner, With<Hostile>)
+            // (`player_system` is empty in EmpireView; this branch then
+            // only contributes via the KnowledgeStore loop below.)
             for (at_system, _owner) in world.hostile_presence.iter() {
                 if Some(at_system.0) == player_system {
                     set.insert(at_system.0);
                 }
             }
-            // Remote systems: from KnowledgeStore
+            // Remote systems: from KnowledgeStore (Disabled = player;
+            // EmpireView = observed empire — `knowledge` already
+            // resolves to the viewing empire via `resolve_ui_empire`).
             for (_entity, k) in knowledge.iter() {
                 if Some(k.system) == player_system {
                     continue;
