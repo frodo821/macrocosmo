@@ -219,8 +219,16 @@ fn collect_pending_for(app: &mut App, empire: Entity) -> Vec<(Entity, Entity)> {
     q.iter(app.world())
         .filter(|(_, pa)| pa.faction == empire && pa.kind == AssignmentKind::Survey)
         .map(|(ship, pa)| {
+            // #468 PR-3: Survey markers always carry a System target; the
+            // Planet variant exists only for `colonize_planet` (which uses
+            // `AssignmentKind::Colonize`). Match it as `unreachable!` for
+            // exhaustiveness — a Survey marker with a Planet target would
+            // be a construction bug we want to fail loud on.
             let target = match pa.target {
                 AssignmentTarget::System(e) => e,
+                AssignmentTarget::Planet(_) => {
+                    unreachable!("Survey markers never carry Planet targets")
+                }
             };
             (ship, target)
         })

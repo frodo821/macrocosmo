@@ -174,11 +174,13 @@ fn install_region_and_mid_agent(app: &mut App, empire: Entity, home_system: Enti
 fn seed_plan_state(
     app: &mut App,
     empire: Entity,
+    home_system: Entity,
     target_system: Entity,
     target_planet: Entity,
     courier: Entity,
 ) {
     let issuer = macrocosmo::ai::convert::to_ai_faction(empire);
+    let home_sys_ref = macrocosmo::ai::convert::to_ai_system(home_system);
     let target_sys_ref = macrocosmo::ai::convert::to_ai_system(target_system);
     let target_planet_ref = macrocosmo::ai::convert::to_ai_entity(target_planet);
     let courier_ref = macrocosmo::ai::convert::to_ai_entity(courier);
@@ -200,8 +202,15 @@ fn seed_plan_state(
         .with_param("ship", CommandValue::Entity(courier_ref))
         .with_param("stockpile_index", CommandValue::I64(0));
 
+    // #468 PR-3 NICE-TO-FIX fold-in: reposition target moved from
+    // `target_sys_ref` to `home_sys_ref` so the courier (which now
+    // starts at `target` for the load precheck to succeed) is
+    // moving to a non-current system. With both endpoints (courier
+    // at target, reposition target = target) `apply_move_to_ship`
+    // would emit a no-op skip and the tick-3 assertion would
+    // observe zero events.
     let mv = Command::new(cmd_ids::reposition(), issuer, now)
-        .with_param("target_system", CommandValue::System(target_sys_ref))
+        .with_param("target_system", CommandValue::System(home_sys_ref))
         .with_param("ship_count", CommandValue::I64(1))
         .with_param("ship_0", CommandValue::Entity(courier_ref));
 
@@ -320,21 +329,42 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
     // light-delay to 0 (target is co-located with home at [0, 0, 0]).
     spawn_test_ruler(app.world_mut(), npc_empire, home);
 
-    // Target system needs no `DeliverableStockpile` — when the lookup
-    // returns `Err`, `handle_load_deliverable`'s sanity gate
-    // (`if let Ok(stockpile) = …`) falls through and the writer always
-    // fires `LoadDeliverableRequested`. (If the component were present
-    // with no item at index 0, the handler would early-return without
-    // emitting the event.)
+    // #468 PR-3 NICE-TO-FIX #7 fold-in: the dispatcher now pre-gates
+    // `load_deliverable` on the target system having a non-empty
+    // `DeliverableStockpile`. The previous AI E2E behaviour (no
+    // stockpile = pass-through emit, downstream Reject) no longer
+    // applies. Seed a one-item stockpile so the load primitive arm
+    // continues to emit during the tick-2 assertion below.
+    app.world_mut()
+        .entity_mut(target)
+        .insert(macrocosmo::colony::DeliverableStockpile {
+            items: vec![macrocosmo::ship::CargoItem::Deliverable {
+                definition_id: "infra_core".into(),
+            }],
+        });
 
-    // Courier ship at home, owned by the NPC, with `infra_core` already
-    // pre-loaded into Cargo so `handle_unload_deliverable` finds an
-    // item at `item_index = 0` and writes `DeployDeliverableRequested`.
+    // Courier ship at the TARGET system (was: at home), owned by the
+    // NPC, with `infra_core` already pre-loaded into Cargo so
+    // `handle_unload_deliverable` finds an item at `item_index = 0`
+    // and writes `DeployDeliverableRequested`.
+    //
+    // #468 PR-3 NICE-TO-FIX fold-in: the courier must dock at the
+    // target system (not at home) so the load_deliverable handler at
+    // tick 2 succeeds in-place — the previous "courier at home"
+    // setup relied on the load handler emitting unconditionally
+    // even when the courier was not at the target. With the new
+    // dispatcher precheck the load DOES emit (stockpile is now
+    // populated) but the downstream handler would defer with a
+    // MoveTo + retry insert into the courier's CommandQueue, which
+    // would then block tick-3's reposition arm (`apply_move_to_ship`
+    // requires an empty queue). Co-locating the courier at the
+    // target keeps the handler's docked-system check satisfied so the
+    // queue stays empty for subsequent ticks.
     let courier = spawn_test_ship(
         app.world_mut(),
         "Courier-1",
         "courier_mk1",
-        home,
+        target,
         [0.0, 0.0, 0.0],
     );
     {
@@ -355,7 +385,7 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
     // fires before we mutate the agent's state.
     install_region_and_mid_agent(&mut app, npc_empire, home);
     app.update();
-    seed_plan_state(&mut app, npc_empire, target, target_planet, courier);
+    seed_plan_state(&mut app, npc_empire, home, target, target_planet, courier);
 
     // Reset the message buffers so `iter_current_update_messages()`
     // observes only events emitted by the systems-under-test rather
@@ -420,6 +450,26 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
         current_count::<MoveRequested>(&app),
     );
 
+    // #468 PR-3 NICE-TO-FIX fold-in: reset the courier's runtime
+    // ShipState + CommandQueue between ticks so the per-tick assertions
+    // still observe single-event emissions. Without this:
+    //   - tick 3's reposition turns the courier into `SubLight` or
+    //     `InFTL` via `handle_move_requested` → `dispatch_queued_commands`
+    //     → `start_sublight_travel` (the home-target axis is 0 ly so
+    //     the move resolves immediately into one of the two transit
+    //     states or back to InSystem at home);
+    //   - tick 4's unload precheck requires InSystem/Loitering;
+    //   - tick 5's colonize requires `queue.commands.is_empty()`.
+    // We force the world back into the "courier at target, queue
+    // empty" shape after each per-tick assertion so the next
+    // primitive sees a clean ship.
+    {
+        use macrocosmo::ship::{CommandQueue, ShipState};
+        let mut em = app.world_mut().entity_mut(courier);
+        *em.get_mut::<ShipState>().unwrap() = ShipState::InSystem { system: target };
+        em.get_mut::<CommandQueue>().unwrap().commands.clear();
+    }
+
     // ---- Tick 4: unload_deliverable --------------------------------------
     advance_time(&mut app, 1);
     assert_eq!(
@@ -429,6 +479,16 @@ fn npc_colonize_system_decomposes_through_full_event_chain() {
          DeployDeliverableRequested; got {}",
         current_count::<DeployDeliverableRequested>(&app),
     );
+
+    // Same reset between tick 4 and tick 5 — the deploy handler may
+    // adjust the cargo or trigger downstream state changes that
+    // would break the colonize precheck.
+    {
+        use macrocosmo::ship::{CommandQueue, ShipState};
+        let mut em = app.world_mut().entity_mut(courier);
+        *em.get_mut::<ShipState>().unwrap() = ShipState::InSystem { system: target };
+        em.get_mut::<CommandQueue>().unwrap().commands.clear();
+    }
 
     // ---- Tick 5: colonize_planet -----------------------------------------
     advance_time(&mut app, 1);

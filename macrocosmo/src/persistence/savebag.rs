@@ -1631,6 +1631,8 @@ impl SavedConqueredCore {
 ///
 /// `target` is encoded as a `(u8, u64)`:
 /// - tag `0` (`AssignmentTarget::System`) → entity bits.
+/// - tag `1` (`AssignmentTarget::Planet`) → entity bits (#468 PR-3,
+///   additive — old saves load as tag `0` and round-trip cleanly).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedPendingAssignment {
     pub faction_bits: u64,
@@ -1648,6 +1650,7 @@ impl SavedPendingAssignment {
         };
         let (target_tag, target_bits) = match v.target {
             crate::ai::assignments::AssignmentTarget::System(e) => (0u8, e.to_bits()),
+            crate::ai::assignments::AssignmentTarget::Planet(e) => (1u8, e.to_bits()),
         };
         Self {
             faction_bits: v.faction.to_bits(),
@@ -1677,12 +1680,29 @@ impl SavedPendingAssignment {
             }
         };
         let target = match self.target_tag {
-            // `System` is the only currently-defined target; same fan-in
-            // story as `kind` above.
-            _ => crate::ai::assignments::AssignmentTarget::System(remap_entity(
+            0 => crate::ai::assignments::AssignmentTarget::System(remap_entity(
                 self.target_bits,
                 map,
             )),
+            1 => crate::ai::assignments::AssignmentTarget::Planet(remap_entity(
+                self.target_bits,
+                map,
+            )),
+            // Unknown target tag — same defensive fan-in story as `kind`
+            // above. Warn loudly and fall back to System so old saves
+            // without the Planet variant (or a future-tagged variant
+            // we don't yet recognise) keep loading.
+            unknown => {
+                bevy::log::warn!(
+                    "SavedPendingAssignment: unknown target_tag {} — falling back to System. \
+                     This indicates a missed SAVE_VERSION bump.",
+                    unknown,
+                );
+                crate::ai::assignments::AssignmentTarget::System(remap_entity(
+                    self.target_bits,
+                    map,
+                ))
+            }
         };
         crate::ai::assignments::PendingAssignment {
             faction: remap_entity(self.faction_bits, map),
