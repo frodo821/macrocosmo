@@ -12,7 +12,7 @@ use bevy::prelude::*;
 use macrocosmo::ai::AiPlugin;
 use macrocosmo::faction::FactionRelationsPlugin;
 use macrocosmo::galaxy::HomeSystem;
-use macrocosmo::observer::{ObserverMode, ObserverPlugin, RngSeed};
+use macrocosmo::observer::{ObserverMode, ObserverModeKind, ObserverPlugin, RngSeed};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::region::{EmpireLongTermState, Region, RegionMembership, RegionRegistry};
 use macrocosmo::time_system::{GameClock, GameSpeed};
@@ -25,7 +25,7 @@ fn player_mode_app() -> App {
     app.add_plugins(bevy::input::InputPlugin);
 
     app.insert_resource(ObserverMode {
-        enabled: false,
+        kind: ObserverModeKind::Disabled,
         ..Default::default()
     });
     app.insert_resource(RngSeed(Some(0xC0FFEE)));

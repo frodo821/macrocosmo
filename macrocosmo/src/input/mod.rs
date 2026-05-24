@@ -350,6 +350,11 @@ pub mod actions {
     // Observer mode
     pub const OBSERVER_EXIT: &str = "observer.exit";
 
+    // #490: Omniscient (god-view) toggle. Dev-only; bound to F9 by
+    // default. Flips `ObserverMode.kind` between
+    // `ObserverModeKind::Omniscient` and the previous kind.
+    pub const UI_TOGGLE_OMNISCIENT: &str = "ui.toggle_omniscient";
+
     // Debug
     pub const DEBUG_LOG_PLAYER_INFO: &str = "debug.log_player_info";
 }
@@ -395,6 +400,9 @@ fn register_engine_defaults(r: &mut KeybindingRegistry) {
     // run_if guard keeps the systems mutually exclusive at runtime, so the
     // conflict warning here is benign.
     r.register_default(OBSERVER_EXIT, KeyCombo::key(KeyCode::Escape));
+
+    // --- #490: Omniscient (god-view) toggle ---
+    r.register_default(UI_TOGGLE_OMNISCIENT, KeyCombo::key(KeyCode::F9));
 
     // --- Debug ---
     r.register_default(DEBUG_LOG_PLAYER_INFO, KeyCombo::key(KeyCode::KeyI));

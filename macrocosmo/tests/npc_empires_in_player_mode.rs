@@ -13,7 +13,7 @@ use macrocosmo::ai::AiPlugin;
 use macrocosmo::faction::{
     FactionRelations, FactionRelationsPlugin, HostileFactions, RelationState,
 };
-use macrocosmo::observer::{ObserverMode, ObserverPlugin, RngSeed};
+use macrocosmo::observer::{ObserverMode, ObserverModeKind, ObserverPlugin, RngSeed};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 
@@ -44,7 +44,7 @@ fn player_mode_app() -> App {
 
     // Observer mode explicitly disabled — this is the regression guard.
     app.insert_resource(ObserverMode {
-        enabled: false,
+        kind: ObserverModeKind::Disabled,
         ..Default::default()
     });
     // Deterministic seed so the galaxy generator produces the same capital

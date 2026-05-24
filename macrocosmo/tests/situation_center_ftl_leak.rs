@@ -553,7 +553,7 @@ fn ship_ops_tab_summary_reflects_projection() {
 /// mode **enabled** the tab shows "in FTL" (= realtime).
 #[test]
 fn ship_ops_tab_observer_mode_uses_realtime() {
-    use macrocosmo::observer::ObserverMode;
+    use macrocosmo::observer::{ObserverMode, ObserverModeKind};
 
     let mut app = test_app();
     let empire = spawn_minimal_player_empire(&mut app);
@@ -621,7 +621,7 @@ fn ship_ops_tab_observer_mode_uses_realtime() {
     // 2) Observer mode enabled: classifier falls through to realtime
     //    ECS. Ship is "in FTL" (Travel), not "docked" (Other).
     app.world_mut().insert_resource(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     {

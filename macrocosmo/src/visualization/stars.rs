@@ -107,7 +107,10 @@ pub fn spawn_star_visuals(
     let player_system = player_q.iter().next().map(|s| s.system);
     // #417 parity: observer mode collapses the knowledge gate so every
     // star is rendered as if the player had direct visibility.
-    let god_view = observer_mode.enabled;
+    // #490: Omniscient mode also opens the gate. EmpireView preserves
+    // pre-#490 observer behaviour here pending the per-panel
+    // light-coherence migration (separate issue).
+    let god_view = observer_mode.enabled();
 
     for (entity, star, pos) in &stars {
         let x = pos.x as f32 * view.scale;
@@ -472,15 +475,34 @@ pub struct ViewingEmpireResolver<'w, 's> {
 
 impl<'w, 's> ViewingEmpireResolver<'w, 's> {
     pub fn resolve(&self) -> Option<Entity> {
-        if self.observer_mode.enabled {
+        // #490: Omniscient bypasses the per-empire viewing concept —
+        // there is no single "viewing empire" for god view, so callers
+        // fall through to realtime ECS via `None`. EmpireView routes
+        // through `ObserverView.viewing` (light-coherent #499 path).
+        if self.observer_mode.is_omniscient() {
+            None
+        } else if self.observer_mode.enabled() {
             self.observer_view.viewing
         } else {
             self.player_empire.single().ok()
         }
     }
 
+    /// True when the galaxy map should render ground-truth realtime
+    /// state (= no `KnowledgeStore` gate). Includes both pre-#490
+    /// observer-mode parity and the new Omniscient (#490) branch.
     pub fn is_god_view(&self) -> bool {
-        self.observer_mode.enabled
+        self.observer_mode.enabled()
+    }
+
+    /// #490: True specifically when the active mode is
+    /// [`crate::observer::ObserverModeKind::Omniscient`]. Distinct from
+    /// `is_god_view()` which also includes the legacy
+    /// `EmpireView` map-rendering parity. Kept for the per-panel UX
+    /// migration that the #490 issue scoped out as a follow-up.
+    #[allow(dead_code)]
+    pub fn is_omniscient(&self) -> bool {
+        self.observer_mode.is_omniscient()
     }
 }
 

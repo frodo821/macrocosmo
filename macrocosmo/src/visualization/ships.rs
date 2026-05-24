@@ -433,7 +433,16 @@ pub fn draw_ships(
     // pipeline reads from this empire's `KnowledgeStore.projections` so the
     // galaxy map is light-coherent: no realtime ECS `ShipState` is consulted
     // for own-empire ship rendering (epic #473).
-    let empire_entity = if observer_mode.enabled {
+    //
+    // #490 Omniscient: the per-empire projection has no canonical empire
+    // in god view. TODO (separate issue): render every empire's ships from
+    // realtime ECS state. For now, the own-empire marker layer is skipped
+    // in Omniscient — ships are still visible via the star overlay and
+    // panel views which surface ground-truth state directly.
+    if observer_mode.is_omniscient() {
+        return;
+    }
+    let empire_entity = if observer_mode.enabled() {
         observer_view.viewing.and_then(|e| all_empire_q.get(e).ok())
     } else {
         empire_q.single().ok().map(|(e, _)| e)

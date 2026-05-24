@@ -279,7 +279,7 @@ pub fn auto_pause_on_event(
     planets: Query<&crate::galaxy::Planet>,
     ships: Query<(&crate::ship::Ship, &crate::ship::ShipState)>,
 ) {
-    if observer_mode.as_deref().is_some_and(|m| m.enabled) {
+    if observer_mode.as_deref().is_some_and(|m| m.enabled()) {
         // Drain the reader so messages don't stack across frames.
         for _ in reader.read() {}
         return;
