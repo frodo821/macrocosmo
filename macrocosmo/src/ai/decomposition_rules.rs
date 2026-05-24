@@ -3,7 +3,7 @@
 //! This module wires the abstract [`StaticDecompositionRegistry`]
 //! ([`macrocosmo_ai::decomposition`]) up with concrete game macros:
 //!
-//! - **`colonize_system`** (macro) → `[deploy_deliverable(infra_core),
+//! - **`colonize_system`** (macro) → `[deploy_deliverable(infrastructure_core),
 //!   colonize_planet]`. The colonization macro: drop a Core deliverable
 //!   in the target system, then settle a planet.
 //! - **`deploy_deliverable`** (macro) → `[build_deliverable,
@@ -68,7 +68,7 @@ pub fn build_default_registry() -> StaticDecompositionRegistry {
 }
 
 /// Expand a `colonize_system` macro into:
-/// 1. `deploy_deliverable(infra_core, target_system, ship_*)`
+/// 1. `deploy_deliverable(infrastructure_core, target_system, ship_*)`
 /// 2. `colonize_planet(target_system, target_planet?, ship_*)`
 ///
 /// Param transfer:
@@ -78,15 +78,18 @@ pub fn build_default_registry() -> StaticDecompositionRegistry {
 ///   layer or the consumer chooses which ship is the courier vs. the
 ///   colony ship; for the simple single-ship case both children see the
 ///   same ship list).
-/// - `definition_id` is fixed to `"infra_core"` for the deploy step —
-///   this matches the production Lua deliverable shipped in
-///   `scripts/structures/infrastructure_core.lua`.
+/// - `definition_id` is fixed to `"infrastructure_core"` for the deploy
+///   step — this matches the production Lua deliverable shipped in
+///   `scripts/structures/cores.lua` (the Lua id, not the historic
+///   `"infra_core"` short-hand which never matched the registry).
 fn expand_colonize_system(macro_cmd: &Command, _ps: &PlanState, now: Tick) -> Vec<Command> {
     let issuer = macro_cmd.issuer;
 
-    // 1. deploy_deliverable(infra_core, target_system, ships)
-    let mut deploy = Command::new(cmd_ids::deploy_deliverable(), issuer, now)
-        .with_param("definition_id", CommandValue::Str("infra_core".into()));
+    // 1. deploy_deliverable(infrastructure_core, target_system, ships)
+    let mut deploy = Command::new(cmd_ids::deploy_deliverable(), issuer, now).with_param(
+        "definition_id",
+        CommandValue::Str("infrastructure_core".into()),
+    );
     deploy.priority = macro_cmd.priority;
     deploy.target = macro_cmd.target.clone();
     forward_param(&mut deploy, macro_cmd, "target_system");
@@ -215,7 +218,10 @@ mod tests {
 
     fn make_deploy_deliverable_macro() -> Command {
         Command::new(cmd_ids::deploy_deliverable(), faction(), 200)
-            .with_param("definition_id", CommandValue::Str("infra_core".into()))
+            .with_param(
+                "definition_id",
+                CommandValue::Str("infrastructure_core".into()),
+            )
             .with_param("target_system", CommandValue::System(SystemRef(42)))
             .with_param("ship_count", CommandValue::I64(1))
             .with_param("ship_0", CommandValue::Entity(EntityRef(7)))
@@ -337,7 +343,7 @@ mod tests {
 
         for child in [&primitives[0], &primitives[1], &primitives[3]] {
             match child.params.get("definition_id") {
-                Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "infra_core"),
+                Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "infrastructure_core"),
                 _ => panic!("child {:?} missing definition_id", child.kind),
             }
         }

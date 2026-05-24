@@ -116,6 +116,47 @@ impl MidStanceAgent {
             }
         }
 
+        // ----- Rule 3.5: Expansion frontier — deploy a Core to
+        // surveyed-but-not-owned systems.
+        //
+        // #444 hotfix. Without this rule a starter empire whose
+        // `Region.member_systems` is `{capital}` (the only colonised,
+        // already-cored system) has every later rule starve:
+        //   * Rule 3's `colonizable_systems` is empty because the
+        //     region's only system is already colonised.
+        //   * The Mid emits nothing, the Short layer has no campaigns,
+        //     so `deploy_deliverable` is never produced and the empire
+        //     never plants a Core anywhere new.
+        //
+        // Rule 3.5 closes the loop: for each surveyed-but-not-owned
+        // frontier system the adapter exposes (pre-filtered by
+        // `npc_decision_tick` against own-Core / pending-deploy /
+        // hostile / current region membership), pair it with an idle
+        // courier and emit `deploy_deliverable(infrastructure_core)`.
+        // The dispatcher's eager macro expansion (#444 fold-in)
+        // turns this into the 4-step build/load/reposition/unload
+        // chain so the ship actually moves.
+        //
+        // Courier double-use is prevented upstream:
+        // `npc_decision_tick` partitions `idle_colonizers` and
+        // `idle_couriers` so Rule 3 and Rule 3.5 never see the same
+        // ship within one tick.
+        let idle_couriers = adapter.idle_couriers();
+        let frontier = adapter.expansion_frontier_systems();
+        if !frontier.is_empty() && !idle_couriers.is_empty() {
+            for (ship, &target) in idle_couriers.iter().zip(frontier.iter()) {
+                let cmd = Command::new(cmd_ids::deploy_deliverable(), faction_id, now)
+                    .with_param(
+                        "definition_id",
+                        CommandValue::Str("infrastructure_core".into()),
+                    )
+                    .with_param("target_system", CommandValue::System(to_ai_system(target)))
+                    .with_param("ship_count", CommandValue::I64(1))
+                    .with_param("ship_0", CommandValue::Entity(to_ai_entity(*ship)));
+                proposals.push(Proposal::at_system(cmd, to_ai_system(target)));
+            }
+        }
+
         // ----- Rule 4 (research_focus): NOT ported — stays in
         // legacy. Research is empire-wide and best handled by a
         // dedicated Mid track once we have one.

@@ -135,6 +135,40 @@ pub trait MidGameAdapter {
     fn member_systems(&self) -> &[Entity] {
         &[]
     }
+
+    /// #444 hotfix: surveyed but not-yet-owned systems sorted by
+    /// region-centroid distance. Rule 3.5 zips this against
+    /// [`Self::idle_couriers`] and emits `deploy_deliverable(infra_core,
+    /// target)` for each pair so the AI can plant a sovereignty
+    /// anchor outside the seed region. Without this, Rule 3
+    /// (colonize) starves on a starter empire whose region has
+    /// exactly one (already-colonised) capital — no surveyed,
+    /// uncolonised, own-Core system exists, so colonizable_systems
+    /// stays empty forever.
+    ///
+    /// **Default empty** = preserves StubAdapter / existing test
+    /// behaviour. Production [`BevyMidGameAdapter`] populates this
+    /// from `NpcContext.expansion_frontier_systems`, which is built
+    /// in `npc_decision_tick` from the empire's KnowledgeStore
+    /// minus the existing Core / pending-deploy / region member
+    /// sets.
+    fn expansion_frontier_systems(&self) -> &[Entity] {
+        &[]
+    }
+
+    /// #444 hotfix: idle ships eligible to ferry a Core out of the
+    /// region (`can_colonize && is_idle` — colony ships moonlight as
+    /// couriers until #446 lands a dedicated transport class). Rule
+    /// 3.5 consumes one per emitted `deploy_deliverable`; Rule 3
+    /// must not double-claim them, which `npc_decision_tick`
+    /// enforces by pre-filtering its `idle_colonizers` slice so
+    /// the same ship is never offered to both lists in one tick.
+    ///
+    /// **Default empty** = preserves StubAdapter / existing test
+    /// behaviour.
+    fn idle_couriers(&self) -> &[Entity] {
+        &[]
+    }
 }
 
 /// Three counts Rule 6 needs to pick the next ship to build.
@@ -171,6 +205,18 @@ pub struct BevyMidGameAdapter<'a> {
     /// one region containing every owned system, so the intersect is
     /// a no-op and existing NPC integration tests stay green.
     pub member_systems: &'a [Entity],
+    /// #444 hotfix: surveyed-but-not-owned systems pre-ranked by
+    /// region-centroid distance, used by Rule 3.5
+    /// (`deploy_deliverable(infra_core)`) to seed new owned-Core
+    /// systems outside the current region scope. Pre-computed in
+    /// `npc_decision_tick` because the centroid + KnowledgeStore
+    /// walk needs the same ECS queries.
+    pub expansion_frontier: &'a [Entity],
+    /// #444 hotfix: idle colony-capable ships not yet claimed by
+    /// Rule 3 (colonize). `npc_decision_tick` pre-partitions
+    /// idle_colonizers vs. idle_couriers so the two rules never
+    /// double-book the same ship.
+    pub idle_couriers: &'a [Entity],
 }
 
 impl<'a> BevyMidGameAdapter<'a> {
@@ -282,6 +328,14 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
         // This accessor exposes the scope itself for diagnostic /
         // reflective use; rules do not need to re-filter.
         self.member_systems
+    }
+
+    fn expansion_frontier_systems(&self) -> &[Entity] {
+        self.expansion_frontier
+    }
+
+    fn idle_couriers(&self) -> &[Entity] {
+        self.idle_couriers
     }
 }
 
