@@ -147,18 +147,39 @@ pub fn drain_ai_commands(
     }
     let now = stamp.clock.elapsed;
 
+    // #468 PR-3 NICE-TO-FIX #4 fold-in: the 5+ ship-control kinds that
+    // migrated to the `PendingAiShipCommand` pipeline (across PR-1 / 2 /
+    // 3) used to each have their own `if kind == X { debug!(...) }` arm
+    // here. They all do the same thing — log "stale, expected
+    // drain_ai_ship_commands" and drop — so we coalesce them into one
+    // arm gated on this slice. Adding a new ship-control kind in PR-4+
+    // means appending to this slice rather than duplicating yet another
+    // 5-line `else if` branch.
+    let stale_ship_kinds: &[macrocosmo_ai::CommandKindId] = &[
+        cmd_ids::attack_target(),
+        cmd_ids::survey_system(),
+        cmd_ids::colonize_system(),
+        cmd_ids::reposition(),
+        cmd_ids::move_ruler(),
+        cmd_ids::blockade(),
+        cmd_ids::load_deliverable(),
+        cmd_ids::unload_deliverable(),
+        cmd_ids::colonize_planet(),
+    ];
+
     for cmd in commands {
         let kind_str = cmd.kind.as_str();
 
-        if kind_str == cmd_ids::attack_target().as_str() {
-            // #468 PR-3: `attack_target` migrated to the per-ship
-            // `PendingAiShipCommand` pipeline (consumed by
-            // `drain_ai_ship_commands` → `apply_move_to_ship`). Stale
-            // legacy emissions drop with a `debug!`.
+        if stale_ship_kinds.iter().any(|k| cmd.kind == *k) {
+            // #468 PR-1/PR-2/PR-3: this kind was migrated to the
+            // per-ship `PendingAiShipCommand` pipeline (consumed by
+            // `drain_ai_ship_commands`). A command reaching this arm
+            // means an upstream call path bypassed the dispatcher —
+            // log + drop rather than silently re-dispatch.
             debug!(
-                "drain_ai_commands: stale attack_target from faction {:?} hit legacy \
+                "drain_ai_commands: stale {} from faction {:?} hit legacy \
                  dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
+                kind_str, cmd.issuer
             );
         } else if kind_str == cmd_ids::retreat().as_str() {
             handle_retreat(
@@ -171,28 +192,6 @@ pub fn drain_ai_commands(
                 &mut stamp.move_writer,
                 &mut stamp.next_cmd_id,
                 now,
-            );
-        } else if kind_str == cmd_ids::survey_system().as_str() {
-            // #468 PR-1: `survey_system` is now produced via the new
-            // `PendingAiShipCommand` pipeline and consumed by
-            // `drain_ai_ship_commands` — it must never reach this arm.
-            // If a stale command slips in via the old outbox path,
-            // drop it with a `debug!` rather than re-dispatch.
-            debug!(
-                "drain_ai_commands: stale survey_system from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
-            );
-        } else if kind_str == cmd_ids::colonize_system().as_str() {
-            // #468 PR-2: `colonize_system` is now produced via the new
-            // `PendingAiShipCommand` pipeline and consumed by
-            // `drain_ai_ship_commands` — it must never reach this arm.
-            // If a stale command slips in via the old outbox path, drop
-            // it with a `debug!` rather than re-dispatch.
-            debug!(
-                "drain_ai_commands: stale colonize_system from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
             );
         } else if kind_str == cmd_ids::build_ship().as_str() {
             handle_build_ship(
@@ -220,36 +219,6 @@ pub fn drain_ai_commands(
                 &empires,
                 &mut build_research,
             );
-        } else if kind_str == cmd_ids::reposition().as_str() {
-            // #468 PR-2: `reposition` migrated to the per-ship
-            // `PendingAiShipCommand` pipeline (consumed by
-            // `drain_ai_ship_commands`). Stale legacy emissions drop
-            // with a `debug!`.
-            debug!(
-                "drain_ai_commands: stale reposition from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
-            );
-        } else if kind_str == cmd_ids::move_ruler().as_str() {
-            // #468 PR-3: `move_ruler` migrated to the per-ship
-            // `PendingAiShipCommand` pipeline. Dispatcher selects the
-            // transport ship at the Ruler's system; drain pushes
-            // `PendingRulerBoarding` + emits `MoveRequested`.
-            debug!(
-                "drain_ai_commands: stale move_ruler from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
-            );
-        } else if kind_str == cmd_ids::blockade().as_str() {
-            // #468 PR-2: `blockade` migrated to the per-ship
-            // `PendingAiShipCommand` pipeline (consumed by
-            // `drain_ai_ship_commands`). Stale legacy emissions drop
-            // with a `debug!`.
-            debug!(
-                "drain_ai_commands: stale blockade from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
-            );
         } else if kind_str == cmd_ids::build_deliverable().as_str() {
             handle_build_deliverable(
                 &cmd.issuer,
@@ -257,28 +226,6 @@ pub fn drain_ai_commands(
                 &sovereignty,
                 &empires,
                 &mut build_research,
-            );
-        } else if kind_str == cmd_ids::load_deliverable().as_str() {
-            // #468 PR-3: `load_deliverable` migrated to the per-ship
-            // `PendingAiShipCommand` pipeline.
-            debug!(
-                "drain_ai_commands: stale load_deliverable from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
-            );
-        } else if kind_str == cmd_ids::unload_deliverable().as_str() {
-            // #468 PR-3: `unload_deliverable` migrated.
-            debug!(
-                "drain_ai_commands: stale unload_deliverable from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
-            );
-        } else if kind_str == cmd_ids::colonize_planet().as_str() {
-            // #468 PR-3: `colonize_planet` migrated.
-            debug!(
-                "drain_ai_commands: stale colonize_planet from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                cmd.issuer
             );
         } else if kind_str == cmd_ids::deploy_deliverable().as_str() {
             // Macro command — decomposed by the Short layer (#447). The
@@ -1193,6 +1140,16 @@ pub fn drain_ai_ship_commands(
     pending_q: Query<(Entity, &PendingAiShipCommand)>,
     ships: Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     ship_positions: Query<&crate::components::Position, With<Ship>>,
+    // #468 PR-3 NICE-TO-FIX #5/#6 fold-in: cargo holds for the
+    // load/unload prechecks. Read-only Without<StarSystem> filter
+    // keeps the query disjoint from the colony's deliverable
+    // stockpile reads on the same world.
+    ship_cargos: Query<&crate::ship::Cargo, With<Ship>>,
+    // #468 PR-3 NICE-TO-FIX #7 fold-in: deliverable stockpiles on
+    // target systems for the load precheck. Empty stockpile means the
+    // emit would immediately reject downstream and the AI re-emits
+    // each tick spamming logs — gate it here.
+    stockpiles: Query<&crate::colony::DeliverableStockpile>,
     empire_rulers: Query<&EmpireRuler, With<Empire>>,
     clock: Res<GameClock>,
     mut writers: DrainShipCommandWriters,
@@ -1331,6 +1288,7 @@ pub fn drain_ai_ship_commands(
                 m.issuer_empire,
                 m.target_system,
                 &ships,
+                &stockpiles,
                 writers.load.as_mut(),
                 &mut next_cmd_id,
                 now,
@@ -1341,6 +1299,7 @@ pub fn drain_ai_ship_commands(
                 m.issuer_empire,
                 &ships,
                 &ship_positions,
+                &ship_cargos,
                 writers.deploy.as_mut(),
                 &mut next_cmd_id,
                 now,
@@ -1719,14 +1678,21 @@ fn apply_move_ruler_to_ship(
 ///
 /// No `PendingAssignment` marker — `load_deliverable` is a per-tick
 /// idempotent cargo order. The original handler validated owner and
-/// stockpile presence; PR-3 keeps the owner check but drops the
-/// stockpile precheck (the downstream handler validates and rejects
-/// on its own). No marker hygiene needed.
+/// stockpile presence; PR-3 keeps the owner check.
+///
+/// #468 PR-3 NICE-TO-FIX #7 fold-in: empty-stockpile dedup gate.
+/// Previously the AI re-emitted each tick spamming logs until either
+/// the stockpile filled or the underlying metric flipped — the
+/// downstream handler always Rejected with "stockpile index out of
+/// range". Gating here drops the emit so the policy can re-emit next
+/// tick without producing reject events, mirroring the legacy
+/// `handle_load_deliverable` precheck.
 fn apply_load_deliverable_to_ship(
     ship_entity: Entity,
     empire_entity: Entity,
     target_system: Entity,
     ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
+    stockpiles: &Query<&crate::colony::DeliverableStockpile>,
     load_writer: Option<&mut MessageWriter<LoadDeliverableRequested>>,
     next_cmd_id: &mut NextCommandId,
     now: i64,
@@ -1747,6 +1713,24 @@ fn apply_load_deliverable_to_ship(
         debug!(
             "drain_ai_ship_commands: load_deliverable ship {:?} not owned by empire {:?}",
             ship_entity, empire_entity
+        );
+        return;
+    }
+
+    // NICE-TO-FIX #7: skip the emit when the target system has no
+    // DeliverableStockpile component or the stockpile is empty at
+    // stockpile_index = 0. The downstream handler validates and
+    // Rejects in this case but each Reject costs an event +
+    // CommandExecuted write; the AI would re-emit each tick.
+    let stockpile_empty = match stockpiles.get(target_system) {
+        Ok(sp) => sp.items.is_empty(),
+        Err(_) => true,
+    };
+    if stockpile_empty {
+        debug!(
+            "drain_ai_ship_commands: load_deliverable skipped — system {:?} has no stockpile items \
+             (would Reject downstream)",
+            target_system
         );
         return;
     }
@@ -1779,11 +1763,20 @@ fn apply_load_deliverable_to_ship(
 /// set at dispatch time) — unload has no meaningful system target, so
 /// we ignore it here. The dedup scan in `npc_decision.rs` also skips
 /// unload kinds, so the sentinel doesn't pollute anything.
+///
+/// #468 PR-3 NICE-TO-FIX #5 / #6 fold-in: precheck the ship's cargo
+/// (item_index = 0 must be present) and ShipState (InSystem |
+/// Loitering only — InFTL / SubLight / Boarding etc. would cause
+/// downstream defer + re-inject log noise). The legacy
+/// `handle_unload_deliverable` had a cargo-index sanity check; PR-3's
+/// migration dropped it and the AI was spamming logs each tick until
+/// the metric flipped.
 fn apply_unload_deliverable_to_ship(
     ship_entity: Entity,
     empire_entity: Entity,
     ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
     ship_positions: &Query<&crate::components::Position, With<Ship>>,
+    ship_cargos: &Query<&crate::ship::Cargo, With<Ship>>,
     deploy_writer: Option<&mut MessageWriter<DeployDeliverableRequested>>,
     next_cmd_id: &mut NextCommandId,
     now: i64,
@@ -1793,7 +1786,7 @@ fn apply_unload_deliverable_to_ship(
         return;
     };
 
-    let Ok((_, ship, _, _)) = ships.get(ship_entity) else {
+    let Ok((_, ship, state, _)) = ships.get(ship_entity) else {
         debug!(
             "drain_ai_ship_commands: unload_deliverable ship {:?} despawned before arrival",
             ship_entity
@@ -1804,6 +1797,40 @@ fn apply_unload_deliverable_to_ship(
         debug!(
             "drain_ai_ship_commands: unload_deliverable ship {:?} not owned by empire {:?}",
             ship_entity, empire_entity
+        );
+        return;
+    }
+
+    // NICE-TO-FIX #6: deploy only makes sense from a stationary state.
+    // A ship in InFTL / SubLight / Boarding triggers downstream
+    // defer + re-inject; the AI ends up spamming the same command for
+    // the entire travel window. Cheap to gate here.
+    if !matches!(
+        state,
+        ShipState::InSystem { .. } | ShipState::Loitering { .. }
+    ) {
+        debug!(
+            "drain_ai_ship_commands: unload_deliverable skipped — ship {:?} not InSystem/Loitering \
+             (state would trigger downstream defer + re-inject)",
+            ship_entity
+        );
+        return;
+    }
+
+    // NICE-TO-FIX #5: cargo precheck — item_index = 0 must exist
+    // before we ask the handler to deploy. The legacy
+    // cargo-index sanity check used to do this; dropped during the
+    // PR-3 migration. Without the gate the handler Rejects each tick
+    // until the metric flips, generating log noise.
+    let cargo_has_item = ship_cargos
+        .get(ship_entity)
+        .map(|c| c.items.first().is_some())
+        .unwrap_or(false);
+    if !cargo_has_item {
+        debug!(
+            "drain_ai_ship_commands: unload_deliverable skipped — ship {:?} has no cargo item at \
+             index 0 (would Reject downstream)",
+            ship_entity
         );
         return;
     }
@@ -3127,6 +3154,15 @@ mod tests {
                     star_type: "yellow_dwarf".into(),
                 },
                 Position::from([0.0, 0.0, 0.0]),
+                // #468 PR-3 NICE-TO-FIX #7: precheck requires a
+                // non-empty DeliverableStockpile on the target
+                // system. Seed one so the dedup gate lets the emit
+                // through.
+                crate::colony::DeliverableStockpile {
+                    items: vec![crate::ship::CargoItem::Deliverable {
+                        definition_id: "test_item".into(),
+                    }],
+                },
             ))
             .id();
 

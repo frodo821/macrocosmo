@@ -180,7 +180,22 @@ pub fn sweep_resolved_assignments(
             AssignmentTarget::System(t) => t,
             AssignmentTarget::Planet(p) => match planets.get(p) {
                 Ok(planet) => planet.system,
-                Err(_) => continue, // planet despawned — Bevy will clear marker on ship despawn
+                Err(_) => {
+                    // #468 PR-3 NICE-TO-FIX #8 fold-in: the planet
+                    // despawned (rare — planets are usually durable for
+                    // the game's life, but a future "planet destroyed"
+                    // event could trigger this). The legacy `continue`
+                    // left the marker stamped on the ship forever,
+                    // permanently excluding the ship from future
+                    // `colonize_*` dispatches. Drop the marker here so
+                    // the NPC can re-task the ship to a different
+                    // target. Bevy's automatic cleanup on ship despawn
+                    // is the only other removal path; without this
+                    // explicit drop the ship would have to be
+                    // destroyed for the marker to clear.
+                    commands.entity(ship_entity).remove::<PendingAssignment>();
+                    continue;
+                }
             },
         };
         let Ok(store) = knowledge.get(pa.faction) else {

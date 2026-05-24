@@ -240,7 +240,18 @@ fn setup_two_region_empire(
 /// the marker layer too. The other dedup tests use the unsuffixed
 /// shared helper because their courier windows are wide enough that
 /// the holder is always present.
-fn count_outbox_for(app: &mut App, kind: macrocosmo_ai::CommandKindId, target: Entity) -> usize {
+///
+/// #468 PR-3 NICE-TO-FIX #3 fold-in: renamed from `count_outbox_for`
+/// to make the marker-inclusive semantics explicit at the call site
+/// (the unsuffixed `count_ai_commitments` covers only the outbox +
+/// holder; this variant adds `PendingAssignment` so the dedup test
+/// passes even when both the holder and the matured event have already
+/// drained out within a single tick).
+fn count_ai_commitments_incl_marker(
+    app: &mut App,
+    kind: macrocosmo_ai::CommandKindId,
+    target: Entity,
+) -> usize {
     let base = common::ai_commitment::count_ai_commitments(app, kind.clone(), target);
     // PendingAssignment marker is the durable surface — survives a
     // zero light-delay window where the holder despawns same-tick.
@@ -301,8 +312,10 @@ fn each_mid_agent_only_dispatches_within_its_own_region() {
     // Each Mid must have dispatched a colonize_system command at the
     // target inside ITS region only. Cross-region targets must stay
     // empty (no leakage).
-    let target_a_count = count_outbox_for(&mut app, cmd_ids::colonize_system(), target_a);
-    let target_b_count = count_outbox_for(&mut app, cmd_ids::colonize_system(), target_b);
+    let target_a_count =
+        count_ai_commitments_incl_marker(&mut app, cmd_ids::colonize_system(), target_a);
+    let target_b_count =
+        count_ai_commitments_incl_marker(&mut app, cmd_ids::colonize_system(), target_b);
     assert!(
         target_a_count >= 1,
         "Mid A must dispatch colonize on target_a (region A); got {}",

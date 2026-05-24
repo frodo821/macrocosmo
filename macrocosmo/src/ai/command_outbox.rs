@@ -421,6 +421,25 @@ pub fn extract_unload_ship(cmd: &Command) -> Option<Entity> {
 /// Returns `None` when the Ruler is missing, already aboard a ship, or
 /// no transport is available — the caller drops the command with a
 /// `debug!` rather than re-queueing.
+///
+/// **Why this kind needs dispatcher-side selection** (NICE-TO-FIX #2
+/// fold-in): every other ship-control kind receives a chosen ship via
+/// `ship_<i>` params — the AI Short layer's policy step picks the
+/// candidate ship at the call site. `move_ruler` is the exception
+/// because the AI policy emits it as soon as the *Ruler decides to
+/// move*; the ship selection is a downstream concern that depends on
+/// which transport happens to be idle at the Ruler's system at
+/// dispatch time. Pushing the selection up into the policy would mean
+/// re-emitting whenever the chosen ship becomes unavailable. Keeping
+/// it in the dispatcher is cheaper and matches the legacy
+/// `handle_move_ruler` precedent.
+///
+/// **Adding more self-selecting kinds in PR-4+**: if a future kind
+/// needs similar dispatcher-side ship selection, add a new
+/// [`ShipKindStrategy`] variant (e.g. `SelfSelecting(fn selector)`)
+/// rather than copying this function — the variant lets the selection
+/// logic stay in `command_outbox.rs` alongside the dispatch table
+/// rather than spreading across modules.
 fn select_move_ruler_transport(
     empire_entity: Entity,
     params: &mut DispatchParams,
@@ -572,6 +591,205 @@ pub struct DispatchParams<'w, 's> {
     >,
 }
 
+/// #468 PR-3 fold-in (HIGH C complete): per-kind strategy for the
+/// ship-control dispatch table in `dispatch_ai_pending_commands`.
+///
+/// Each variant captures everything the dispatcher needs to know about a
+/// kind that ISN'T already in the generic `dispatch_ship_command_per_ship`
+/// path. Adding a new ship-control kind in PR-4+ is:
+///
+///   1. Add one row to `dispatch_table` in `dispatch_ai_pending_commands`
+///      pairing the new `CommandKindId` with the appropriate variant
+///      below (or a new variant if the kind has truly novel routing
+///      needs).
+///   2. Add one matching arm to the drain table in
+///      `command_consumer::drain_ai_ship_commands` so the matured
+///      holder finds its apply function.
+///
+/// No other dispatcher code changes — the cascade of `if cmd.kind == X`
+/// arms that PR-2 used has been folded into the table-driven lookup.
+enum ShipKindStrategy {
+    /// `target_system` from cmd params, optional marker via the supplied
+    /// factory function. Used by `survey_system` (factory:
+    /// `PendingAssignment::survey_system`) and `colonize_system`
+    /// (factory: `PendingAssignment::colonize_system`).
+    SystemMarker(fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment),
+    /// `target_planet` from cmd params, stamps
+    /// `PendingAssignment::colonize_planet` capturing the planet. The
+    /// dispatcher also propagates the planet into the
+    /// `PendingAiShipCommand` holder so the drain emits
+    /// `ColonizeRequested { planet: Some(p) }`.
+    PlanetMarker,
+    /// `target_system` from cmd params, no marker. Used for movement /
+    /// cargo orders (Reposition, Blockade, AttackTarget,
+    /// LoadDeliverable).
+    NoMarker,
+    /// `unload_deliverable`: no meaningful `target_system`; the
+    /// dispatcher uses `ship.home_port` as a stable sentinel. The
+    /// dedup scan in `npc_decision.rs` skips this kind entirely.
+    UnloadSentinel,
+    /// `move_ruler`: emitted before a transport ship is chosen; the
+    /// dispatcher selects an idle transport at the Ruler's current
+    /// system via `select_move_ruler_transport`.
+    MoveRuler,
+}
+
+impl ShipKindStrategy {
+    /// Apply this strategy: extract kind-specific params from `cmd`,
+    /// resolve target/ship overrides, and invoke
+    /// `dispatch_ship_command_per_ship` once per ship covered by the
+    /// command.
+    fn dispatch(
+        &self,
+        cmd: &Command,
+        empire_entity: Entity,
+        origin_pos: [f64; 3],
+        now: i64,
+        commands_buf: &mut Commands,
+        params: &mut DispatchParams,
+    ) {
+        match self {
+            ShipKindStrategy::SystemMarker(factory) => {
+                dispatch_ship_command_per_ship(
+                    cmd,
+                    empire_entity,
+                    origin_pos,
+                    now,
+                    commands_buf,
+                    params,
+                    Some(*factory),
+                    None,
+                    None,
+                    None,
+                );
+            }
+            ShipKindStrategy::PlanetMarker => {
+                // Missing `target_planet` is a malformed-command
+                // condition (the AI Short layer always sets it before
+                // emitting); warn-and-drop to mirror the legacy
+                // `handle_colonize_planet` behaviour.
+                let target_planet = match extract_target_planet(cmd) {
+                    Some(p) => p,
+                    None => {
+                        warn!(
+                            "colonize_planet dispatch: missing target_planet for empire {:?}",
+                            empire_entity
+                        );
+                        return;
+                    }
+                };
+                let factory = move |faction: Entity, _sys: Entity, now: i64| {
+                    crate::ai::assignments::PendingAssignment::colonize_planet(
+                        faction,
+                        target_planet,
+                        now,
+                    )
+                };
+                dispatch_ship_command_per_ship(
+                    cmd,
+                    empire_entity,
+                    origin_pos,
+                    now,
+                    commands_buf,
+                    params,
+                    Some(factory),
+                    None,
+                    Some(target_planet),
+                    None,
+                );
+            }
+            ShipKindStrategy::NoMarker => {
+                dispatch_ship_command_per_ship::<
+                    fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
+                >(
+                    cmd,
+                    empire_entity,
+                    origin_pos,
+                    now,
+                    commands_buf,
+                    params,
+                    None,
+                    None,
+                    None,
+                    None,
+                );
+            }
+            ShipKindStrategy::UnloadSentinel => {
+                let ship_entity = match extract_unload_ship(cmd) {
+                    Some(e) => e,
+                    None => {
+                        warn!(
+                            "unload_deliverable dispatch: missing ship/ship_0 param for empire {:?}",
+                            empire_entity
+                        );
+                        return;
+                    }
+                };
+                let sentinel = match params.ships.get(ship_entity) {
+                    Ok(s) => s.home_port,
+                    Err(_) => {
+                        debug!(
+                            "unload_deliverable dispatch: ship {:?} despawned before dispatch",
+                            ship_entity
+                        );
+                        return;
+                    }
+                };
+                dispatch_ship_command_per_ship::<
+                    fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
+                >(
+                    cmd,
+                    empire_entity,
+                    origin_pos,
+                    now,
+                    commands_buf,
+                    params,
+                    None,
+                    Some(sentinel),
+                    None,
+                    Some(ship_entity),
+                );
+            }
+            ShipKindStrategy::MoveRuler => {
+                // Sanity-check target_system is present up front so the
+                // warn names the right kind (the helper also calls
+                // `extract_target_system` and would bail otherwise).
+                if extract_target_system(cmd).is_none() {
+                    warn!(
+                        "move_ruler dispatch: missing target_system for empire {:?}",
+                        empire_entity
+                    );
+                    return;
+                }
+                let ship_entity = match select_move_ruler_transport(empire_entity, params) {
+                    Some(e) => e,
+                    None => {
+                        debug!(
+                            "move_ruler dispatch: no idle transport at Ruler's system for empire {:?}",
+                            empire_entity
+                        );
+                        return;
+                    }
+                };
+                dispatch_ship_command_per_ship::<
+                    fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
+                >(
+                    cmd,
+                    empire_entity,
+                    origin_pos,
+                    now,
+                    commands_buf,
+                    params,
+                    None,
+                    None,
+                    None,
+                    Some(ship_entity),
+                );
+            }
+        }
+    }
+}
+
 /// End-of-`Reason` system: drain the AI bus's pending command queue,
 /// compute each command's `arrives_at` from the issuing empire's
 /// Ruler position to the command's destination, and stow the entries
@@ -604,28 +822,58 @@ pub fn dispatch_ai_pending_commands(
         .unwrap_or_default();
     let relays: &[crate::knowledge::RelaySnapshot] = &relays_owned;
 
-    // #468 PR-3: ship-control kind routing table. Each entry pairs a
-    // CommandKindId with the `assignment_factory` strategy. The order
-    // here matches `command_consumer::drain_ai_ship_commands`'s drain
-    // table — adding a new ship-control kind in PR-4+ is a single new
-    // row in this slice plus a matching drain-side handler.
+    // #468 PR-3 (fold-in): ship-control kind routing table. Each row
+    // pairs a `CommandKindId` with a `ShipKindStrategy` describing the
+    // per-kind dispatch shape. The dispatcher looks the cmd up in the
+    // table and calls `strategy.dispatch(...)` — adding a new
+    // ship-control kind in PR-4+ is a single new row in this slice
+    // plus a matching drain-side handler in
+    // `command_consumer::drain_ai_ship_commands`.
     //
-    // The factory variants encode the marker strategy:
-    //   * `None` — no `PendingAssignment` (movement / cargo orders).
-    //   * `Some(Survey)` — `PendingAssignment::survey_system`.
-    //   * `Some(ColonizeSystem)` — `PendingAssignment::colonize_system`.
-    //   * `Some(ColonizePlanet)` — `PendingAssignment::colonize_planet`,
-    //     stamped with the resolved planet entity (extracted from the
-    //     cmd's `target_planet` param at dispatch time).
-    let survey_kind = cmd_ids::survey_system();
-    let colonize_kind = cmd_ids::colonize_system();
-    let reposition_kind = cmd_ids::reposition();
-    let blockade_kind = cmd_ids::blockade();
-    let attack_kind = cmd_ids::attack_target();
-    let move_ruler_kind = cmd_ids::move_ruler();
-    let load_kind = cmd_ids::load_deliverable();
-    let unload_kind = cmd_ids::unload_deliverable();
-    let colonize_planet_kind = cmd_ids::colonize_planet();
+    // The strategy variants encode the kind-specific bits the
+    // dispatcher would otherwise have to special-case inline:
+    //   * `SystemMarker(fn)` — stamps `PendingAssignment` keyed on the
+    //     command's `target_system`; the function pointer chooses
+    //     between Survey / ColonizeSystem.
+    //   * `PlanetMarker` — extracts `target_planet` from params, stamps
+    //     `PendingAssignment::colonize_planet`, and propagates the
+    //     planet through `target_planet_override`.
+    //   * `NoMarker` — pure movement / cargo orders (Reposition,
+    //     Blockade, AttackTarget, LoadDeliverable). Idempotent under
+    //     duplicate dispatch because the apply path validates ship
+    //     state.
+    //   * `UnloadSentinel` — `unload_deliverable` has no
+    //     `target_system` and `select_move_ruler_transport`-style ship
+    //     resolution: the dispatcher uses `ship.home_port` as a stable
+    //     sentinel for the holder. The dedup scan skips this kind.
+    //   * `MoveRuler` — boarding kind; dispatcher selects an idle
+    //     transport at the Ruler's current system instead of consuming
+    //     a `ship_<i>` param (the kind is emitted before any ship is
+    //     chosen).
+    let dispatch_table: &[(macrocosmo_ai::CommandKindId, ShipKindStrategy)] = &[
+        (
+            cmd_ids::survey_system(),
+            ShipKindStrategy::SystemMarker(
+                crate::ai::assignments::PendingAssignment::survey_system,
+            ),
+        ),
+        (
+            cmd_ids::colonize_system(),
+            ShipKindStrategy::SystemMarker(
+                crate::ai::assignments::PendingAssignment::colonize_system,
+            ),
+        ),
+        (cmd_ids::colonize_planet(), ShipKindStrategy::PlanetMarker),
+        (cmd_ids::reposition(), ShipKindStrategy::NoMarker),
+        (cmd_ids::blockade(), ShipKindStrategy::NoMarker),
+        (cmd_ids::attack_target(), ShipKindStrategy::NoMarker),
+        (cmd_ids::load_deliverable(), ShipKindStrategy::NoMarker),
+        (
+            cmd_ids::unload_deliverable(),
+            ShipKindStrategy::UnloadSentinel,
+        ),
+        (cmd_ids::move_ruler(), ShipKindStrategy::MoveRuler),
+    ];
 
     for cmd in drained {
         let issuer = cmd.issuer;
@@ -658,204 +906,14 @@ pub fn dispatch_ai_pending_commands(
         // insertion (when applicable) happens NOW (not at arrival) so
         // the `npc_decision.rs` outbox-dedup scan still sees in-flight
         // commands during the courier window.
-        //
-        // Survey + ColonizeSystem + ColonizePlanet stamp
-        // `PendingAssignment` for empire-level dedup. Everything else
-        // (Reposition, Blockade, AttackTarget, MoveRuler, Load /
-        // UnloadDeliverable) is marker-less — duplicate dispatches
-        // are idempotent because the apply path validates ship state
-        // and bails on already-busy ships.
-        if cmd.kind == survey_kind {
-            dispatch_ship_command_per_ship(
+        if let Some((_, strategy)) = dispatch_table.iter().find(|(k, _)| cmd.kind == *k) {
+            strategy.dispatch(
                 &cmd,
                 empire_entity,
                 origin_pos,
                 now,
                 &mut commands_buf,
                 &mut params,
-                Some(crate::ai::assignments::PendingAssignment::survey_system),
-                None,
-                None,
-                None,
-            );
-            continue;
-        }
-        if cmd.kind == colonize_kind {
-            dispatch_ship_command_per_ship(
-                &cmd,
-                empire_entity,
-                origin_pos,
-                now,
-                &mut commands_buf,
-                &mut params,
-                Some(crate::ai::assignments::PendingAssignment::colonize_system),
-                None,
-                None,
-                None,
-            );
-            continue;
-        }
-        if cmd.kind == colonize_planet_kind {
-            // PR-3: planet extracted from the command's `target_planet`
-            // param and propagated into both the holder and the marker
-            // closure. The factory captures the planet entity and
-            // ignores its second arg (which would be `target_system`
-            // — semantically equivalent for this kind because the
-            // settlement handler resolves the planet's parent system
-            // anyway, but we tag the marker as a Planet target so
-            // `sweep_resolved_assignments` reads the right field).
-            //
-            // Missing `target_planet` is a malformed-command condition
-            // (the AI Short layer always sets it before emitting); we
-            // warn-and-drop to mirror the legacy `handle_colonize_planet`
-            // behaviour. Without the warn the entire command would
-            // silently fall through to no-op execution.
-            let target_planet = match extract_target_planet(&cmd) {
-                Some(p) => p,
-                None => {
-                    warn!(
-                        "colonize_planet dispatch: missing target_planet for empire {:?}",
-                        empire_entity
-                    );
-                    continue;
-                }
-            };
-            let factory = move |faction: Entity, _sys: Entity, now: i64| {
-                crate::ai::assignments::PendingAssignment::colonize_planet(
-                    faction,
-                    target_planet,
-                    now,
-                )
-            };
-            dispatch_ship_command_per_ship(
-                &cmd,
-                empire_entity,
-                origin_pos,
-                now,
-                &mut commands_buf,
-                &mut params,
-                Some(factory),
-                None,
-                Some(target_planet),
-                None,
-            );
-            continue;
-        }
-        if cmd.kind == reposition_kind
-            || cmd.kind == blockade_kind
-            || cmd.kind == attack_kind
-            || cmd.kind == load_kind
-        {
-            dispatch_ship_command_per_ship::<
-                fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
-            >(
-                &cmd,
-                empire_entity,
-                origin_pos,
-                now,
-                &mut commands_buf,
-                &mut params,
-                None,
-                None,
-                None,
-                None,
-            );
-            continue;
-        }
-        if cmd.kind == unload_kind {
-            // unload_deliverable has no target_system param — the
-            // ship deploys at its current position. Use the ship's
-            // `home_port` as a stable sentinel for the holder
-            // (`apply_unload_deliverable_to_ship` ignores
-            // `target_system`; the dedup scan skips unload kinds
-            // entirely). Without a sentinel the dispatcher would
-            // bail with "missing target_system".
-            let ship_entity = match extract_unload_ship(&cmd) {
-                Some(e) => e,
-                None => {
-                    warn!(
-                        "unload_deliverable dispatch: missing ship/ship_0 param for empire {:?}",
-                        empire_entity
-                    );
-                    continue;
-                }
-            };
-            let sentinel = match params.ships.get(ship_entity) {
-                Ok(s) => s.home_port,
-                Err(_) => {
-                    debug!(
-                        "unload_deliverable dispatch: ship {:?} despawned before dispatch",
-                        ship_entity
-                    );
-                    continue;
-                }
-            };
-            dispatch_ship_command_per_ship::<
-                fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
-            >(
-                &cmd,
-                empire_entity,
-                origin_pos,
-                now,
-                &mut commands_buf,
-                &mut params,
-                None,
-                Some(sentinel),
-                None,
-                Some(ship_entity),
-            );
-            continue;
-        }
-        if cmd.kind == move_ruler_kind {
-            // PR-3: move_ruler is emitted by the AI Short layer with
-            // just `target_system` (no `ship_<i>`). The dispatcher
-            // selects an idle transport at the Ruler's current
-            // system, then routes through the standard per-ship
-            // pipeline. The Ruler→ship distance is ~0 by
-            // construction (the chosen ship is at the Ruler's
-            // location), so the light delay collapses to ~0 — the
-            // boarding push happens the same tick the holder is
-            // drained. The apply function pushes
-            // PendingRulerBoarding to bridge into
-            // `process_ruler_boarding`.
-            //
-            // No marker — boarding is a movement order; a second
-            // dispatch is idempotent because the apply function
-            // rechecks ship eligibility (`ruler_aboard`, idle, in
-            // ruler's system).
-            // Sanity-check target_system is present (the helper also
-            // calls `extract_target_system` and would bail otherwise,
-            // but the pre-check lets us warn with the right kind name).
-            if extract_target_system(&cmd).is_none() {
-                warn!(
-                    "move_ruler dispatch: missing target_system for empire {:?}",
-                    empire_entity
-                );
-                continue;
-            }
-            let ship_entity = match select_move_ruler_transport(empire_entity, &mut params) {
-                Some(e) => e,
-                None => {
-                    debug!(
-                        "move_ruler dispatch: no idle transport at Ruler's system for empire {:?}",
-                        empire_entity
-                    );
-                    continue;
-                }
-            };
-            dispatch_ship_command_per_ship::<
-                fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
-            >(
-                &cmd,
-                empire_entity,
-                origin_pos,
-                now,
-                &mut commands_buf,
-                &mut params,
-                None,
-                None,
-                None,
-                Some(ship_entity),
             );
             continue;
         }

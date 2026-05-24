@@ -911,6 +911,8 @@ fn attack_target_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
 /// the same tick.
 #[test]
 fn load_deliverable_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
+    use macrocosmo::colony::DeliverableStockpile;
+    use macrocosmo::ship::CargoItem;
     use macrocosmo::ship::command_events::LoadDeliverableRequested;
 
     let mut app = test_app();
@@ -918,6 +920,17 @@ fn load_deliverable_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
 
     let (empire, _home, target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
     spawn_matured_holder(&mut app, cmd_ids::load_deliverable(), ship, target, empire);
+
+    // #468 PR-3 NICE-TO-FIX #7: precheck requires a non-empty
+    // DeliverableStockpile on the target system. Seed one so the
+    // dedup gate lets the emit through.
+    app.world_mut()
+        .entity_mut(target)
+        .insert(DeliverableStockpile {
+            items: vec![CargoItem::Deliverable {
+                definition_id: "test_item".into(),
+            }],
+        });
 
     app.world_mut()
         .resource_mut::<Messages<LoadDeliverableRequested>>()
@@ -938,6 +951,44 @@ fn load_deliverable_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
     );
 }
 
+/// #468 PR-3 NICE-TO-FIX #7 fold-in regression: when the target
+/// system's `DeliverableStockpile` is empty, the dispatcher MUST
+/// drop the emit instead of spamming downstream Rejects each tick.
+/// Pre-gate the AI re-emitted load_deliverable every tick (no marker
+/// to dedup), generating a Rejected `CommandExecuted` per tick until
+/// either the stockpile filled or the AI's metric flipped.
+#[test]
+fn load_deliverable_skipped_when_stockpile_empty() {
+    use macrocosmo::ship::command_events::LoadDeliverableRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, _home, target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    spawn_matured_holder(&mut app, cmd_ids::load_deliverable(), ship, target, empire);
+    // No DeliverableStockpile inserted on `target` — precheck must
+    // gate the emit.
+
+    app.world_mut()
+        .resource_mut::<Messages<LoadDeliverableRequested>>()
+        .update();
+
+    let mut event_total = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        event_total += {
+            let messages = app.world().resource::<Messages<LoadDeliverableRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+    }
+    assert_eq!(
+        event_total, 0,
+        "load_deliverable with empty target stockpile must skip the emit (NICE-TO-FIX #7); \
+         got {} events",
+        event_total
+    );
+}
+
 /// #468 PR-3: matured `unload_deliverable` PendingAiShipCommand at
 /// zero light delay must drain into a `DeployDeliverableRequested`
 /// within the same tick. The deploy event's position is read from
@@ -946,6 +997,7 @@ fn load_deliverable_ai_ship_at_home_ruler_at_home_target_far_zero_delay() {
 #[test]
 fn unload_deliverable_ai_ship_at_home_ruler_at_home_zero_delay() {
     use macrocosmo::ship::command_events::DeployDeliverableRequested;
+    use macrocosmo::ship::{Cargo, CargoItem};
 
     let mut app = test_app();
     app.insert_resource(AiPlayerMode(false));
@@ -954,6 +1006,15 @@ fn unload_deliverable_ai_ship_at_home_ruler_at_home_zero_delay() {
     // unload has no target system — use home as a sentinel (mirrors
     // the dispatcher's `ship.home_port` fallback).
     spawn_matured_holder(&mut app, cmd_ids::unload_deliverable(), ship, home, empire);
+
+    // #468 PR-3 NICE-TO-FIX #5: precheck requires cargo.items[0] to
+    // exist. Seed it so the dedup gate lets the emit through.
+    app.world_mut().entity_mut(ship).insert(Cargo {
+        items: vec![CargoItem::Deliverable {
+            definition_id: "test_item".into(),
+        }],
+        ..Default::default()
+    });
 
     app.world_mut()
         .resource_mut::<Messages<DeployDeliverableRequested>>()
@@ -973,6 +1034,97 @@ fn unload_deliverable_ai_ship_at_home_ruler_at_home_zero_delay() {
         event_total > 0,
         "matured unload_deliverable PendingAiShipCommand at zero light delay must drain \
          into DeployDeliverableRequested within 3 ticks — #468 PR-3 regression"
+    );
+}
+
+/// #468 PR-3 NICE-TO-FIX #5 fold-in regression: when the ship has no
+/// cargo item at index 0, the dispatcher MUST skip the emit
+/// instead of producing a downstream Reject each tick. The original
+/// legacy `handle_unload_deliverable` had this sanity check; the
+/// PR-3 migration dropped it.
+#[test]
+fn unload_deliverable_skipped_when_cargo_empty() {
+    use macrocosmo::ship::command_events::DeployDeliverableRequested;
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, home, _target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    spawn_matured_holder(&mut app, cmd_ids::unload_deliverable(), ship, home, empire);
+    // No `Cargo` component inserted on the ship — precheck must
+    // gate the emit.
+
+    app.world_mut()
+        .resource_mut::<Messages<DeployDeliverableRequested>>()
+        .update();
+
+    let mut event_total = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        event_total += {
+            let messages = app
+                .world()
+                .resource::<Messages<DeployDeliverableRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+    }
+    assert_eq!(
+        event_total, 0,
+        "unload_deliverable with empty/no-cargo ship must skip the emit (NICE-TO-FIX #5); \
+         got {} events",
+        event_total
+    );
+}
+
+/// #468 PR-3 NICE-TO-FIX #6 fold-in regression: when the ship is in
+/// transit (InFTL / SubLight / etc.), the dispatcher MUST skip the
+/// emit instead of producing a downstream defer + re-inject each
+/// tick. Only InSystem and Loitering states make sense for unload.
+#[test]
+fn unload_deliverable_skipped_when_ship_in_transit() {
+    use macrocosmo::ship::command_events::DeployDeliverableRequested;
+    use macrocosmo::ship::{Cargo, CargoItem, ShipState};
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(false));
+
+    let (empire, home, _target, ship) = setup_matured_holder_world(&mut app, "scout_mk1", 5.0);
+    spawn_matured_holder(&mut app, cmd_ids::unload_deliverable(), ship, home, empire);
+
+    // Cargo is present (so we can isolate the InFTL gating).
+    app.world_mut().entity_mut(ship).insert(Cargo {
+        items: vec![CargoItem::Deliverable {
+            definition_id: "test_item".into(),
+        }],
+        ..Default::default()
+    });
+    // Flip the ship to InFTL so the precheck gates the emit.
+    *app.world_mut().get_mut::<ShipState>(ship).unwrap() = ShipState::InFTL {
+        origin_system: home,
+        destination_system: home,
+        departed_at: 0,
+        arrival_at: 1_000,
+    };
+
+    app.world_mut()
+        .resource_mut::<Messages<DeployDeliverableRequested>>()
+        .update();
+
+    let mut event_total = 0usize;
+    for _ in 0..3 {
+        advance_time(&mut app, 1);
+        event_total += {
+            let messages = app
+                .world()
+                .resource::<Messages<DeployDeliverableRequested>>();
+            messages.iter_current_update_messages().count()
+        };
+    }
+    assert_eq!(
+        event_total, 0,
+        "unload_deliverable with ship InFTL must skip the emit (NICE-TO-FIX #6); \
+         got {} events",
+        event_total
     );
 }
 
