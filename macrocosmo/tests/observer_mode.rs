@@ -11,8 +11,9 @@
 use bevy::prelude::*;
 
 use macrocosmo::observer::{
-    ObserverMode, ObserverPlugin, ObserverView, RngSeed, check_all_empires_eliminated,
-    check_time_horizon, esc_to_exit, in_observer_mode, not_in_observer_mode,
+    ObserverMode, ObserverModeKind, ObserverPlugin, ObserverView, RngSeed,
+    check_all_empires_eliminated, check_time_horizon, esc_to_exit, in_observer_mode,
+    not_in_observer_mode,
 };
 use macrocosmo::player::{Empire, Faction, Player};
 use macrocosmo::time_system::GameClock;
@@ -33,7 +34,9 @@ fn observer_app(mode: ObserverMode) -> App {
 #[test]
 fn test_observer_mode_resource_defaults() {
     let m = ObserverMode::default();
-    assert!(!m.enabled);
+    assert!(!m.is_any_observer());
+    assert!(!m.is_empire_view());
+    assert!(!m.is_omniscient());
     assert!(m.seed.is_none());
     assert!(m.time_horizon.is_none());
     assert!(m.initial_speed.is_none());
@@ -43,7 +46,7 @@ fn test_observer_mode_resource_defaults() {
 fn test_observer_run_conditions_reflect_flag() {
     let mut world = World::new();
     world.insert_resource(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     // Run conditions are systems under the hood — pin down their plain
@@ -52,7 +55,7 @@ fn test_observer_run_conditions_reflect_flag() {
     assert!(in_observer_mode_simple(m));
     assert!(!not_in_observer_mode_simple(m));
 
-    world.resource_mut::<ObserverMode>().enabled = false;
+    world.resource_mut::<ObserverMode>().kind = ObserverModeKind::Disabled;
     let m = world.resource::<ObserverMode>();
     assert!(!in_observer_mode_simple(m));
     assert!(not_in_observer_mode_simple(m));
@@ -61,11 +64,16 @@ fn test_observer_run_conditions_reflect_flag() {
 // Local helpers mirroring the run-condition bodies so we can call them
 // outside of a Bevy SystemParam context. If these drift from the real
 // functions the test catches the behaviour change.
+//
+// #490 fold-in: `in_observer_mode` now means "spawn-architecture
+// observer mode" (= `is_empire_view()`) and explicitly excludes the
+// runtime `Omniscient` toggle, so that's what the simple helper
+// mirrors here too.
 fn in_observer_mode_simple(m: &ObserverMode) -> bool {
-    m.enabled
+    m.is_empire_view()
 }
 fn not_in_observer_mode_simple(m: &ObserverMode) -> bool {
-    !m.enabled
+    !m.is_empire_view()
 }
 
 #[test]
@@ -73,7 +81,7 @@ fn test_no_player_mode_boots_without_player_entity() {
     // Build a minimal app that runs observer-mode systems. Even after
     // several updates we expect zero Player entities to have been spawned.
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
 
@@ -95,7 +103,7 @@ fn test_no_player_mode_boots_without_player_entity() {
 #[test]
 fn test_time_horizon_triggers_app_exit() {
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         time_horizon: Some(5),
         ..Default::default()
     });
@@ -124,7 +132,7 @@ fn test_time_horizon_triggers_app_exit() {
 #[test]
 fn test_time_horizon_not_triggered_before_reaching() {
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         time_horizon: Some(100),
         ..Default::default()
     });
@@ -151,7 +159,7 @@ fn test_time_horizon_not_triggered_before_reaching() {
 #[test]
 fn test_all_empires_eliminated_triggers_exit_after_first_hexadies() {
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     app.add_message::<AppExit>();
@@ -179,7 +187,7 @@ fn test_all_empires_eliminated_triggers_exit_after_first_hexadies() {
 #[test]
 fn test_all_empires_eliminated_does_not_trigger_when_empires_exist() {
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     app.add_message::<AppExit>();
@@ -208,7 +216,7 @@ fn test_exit_systems_inert_when_observer_mode_disabled() {
     // hypothetical horizon, no AppExit should be written because the
     // run-condition gates the systems off.
     let mut app = observer_app(ObserverMode {
-        enabled: false,
+        kind: ObserverModeKind::Disabled,
         time_horizon: Some(5),
         ..Default::default()
     });
@@ -227,7 +235,7 @@ fn test_exit_systems_inert_when_observer_mode_disabled() {
 #[test]
 fn test_apply_initial_speed_sets_game_speed() {
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         initial_speed: Some(4.0),
         ..Default::default()
     });
@@ -251,7 +259,7 @@ fn test_apply_initial_speed_sets_game_speed() {
 #[test]
 fn test_observer_view_default_is_empty() {
     let app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     let view = app.world().resource::<ObserverView>();
@@ -264,7 +272,7 @@ fn test_sync_observer_view_to_governor_mirrors_selection() {
     // automatically inserted. Skip this one if the resource is missing —
     // the sync logic itself is covered by unit tests.
     let mut app = observer_app(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     // Manually register AiDebugUi so the sync system can write to it.
@@ -296,7 +304,7 @@ fn test_exit_fn_signatures_are_usable_in_a_schedule() {
     app.add_plugins(MinimalPlugins);
     app.add_message::<AppExit>();
     app.insert_resource(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         time_horizon: Some(1),
         ..Default::default()
     });
@@ -339,7 +347,7 @@ fn test_observer_mode_spawns_visible_star_labels() {
     app.insert_resource(GameClock::new(0));
     app.insert_resource(macrocosmo::time_system::GameSpeed::default());
     app.insert_resource(ObserverMode {
-        enabled: true,
+        kind: ObserverModeKind::EmpireView,
         ..Default::default()
     });
     app.insert_resource(RngSeed::default());

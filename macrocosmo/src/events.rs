@@ -279,7 +279,11 @@ pub fn auto_pause_on_event(
     planets: Query<&crate::galaxy::Planet>,
     ships: Query<(&crate::ship::Ship, &crate::ship::ShipState)>,
 ) {
-    if observer_mode.as_deref().is_some_and(|m| m.enabled) {
+    // #490 fold-in (BUG BLOCKER 2): auto-pause stays armed in Omniscient
+    // (= dev-toggled god view on top of a normal session). Only the
+    // spawn-architecture `EmpireView` mode drains-and-bails — there's no
+    // PlayerEmpire to pause for in `--no-player` / `--observer`.
+    if observer_mode.as_deref().is_some_and(|m| m.is_empire_view()) {
         // Drain the reader so messages don't stack across frames.
         for _ in reader.read() {}
         return;

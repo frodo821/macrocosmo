@@ -42,21 +42,26 @@ use bevy::prelude::*;
 
 use ai::AiPlayerMode;
 use game_state::{LoadSaveRequest, NewGameParams};
-use observer::{CliArgs, ObserverMode, ObserverPlugin, RngSeed};
+use observer::{CliArgs, ObserverMode, ObserverModeKind, ObserverPlugin, RngSeed};
 
 fn main() {
     let cli = CliArgs::parse();
 
     let observer_mode = ObserverMode {
-        enabled: cli.no_player || cli.observer,
+        kind: if cli.no_player || cli.observer {
+            ObserverModeKind::EmpireView
+        } else {
+            ObserverModeKind::Disabled
+        },
         seed: cli.seed,
         time_horizon: cli.time_horizon,
         initial_speed: cli.speed,
         read_only: cli.observer,
+        previous_kind: None,
     };
     let rng_seed = RngSeed(cli.seed);
 
-    if observer_mode.enabled {
+    if observer_mode.is_empire_view() {
         let source = if cli.observer {
             "--observer"
         } else {
@@ -81,7 +86,7 @@ fn main() {
     let new_game_params = NewGameParams {
         seed: cli.seed,
         scenario_id: None,
-        observer_mode: observer_mode.enabled,
+        observer_mode: observer_mode.is_empire_view(),
         faction_override: None,
     };
 

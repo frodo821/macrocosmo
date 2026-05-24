@@ -354,9 +354,7 @@ mod empire_view_tests {
 
     fn spawn_empire(world: &mut World, name: &str, is_player: bool) -> Entity {
         let mut e = world.spawn((
-            Empire {
-                name: name.into(),
-            },
+            Empire { name: name.into() },
             Faction {
                 id: name.to_lowercase(),
                 name: name.into(),
@@ -438,7 +436,20 @@ fn resolve_ui_empire_raw(
     observer_mode: &ObserverMode,
     observer_view: &ObserverView,
 ) -> Option<Entity> {
-    if observer_mode.enabled {
+    // #490: 3-state contract.
+    //
+    // Omniscient still surfaces a "current empire" for panels that need
+    // an empire frame of reference (research overlay, diplomacy panel,
+    // resource totals). The frame is whichever empire the user is
+    // inspecting via `ObserverView` (= the top-bar selector), falling
+    // back to `PlayerEmpire` if no selection was made. The "no
+    // knowledge store" branch is enforced separately via
+    // [`resolve_viewing_knowledge`] / [`empire_view_knowledge`], which
+    // return `None` for Omniscient so callers drop into the realtime
+    // ECS path.
+    if observer_mode.is_omniscient() {
+        observer_view.viewing.or_else(|| player_q.single().ok())
+    } else if observer_mode.is_empire_view() {
         observer_view.viewing
     } else {
         player_q.single().ok()
@@ -461,16 +472,33 @@ fn resolve_ui_empire(obs: &ObserverUiState) -> Option<Entity> {
 /// `PlayerEmpire` in normal play, the `ObserverView`-selected empire
 /// in observer mode).
 ///
-/// **Future-mode hook (#490 Omniscient)**: when the omniscient
-/// (god-view) mode lands, this helper is one of two single change
-/// points (sibling: [`empire_view_knowledge`]) where the empire-view
-/// contract branches to return `None` for omniscient callers (=
-/// realtime ECS ground truth).
-pub(crate) fn resolve_viewing_knowledge<'a>(
+/// **#490 Omniscient hook**: when Omniscient mode is active, callers
+/// should use [`resolve_viewing_knowledge_omniscient`] instead, which
+/// returns `None` so the caller drops into the realtime-ECS
+/// ground-truth path.
+pub fn resolve_viewing_knowledge<'a>(
     empire: Option<Entity>,
     q: &'a Query<&KnowledgeStore, With<crate::player::Empire>>,
 ) -> Option<&'a KnowledgeStore> {
     empire.and_then(|e| q.get(e).ok())
+}
+
+/// #490: Omniscient-aware variant of [`resolve_viewing_knowledge`].
+///
+/// When `omniscient` is `true`, returns `None` regardless of the
+/// `empire` argument — callers fall through to the realtime-ECS
+/// ground-truth path. When `omniscient` is `false`, delegates to
+/// [`resolve_viewing_knowledge`] (= the light-coherent #499 path).
+pub fn resolve_viewing_knowledge_omniscient<'a>(
+    empire: Option<Entity>,
+    q: &'a Query<&KnowledgeStore, With<crate::player::Empire>>,
+    omniscient: bool,
+) -> Option<&'a KnowledgeStore> {
+    if omniscient {
+        None
+    } else {
+        resolve_viewing_knowledge(empire, q)
+    }
 }
 
 /// #499: Wrap a pre-resolved viewing-empire `KnowledgeStore` in the
@@ -481,16 +509,34 @@ pub(crate) fn resolve_viewing_knowledge<'a>(
 /// `empire_q.get(empire_entity)` and passed to multiple panels
 /// (ship-panel / context-menu / camera-centering). The wrapper is
 /// trivial today (`Some(knowledge)`); its job is to pin the linkage
-/// between those panel call sites and the empire-view contract so a
-/// future re-introduction of an observer-mode gate is centralised.
+/// between those panel call sites and the empire-view contract.
 ///
-/// **Future-mode hook (#490 Omniscient)**: sibling to
-/// [`resolve_viewing_knowledge`]. The omniscient branch lands here
-/// when the panels are reached with a resolved knowledge already in
-/// hand.
-pub(crate) fn empire_view_knowledge(knowledge: &KnowledgeStore) -> Option<&KnowledgeStore> {
+/// **#490 Omniscient hook**: callers in panels that respect god view
+/// should use [`empire_view_knowledge_omniscient`] instead, which
+/// returns `None` so the panel drops into the realtime-ECS
+/// ground-truth path.
+pub fn empire_view_knowledge(knowledge: &KnowledgeStore) -> Option<&KnowledgeStore> {
     Some(knowledge)
 }
+
+/// #490: Omniscient-aware variant of [`empire_view_knowledge`].
+///
+/// When `omniscient` is `true`, returns `None` so the panel drops into
+/// the realtime-ECS ground-truth path. Otherwise delegates to
+/// [`empire_view_knowledge`] (= the light-coherent #499 path).
+pub fn empire_view_knowledge_omniscient(
+    knowledge: &KnowledgeStore,
+    omniscient: bool,
+) -> Option<&KnowledgeStore> {
+    if omniscient {
+        None
+    } else {
+        empire_view_knowledge(knowledge)
+    }
+}
+
+// #490 fold-in: deleted `is_omniscient_mode` (dead `#[allow(dead_code)]`
+// wrapper). Call sites use `observer.is_omniscient()` directly.
 
 // ---------------------------------------------------------------------------
 // #440: observer read-only gates for write paths in panels.
@@ -606,10 +652,15 @@ fn compute_ui_state(
     ui_state.player_entity = player_info.map(|(e, _, _)| e);
     ui_state.ruler_aboard_ship = player_info.and_then(|(_, _, aboard)| aboard);
 
-    // #398: In observer mode with a viewed empire, show that empire's
-    // ground-truth resource totals (no light-speed delay). In normal play,
-    // use the PlayerEmpire's KnowledgeStore as before.
-    if observer_mode.enabled {
+    // #398: In observer mode (`EmpireView`) with a viewed empire, show
+    // that empire's ground-truth resource totals (no light-speed delay).
+    // In normal play, use the PlayerEmpire's KnowledgeStore as before.
+    // #490 fold-in (BUG BLOCKER 1): Omniscient toggled on top of a
+    // normal session keeps the PlayerEmpire path so the top-bar
+    // resources don't zero out when `ObserverView.viewing` is unset.
+    // The map-rendering god-view still bypasses the per-empire
+    // knowledge gate via `ViewingEmpireResolver::is_god_view`.
+    if observer_mode.is_empire_view() {
         let viewed_home = observer_view
             .viewing
             .and_then(|e| home_systems.get(e).ok())
@@ -904,7 +955,13 @@ fn draw_top_bar_system(
     factions.sort_by(|a, b| a.1.cmp(&b.1));
 
     let mut selected = observer_view.viewing;
-    let observer_state = if observer_mode.enabled {
+    // #490 fold-in (NICE-TO-FIX 5d): hide the empire selector while
+    // Omniscient is active — god-view bypasses per-empire selection,
+    // and surfacing the selector here would let the player silently
+    // mutate `ObserverView.viewing` (= the previous_kind restore target
+    // for EmpireView ↔ Omniscient flicks). EmpireView keeps the
+    // selector visible.
+    let observer_state = if observer_mode.is_empire_view() {
         Some(top_bar::ObserverBarState {
             enabled: true,
             read_only: observer_mode.read_only,
@@ -1078,11 +1135,14 @@ fn draw_outline_and_tooltips_system(
     // #499: Empire-view contract — observer mode borrows the viewing
     // empire's `KnowledgeStore` so projection / snapshot reads stay
     // light-coherent (= same path as `PlayerEmpire` normal play, just a
-    // different `viewing_empire`). Ground-truth realtime peeks belong to
-    // the future omniscient (god-view) mode (#490). In normal play this
-    // resolves to the `PlayerEmpire`'s store as before.
+    // different `viewing_empire`).
+    // #490: Omniscient mode (god view) returns `None` here so the
+    // outline and map tooltips drop into the realtime-ECS ground-truth
+    // path. The `is_omniscient` flag is also forwarded so tooltips that
+    // need to bypass per-empire visibility tiers can branch directly.
     let empire_entity = resolve_ui_empire(&obs);
-    let knowledge = resolve_viewing_knowledge(empire_entity, &knowledge_q);
+    let omniscient = obs.observer_mode.is_omniscient();
+    let knowledge = resolve_viewing_knowledge_omniscient(empire_entity, &knowledge_q, omniscient);
     let player_system = ui_state.player_system;
 
     // Resolve the viewed empire's home system for capital checks.
@@ -1106,7 +1166,10 @@ fn draw_outline_and_tooltips_system(
         &outline_q.fleets,
         &outline_q.faction_owners,
         empire_entity,
-        obs.observer_mode.enabled,
+        // #490 fold-in: outline's `is_observer` toggles the "show every
+        // empire's colonies/ships" branch — true for both observer-mode
+        // kinds (`EmpireView` and `Omniscient`), false for normal play.
+        obs.observer_mode.is_any_observer(),
         home_system_entity,
         // #487 / #499: Pass the viewing empire's KnowledgeStore so the
         // outline tree's ship-state queries flow through the projection
@@ -1195,6 +1258,11 @@ fn draw_main_panels_system(
         return;
     };
     // #417: Resolve empire entity — PlayerEmpire in normal mode, ObserverView in observer mode.
+    // #490: Omniscient mode falls back to ObserverView.viewing (or
+    // PlayerEmpire) so panels have an empire frame of reference; the
+    // `omniscient` flag below routes panel-knowledge lookups through
+    // the realtime-ECS path via `empire_view_knowledge_omniscient`.
+    let omniscient = selection.observer_mode.is_omniscient();
     let empire_entity = resolve_ui_empire_raw(
         &selection.player_empire_q,
         &selection.observer_mode,
@@ -1272,9 +1340,12 @@ fn draw_main_panels_system(
         .map(|sys| world.core_ships.iter().any(|(at, _)| at.0 == sys))
         .unwrap_or(false);
     // #392: Compute visibility tier for selected system.
-    // #417: In observer mode, grant full visibility (ground truth).
+    // #417 / #490 fold-in: in observer mode (`EmpireView` keeps legacy
+    // parity pending the per-panel light-coherence migration;
+    // `Omniscient` is by definition ground truth) grant full
+    // visibility. Normal play uses the per-empire visibility map.
     let selected_vis_tier = selection.selected_system.0.map(|sys| {
-        if selection.observer_mode.enabled {
+        if selection.observer_mode.is_any_observer() {
             crate::knowledge::SystemVisibilityTier::Local
         } else {
             vis_map_opt
@@ -1321,7 +1392,10 @@ fn draw_main_panels_system(
         selected_system_has_core,
         selected_vis_tier,
         empire_entity,
-        selection.observer_mode.enabled,
+        // #490 fold-in: system-panel `is_observer` opens the
+        // cross-empire "show everything" branch — true for both
+        // observer-mode kinds.
+        selection.observer_mode.is_any_observer(),
         &world.faction_owners,
     );
 
@@ -1404,7 +1478,7 @@ fn draw_main_panels_system(
                         ship_e,
                         ship,
                         &state,
-                        empire_view_knowledge(knowledge),
+                        empire_view_knowledge_omniscient(knowledge, omniscient),
                         Some(empire_entity),
                     )?;
                     if let Some(pos) = view.position() {
@@ -1456,7 +1530,9 @@ fn draw_main_panels_system(
     // ship → snapshot) and entity to the panel. Observer mode resolves
     // to the observed empire's store via `resolve_ui_empire_raw`, then
     // `empire_view_knowledge` pins the contract single change point.
-    let ship_panel_knowledge: Option<&KnowledgeStore> = empire_view_knowledge(knowledge);
+    // #490: Omniscient → `None` so the ship panel reads realtime ECS.
+    let ship_panel_knowledge: Option<&KnowledgeStore> =
+        empire_view_knowledge_omniscient(knowledge, omniscient);
     let ship_panel_actions = ship_panel::draw_ship_panel(
         ctx,
         &mut selection.selected_ship,
@@ -1748,22 +1824,29 @@ fn draw_main_panels_system(
         })
         .collect();
     // #176/#293: Build hostile_systems using real-time for local, KnowledgeStore for remote.
-    // #417: In observer mode, use ground truth (all Hostile entities) directly.
+    // #490 fold-in (BUG BLOCKER 3): only `Omniscient` collapses to
+    // ground truth (= all `Hostile` entities). `EmpireView` routes
+    // through the observed empire's `KnowledgeStore` — same
+    // light-coherent contract `#499` established for `is_god_view`.
     let hostile_systems: std::collections::HashSet<Entity> = {
         let mut set: std::collections::HashSet<Entity> = std::collections::HashSet::new();
-        if selection.observer_mode.enabled {
+        if selection.observer_mode.is_omniscient() {
             // Ground truth: all hostile entities
             for (at_system, _owner) in world.hostile_presence.iter() {
                 set.insert(at_system.0);
             }
         } else {
             // Local system: (AtSystem, FactionOwner, With<Hostile>)
+            // (`player_system` is empty in EmpireView; this branch then
+            // only contributes via the KnowledgeStore loop below.)
             for (at_system, _owner) in world.hostile_presence.iter() {
                 if Some(at_system.0) == player_system {
                     set.insert(at_system.0);
                 }
             }
-            // Remote systems: from KnowledgeStore
+            // Remote systems: from KnowledgeStore (Disabled = player;
+            // EmpireView = observed empire — `knowledge` already
+            // resolves to the viewing empire via `resolve_ui_empire`).
             for (_entity, k) in knowledge.iter() {
                 if Some(k.system) == player_system {
                     continue;
@@ -1854,8 +1937,11 @@ fn draw_main_panels_system(
     // the viewing empire's `KnowledgeStore` (own ship → projection,
     // foreign ship → snapshot) and entity to the context menu. Routed
     // through `empire_view_knowledge` so the empire-view contract is
-    // pinned at a single change point (#490 future-mode hook).
-    let context_menu_knowledge: Option<&KnowledgeStore> = empire_view_knowledge(knowledge);
+    // pinned at a single change point.
+    // #490: Omniscient → `None` so the context menu's ship-state
+    // reads drop into the realtime ECS path.
+    let context_menu_knowledge: Option<&KnowledgeStore> =
+        empire_view_knowledge_omniscient(knowledge, omniscient);
     let ctx_menu_actions = context_menu::draw_context_menu(
         ctx,
         &mut selection.context_menu,

@@ -408,6 +408,240 @@ pub fn projection_screen_pos(
     ))
 }
 
+/// #490 fold-in (BUG BLOCKER 4): god-view ship rendering.
+///
+/// Iterates every `Ship` + `ShipState` entity from realtime ECS — no
+/// `KnowledgeStore` is consulted. Foreign-empire ships are drawn the
+/// same way as own-empire ones (same per-design palette via
+/// [`ship_color_rgb`]) because Omniscient is intentionally not bound
+/// by faction visibility.
+///
+/// **Render strategy** mirrors the projection-driven `draw_ships`
+/// pipeline but reads `ShipState` directly:
+///
+/// * `ShipState::InSystem { system }` / `Refitting` / docked-adjacent →
+///   docked dot circled around the system at offset.
+/// * `ShipState::Surveying { system, .. }` / `Settling { system, .. }`
+///   → pulsing dot at the system.
+/// * `ShipState::MovingFTL { destination, .. }` /
+///   `MovingSubLight { destination, .. }` → semi-transparent marker
+///   at the destination (same dot the projection path uses).
+/// * Other states (loitering with coords, harbour-attached, etc.) fall
+///   back to a small marker at the ship's resolvable system, if any.
+///
+/// Selected-ship command-queue overlay and intended-trajectory dashed
+/// lines are deliberately **not** drawn in god view — those are
+/// player-empire UX affordances. The dev who toggled Omniscient is
+/// debugging, not commanding.
+fn draw_ships_omniscient(
+    gizmos: &mut Gizmos,
+    ships: &Query<(
+        Entity,
+        &Ship,
+        &ShipState,
+        Option<&CommandQueue>,
+        Option<&ShipStats>,
+    )>,
+    stars: &Query<&Position, With<StarSystem>>,
+    view: &GalaxyView,
+    clock: &GameClock,
+) {
+    let mut docked_counts: HashMap<Entity, Vec<DockedShipInfo>> = HashMap::new();
+    let mut system_ship_counts: HashMap<Entity, u32> = HashMap::new();
+
+    for (_entity, ship, state, _queue, stats) in ships.iter() {
+        let is_harbour = is_harbour(stats);
+        let design_id = ship.design_id.clone();
+        match state {
+            // Docked / in-system: collect for badge rendering after the loop.
+            ShipState::InSystem { system } | ShipState::Refitting { system, .. } => {
+                docked_counts
+                    .entry(*system)
+                    .or_default()
+                    .push(DockedShipInfo {
+                        design_id: design_id.clone(),
+                        is_harbour,
+                    });
+                *system_ship_counts.entry(*system).or_insert(0) += 1;
+            }
+            ShipState::Surveying { target_system, .. } => {
+                if let Ok(sys_pos) = stars.get(*target_system) {
+                    let sx = sys_pos.x as f32 * view.scale;
+                    let sy = sys_pos.y as f32 * view.scale;
+                    let (r, g, b) = ship_color_rgb(&design_id);
+                    let pulse = (clock.as_years_f64() as f32 * 5.0).sin() * 0.3 + 0.7;
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
+                    gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
+                }
+            }
+            ShipState::Settling { system, .. } => {
+                if let Ok(sys_pos) = stars.get(*system) {
+                    let sx = sys_pos.x as f32 * view.scale;
+                    let sy = sys_pos.y as f32 * view.scale;
+                    let (r, g, b) = ship_color_rgb(&design_id);
+                    let pulse = (clock.as_years_f64() as f32 * 3.0).sin() * 0.3 + 0.7;
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(r, g, b, pulse));
+                    gizmos.circle_2d(Vec2::new(sx, sy), 3.5, Color::srgb(r, g, b));
+                }
+            }
+            ShipState::InFTL {
+                destination_system, ..
+            } => {
+                if let Ok(sys_pos) = stars.get(*destination_system) {
+                    let cx = sys_pos.x as f32 * view.scale;
+                    let cy = sys_pos.y as f32 * view.scale;
+                    let (r, g, b) = ship_color_rgb(&design_id);
+                    gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgba(r, g, b, 0.4));
+                }
+            }
+            // SubLight: target_system is optional (None = open-space arrival).
+            ShipState::SubLight {
+                target_system,
+                destination,
+                ..
+            } => {
+                let (cx, cy) = match target_system {
+                    Some(sys) => match stars.get(*sys) {
+                        Ok(sys_pos) => {
+                            (sys_pos.x as f32 * view.scale, sys_pos.y as f32 * view.scale)
+                        }
+                        Err(_) => continue,
+                    },
+                    None => (
+                        destination[0] as f32 * view.scale,
+                        destination[1] as f32 * view.scale,
+                    ),
+                };
+                let (r, g, b) = ship_color_rgb(&design_id);
+                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgba(r, g, b, 0.4));
+            }
+            // Loitering ship with inline coordinates.
+            ShipState::Loitering { position } => {
+                let cx = position[0] as f32 * view.scale;
+                let cy = position[1] as f32 * view.scale;
+                let (r, g, b) = ship_color_rgb(&design_id);
+                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgb(r, g, b));
+                gizmos.circle_2d(Vec2::new(cx, cy), 5.5, Color::srgba(r, g, b, 0.25));
+            }
+            // Scouting: render at target_system with a magenta accent
+            // matching the command-queue marker convention.
+            ShipState::Scouting { target_system, .. } => {
+                if let Ok(sys_pos) = stars.get(*target_system) {
+                    let sx = sys_pos.x as f32 * view.scale;
+                    let sy = sys_pos.y as f32 * view.scale;
+                    gizmos.circle_2d(Vec2::new(sx, sy), 6.0, Color::srgba(1.0, 0.3, 1.0, 0.4));
+                    gizmos.circle_2d(Vec2::new(sx, sy), 3.0, Color::srgba(1.0, 0.3, 1.0, 0.6));
+                }
+            }
+        }
+    }
+
+    // Draw docked ships offset around their system (same layout as the
+    // projection-driven path).
+    for (system_entity, ship_infos) in &docked_counts {
+        let Ok(sys_pos) = stars.get(*system_entity) else {
+            continue;
+        };
+        let sx = sys_pos.x as f32 * view.scale;
+        let sy = sys_pos.y as f32 * view.scale;
+        let count = ship_infos.len();
+        for (i, info) in ship_infos.iter().enumerate() {
+            let angle = if count == 1 {
+                0.0
+            } else {
+                std::f32::consts::TAU * (i as f32) / (count as f32)
+            };
+            let offset_radius = 8.0;
+            let ox = sx + angle.cos() * offset_radius;
+            let oy = sy + angle.sin() * offset_radius;
+            if info.is_harbour {
+                let gold = Color::srgb(1.0, 0.85, 0.2);
+                let radius = 5.5;
+                let center = Vec2::new(ox, oy);
+                let top = center + Vec2::new(0.0, radius);
+                let right = center + Vec2::new(radius, 0.0);
+                let bottom = center + Vec2::new(0.0, -radius);
+                let left = center + Vec2::new(-radius, 0.0);
+                gizmos.line_2d(top, right, gold);
+                gizmos.line_2d(right, bottom, gold);
+                gizmos.line_2d(bottom, left, gold);
+                gizmos.line_2d(left, top, gold);
+            } else {
+                let color = ship_color(&info.design_id);
+                gizmos.circle_2d(Vec2::new(ox, oy), 3.0, color);
+            }
+        }
+    }
+
+    // Ship count badges per system.
+    for (system_entity, count) in &system_ship_counts {
+        if *count == 0 {
+            continue;
+        }
+        let Ok(sys_pos) = stars.get(*system_entity) else {
+            continue;
+        };
+        let sx = sys_pos.x as f32 * view.scale;
+        let sy = sys_pos.y as f32 * view.scale;
+        let badge_x = sx + 12.0;
+        let badge_y = sy + 12.0;
+        let badge_radius = 5.0;
+        gizmos.circle_2d(
+            Vec2::new(badge_x, badge_y),
+            badge_radius,
+            Color::srgba(0.1, 0.1, 0.3, 0.8),
+        );
+        if *count <= 4 {
+            for j in 0..*count {
+                let dot_angle = std::f32::consts::TAU * (j as f32) / (*count as f32);
+                let dot_r = 2.0;
+                let dx = badge_x + dot_angle.cos() * dot_r;
+                let dy = badge_y + dot_angle.sin() * dot_r;
+                gizmos.circle_2d(Vec2::new(dx, dy), 1.0, Color::WHITE);
+            }
+        } else {
+            gizmos.circle_2d(Vec2::new(badge_x, badge_y), 3.5, Color::WHITE);
+        }
+    }
+}
+
+/// #490 fold-in: testable summariser used by
+/// [`draw_ships_omniscient`]. Returns the per-system ship-count map
+/// the badge layer renders. Extracted so unit tests can verify the
+/// god-view branch surfaces all empires' ships without spinning up
+/// the gizmo pipeline (which requires render assets).
+#[doc(hidden)]
+#[allow(dead_code)]
+pub fn collect_omniscient_ship_systems(
+    ships: &Query<(
+        Entity,
+        &Ship,
+        &ShipState,
+        Option<&CommandQueue>,
+        Option<&ShipStats>,
+    )>,
+) -> HashMap<Entity, u32> {
+    let mut counts: HashMap<Entity, u32> = HashMap::new();
+    for (_entity, _ship, state, _queue, _stats) in ships.iter() {
+        let sys = match state {
+            ShipState::InSystem { system }
+            | ShipState::Refitting { system, .. }
+            | ShipState::Settling { system, .. } => Some(*system),
+            ShipState::Surveying { target_system, .. }
+            | ShipState::Scouting { target_system, .. } => Some(*target_system),
+            ShipState::InFTL {
+                destination_system, ..
+            } => Some(*destination_system),
+            ShipState::SubLight { target_system, .. } => *target_system,
+            ShipState::Loitering { .. } => None,
+        };
+        if let Some(s) = sys {
+            *counts.entry(s).or_insert(0) += 1;
+        }
+    }
+    counts
+}
+
 pub fn draw_ships(
     mut gizmos: Gizmos,
     ships: Query<(
@@ -433,7 +667,17 @@ pub fn draw_ships(
     // pipeline reads from this empire's `KnowledgeStore.projections` so the
     // galaxy map is light-coherent: no realtime ECS `ShipState` is consulted
     // for own-empire ship rendering (epic #473).
-    let empire_entity = if observer_mode.enabled {
+    //
+    // #490 fold-in (BUG BLOCKER 4): Omniscient renders every empire's
+    // ships from realtime ECS state (= the god-view core UX). The
+    // KnowledgeStore-projection path is skipped entirely; foreign
+    // ghosts (= post-destruction snapshot lag) are also skipped because
+    // god view sees only live entities.
+    if observer_mode.is_omniscient() {
+        draw_ships_omniscient(&mut gizmos, &ships, &stars, &view, &clock);
+        return;
+    }
+    let empire_entity = if observer_mode.is_empire_view() {
         observer_view.viewing.and_then(|e| all_empire_q.get(e).ok())
     } else {
         empire_q.single().ok().map(|(e, _)| e)

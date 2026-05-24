@@ -557,7 +557,7 @@ mod tests {
     #[test]
     fn observer_mode_routes_through_observed_empire_knowledge() {
         use crate::knowledge::{KnowledgeStore, ShipProjection, ShipSnapshotState};
-        use crate::observer::{ObserverMode, ObserverView};
+        use crate::observer::{ObserverMode, ObserverModeKind, ObserverView};
         use crate::player::{Empire, Faction};
 
         let mut world = World::new();
@@ -567,7 +567,7 @@ mod tests {
         // PlayerEmpire (= the empire-view contract: borrow another
         // empire's perspective).
         world.insert_resource(ObserverMode {
-            enabled: true,
+            kind: ObserverModeKind::EmpireView,
             ..Default::default()
         });
 
