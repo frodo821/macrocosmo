@@ -58,6 +58,18 @@ pub struct PendingRulerBoarding {
 pub struct BuildResearchParams<'w, 's> {
     design_registry: Option<Res<'w, ShipDesignRegistry>>,
     building_registry: Option<Res<'w, BuildingRegistry>>,
+    /// #532 F1: deliverable / structure registry borrow used by
+    /// [`handle_build_deliverable`] to resolve cost / build_time /
+    /// cargo_size / display_name for deliverable ids such as
+    /// `"infrastructure_core"`. The deliverable id space is distinct
+    /// from `ShipDesignRegistry` — `define_deliverable { id =
+    /// "infrastructure_core" }` lives here, while
+    /// `define_ship_design { id = "infrastructure_core_v1" }` lives in
+    /// `design_registry`. Before the F1 fold-in the handler resolved
+    /// deliverables through `design_registry`; tests masked the bug by
+    /// injecting a fake `ShipDesignDefinition` with the deliverable id,
+    /// so production Rule 3.5 frontier core deployment silently stalled.
+    deliverable_registry: Option<Res<'w, crate::deep_space::DeliverableRegistry>>,
     /// #470: Ship build orders live on the **Colony** entity (mirror of the
     /// player UI in `system_panel::mod.rs` — the player-facing flow always
     /// picks the first colony in the system as the host). Pre-#470 the AI
@@ -943,34 +955,53 @@ fn handle_build_deliverable(
         return;
     };
 
-    // Resolve cost / build_time from the design registry. Deliverables
-    // share the design registry with ships (both flow through the
-    // shipyard `BuildQueue`); a missing entry means the Lua definition
-    // hasn't been loaded — we surface a warn and skip.
-    let Some(ref registry) = br.design_registry else {
-        warn!("build_deliverable: ShipDesignRegistry not available");
+    // #532 F1: resolve cost / build_time / cargo_size / display_name
+    // from the **DeliverableRegistry**, not the `ShipDesignRegistry`.
+    // Production `scripts/structures/cores.lua` declares
+    // `define_deliverable { id = "infrastructure_core", ... }`, and its
+    // companion `scripts/ships/core_hulls.lua` declares a separate
+    // `define_ship_design { id = "infrastructure_core_v1", ... }` for
+    // the immobile core ship that gets spawned on deploy. Pre-fold-in
+    // this handler used `design_registry.get(definition_id)`, which
+    // resolved against the wrong registry; tests masked the bug by
+    // injecting a fake `ShipDesignDefinition` keyed on the deliverable
+    // id. The queued `BuildOrder.design_id` stays as the deliverable id
+    // (e.g. `"infrastructure_core"`) — downstream
+    // `process_deliverable_commands` uses that to look up
+    // `spawns_as_ship` via the same `DeliverableRegistry`.
+    let Some(ref registry) = br.deliverable_registry else {
+        warn!("build_deliverable: DeliverableRegistry not available");
         return;
     };
-    let Some(design) = registry.get(&definition_id) else {
+    let Some(def) = registry.get(&definition_id) else {
         warn!(
             "build_deliverable: unknown deliverable definition '{}'",
             definition_id
         );
         return;
     };
+    let Some(meta) = def.deliverable.as_ref() else {
+        warn!(
+            "build_deliverable: definition '{}' is not shipyard-buildable \
+             (no DeliverableMetadata — declared via `define_structure`?)",
+            definition_id
+        );
+        return;
+    };
 
-    let build_time = registry.build_time(&definition_id);
     let order = BuildOrder {
         order_id: 0,
-        kind: BuildKind::Deliverable { cargo_size: 1 },
+        kind: BuildKind::Deliverable {
+            cargo_size: meta.cargo_size,
+        },
         design_id: definition_id.clone(),
-        display_name: design.name.clone(),
-        minerals_cost: design.build_cost_minerals,
+        display_name: def.name.clone(),
+        minerals_cost: meta.cost.minerals,
         minerals_invested: Amt::ZERO,
-        energy_cost: design.build_cost_energy,
+        energy_cost: meta.cost.energy,
         energy_invested: Amt::ZERO,
-        build_time_total: build_time,
-        build_time_remaining: build_time,
+        build_time_total: meta.build_time,
+        build_time_remaining: meta.build_time,
     };
 
     // #470: Walk colonies and pick the first one hosted in the chosen
@@ -3173,30 +3204,45 @@ mod tests {
         }
     }
 
-    /// Helper: a minimal deliverable definition in the design registry.
-    /// Mirrors the shape used by `infrastructure_core` in the production
-    /// Lua scripts (cost / build_time small enough that tests don't
-    /// have to advance the queue).
-    fn test_deliverable_design_registry() -> ShipDesignRegistry {
-        use crate::ship_design::ShipDesignDefinition;
-        let mut registry = ShipDesignRegistry::default();
-        registry.insert(ShipDesignDefinition {
+    /// Helper: a minimal deliverable definition in the deliverable
+    /// registry. Mirrors the shape used by `infrastructure_core` in the
+    /// production Lua scripts (cost / build_time small enough that
+    /// tests don't have to advance the queue).
+    ///
+    /// #532 F1: this previously returned a `ShipDesignRegistry` with a
+    /// fake `ShipDesignDefinition` keyed on the deliverable id —
+    /// masking the bug that the handler looked up the wrong registry.
+    /// After F1 the handler resolves via `DeliverableRegistry`, so the
+    /// helper inserts a real `DeliverableDefinition` instead.
+    fn test_deliverable_registry() -> crate::deep_space::DeliverableRegistry {
+        use crate::deep_space::{
+            DeliverableMetadata, DeliverableRegistry, ResourceCost, StructureDefinition,
+        };
+        let mut registry = DeliverableRegistry::default();
+        registry.insert(StructureDefinition {
             id: "infra_core".into(),
             name: "Infrastructure Core".into(),
             description: String::new(),
-            hull_id: "deliverable_hull".into(),
-            modules: vec![],
-            can_survey: false,
-            can_colonize: false,
-            maintenance: Amt::ZERO,
-            build_cost_minerals: Amt::units(20),
-            build_cost_energy: Amt::units(10),
-            build_time: 5,
-            hp: 1.0,
-            sublight_speed: 0.0,
-            ftl_range: 0.0,
-            revision: 0,
-            is_direct_buildable: true,
+            max_hp: 1.0,
+            energy_drain: Amt::ZERO,
+            capabilities: std::collections::HashMap::new(),
+            prerequisites: None,
+            deliverable: Some(DeliverableMetadata {
+                cost: ResourceCost {
+                    minerals: Amt::units(20),
+                    energy: Amt::units(10),
+                },
+                build_time: 5,
+                cargo_size: 1,
+                scrap_refund: 0.25,
+                // These per-handler tests do not exercise the deploy /
+                // spawn pipeline that consumes `spawns_as_ship`.
+                spawns_as_ship: None,
+            }),
+            upgrade_to: Vec::new(),
+            upgrade_from: None,
+            on_built: None,
+            on_upgraded: None,
         });
         registry
     }
@@ -3204,7 +3250,7 @@ mod tests {
     #[test]
     fn build_deliverable_queues_order_at_owned_system() {
         let mut app = test_app();
-        app.insert_resource(test_deliverable_design_registry());
+        app.insert_resource(test_deliverable_registry());
 
         let world = app.world_mut();
         let empire_entity = world
@@ -3272,7 +3318,7 @@ mod tests {
     #[test]
     fn build_deliverable_dedups_same_definition_per_system() {
         let mut app = test_app();
-        app.insert_resource(test_deliverable_design_registry());
+        app.insert_resource(test_deliverable_registry());
 
         let world = app.world_mut();
         let empire_entity = world

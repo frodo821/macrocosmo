@@ -120,6 +120,13 @@ pub struct ResourceGateParams<'w, 's> {
     /// standalone param) to free a slot so [`ResourceGateParams`]
     /// itself fits under Bevy's 16-param ceiling.
     pub design_registry: Option<Res<'w, crate::ship_design::ShipDesignRegistry>>,
+    /// #532 F1: deliverable registry borrow handed to the
+    /// [`BevyMidGameAdapter::can_afford_design`] gate so the same call
+    /// covers Rule 3.5 deliverable ids (e.g. `"infrastructure_core"`)
+    /// as well as Rule 6 ship-design ids. The two id spaces are
+    /// disjoint in production Lua and the gate falls through
+    /// design → deliverable on miss.
+    pub deliverable_registry: Option<Res<'w, crate::deep_space::DeliverableRegistry>>,
 }
 
 /// Marker component: this empire's decisions are made by the AI policy.
@@ -1507,6 +1514,7 @@ pub fn npc_decision_tick(
             current_energy,
             design_registry: resource_gate.design_registry.as_deref(),
             building_registry: resource_gate.building_registry.as_deref(),
+            deliverable_registry: resource_gate.deliverable_registry.as_deref(),
         };
         // Stance is read from the per-MidAgent state. Today every
         // rule ignores stance (`MidStanceAgent::decide` accepts but

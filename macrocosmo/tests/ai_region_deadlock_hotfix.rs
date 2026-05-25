@@ -253,35 +253,53 @@ fn install_capital_only_region(app: &mut App, empire: Entity, capital: Entity) {
 }
 
 /// Register a minimal `infrastructure_core` deliverable definition in
-/// the test design registry. Mirrors the production
+/// the test deliverable registry. Mirrors the production
 /// `scripts/structures/cores.lua` shape (id matches; cost / build_time
 /// scaled down so tests don't need to advance the BuildQueue out).
 /// Called from each test's setup before any `advance_time` so the
 /// dispatched `build_deliverable` lookup succeeds.
+///
+/// #532 F1: this used to inject a fake `ShipDesignDefinition` with the
+/// deliverable id because `handle_build_deliverable` previously looked
+/// up `ShipDesignRegistry`. After F1 the handler resolves via
+/// `DeliverableRegistry`, so the test fixture has to inject a real
+/// `DeliverableDefinition` instead — otherwise these tests would now
+/// pass the bug-free production handler an unknown deliverable.
 fn register_test_infrastructure_core(app: &mut App) {
     use macrocosmo::amount::Amt;
-    use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    use macrocosmo::deep_space::{
+        DeliverableMetadata, DeliverableRegistry, ResourceCost, StructureDefinition,
+    };
     let mut registry = app
         .world_mut()
-        .remove_resource::<ShipDesignRegistry>()
+        .remove_resource::<DeliverableRegistry>()
         .unwrap_or_default();
-    registry.insert(ShipDesignDefinition {
+    registry.insert(StructureDefinition {
         id: "infrastructure_core".into(),
         name: "Infrastructure Core".into(),
         description: String::new(),
-        hull_id: "infrastructure_core_hull".into(),
-        modules: vec![],
-        can_survey: false,
-        can_colonize: false,
-        maintenance: Amt::ZERO,
-        build_cost_minerals: Amt::units(1),
-        build_cost_energy: Amt::units(1),
-        build_time: 1,
-        hp: 400.0,
-        sublight_speed: 0.0,
-        ftl_range: 0.0,
-        revision: 0,
-        is_direct_buildable: true,
+        max_hp: 400.0,
+        energy_drain: Amt::ZERO,
+        capabilities: std::collections::HashMap::new(),
+        prerequisites: None,
+        deliverable: Some(DeliverableMetadata {
+            cost: ResourceCost {
+                minerals: Amt::units(1),
+                energy: Amt::units(1),
+            },
+            build_time: 1,
+            cargo_size: 1,
+            scrap_refund: 0.25,
+            // Test fixture: in production this points at
+            // `infrastructure_core_v1` (the immobile core ship design).
+            // The deploy / spawn pipeline is not exercised by these
+            // AI-bus tests, so we leave it `None`.
+            spawns_as_ship: None,
+        }),
+        upgrade_to: Vec::new(),
+        upgrade_from: None,
+        on_built: None,
+        on_upgraded: None,
     });
     app.insert_resource(registry);
 }

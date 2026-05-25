@@ -340,6 +340,15 @@ pub struct BevyMidGameAdapter<'a> {
     /// Hotfix-3: building registry borrow used by
     /// [`MidGameAdapter::can_afford_building`].
     pub building_registry: Option<&'a crate::colony::BuildingRegistry>,
+    /// #532 F1: deliverable registry borrow used by
+    /// [`MidGameAdapter::can_afford_design`] to gate deliverable-id
+    /// affordability (e.g. `"infrastructure_core"` from Rule 3.5). The
+    /// design and deliverable id spaces are disjoint in production Lua
+    /// (`define_deliverable { id = "infrastructure_core" }` vs.
+    /// `define_ship_design { id = "infrastructure_core_v1" }`); the gate
+    /// tries `design_registry` first and falls back to this registry on
+    /// miss so a single `can_afford_design` call covers both kinds.
+    pub deliverable_registry: Option<&'a crate::deep_space::DeliverableRegistry>,
 }
 
 impl<'a> BevyMidGameAdapter<'a> {
@@ -460,19 +469,33 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
     }
 
     fn can_afford_design(&self, design_id: &str) -> bool {
-        // Unknown design → permissive: avoid silently suppressing
-        // a Rule emission on a typo; the handler will warn.
-        let Some(registry) = self.design_registry else {
-            return true;
-        };
-        let Some(def) = registry.get(design_id) else {
-            return true;
-        };
-        // Soft gate: each resource must be individually fundable
-        // out of the current stockpile. Cost == 0 trivially passes
-        // (Amt comparison is on raw u64).
-        self.current_minerals >= def.build_cost_minerals
-            && self.current_energy >= def.build_cost_energy
+        // #532 F1: the `design_id` parameter is overloaded — Rule 6
+        // (`build_ship`) passes a `ShipDesignRegistry` id, while
+        // Rule 3.5 (`build_deliverable` after macro decomposition)
+        // passes a `DeliverableRegistry` id (e.g.
+        // `"infrastructure_core"`). Try ship-design first; on miss,
+        // fall through to the deliverable registry so the gate covers
+        // both kinds with one call. Unknown in **both** registries →
+        // permissive (avoids silently suppressing a Rule emission on a
+        // typo; the handler will warn).
+        if let Some(registry) = self.design_registry {
+            if let Some(def) = registry.get(design_id) {
+                // Soft gate: each resource must be individually
+                // fundable out of the current stockpile. Cost == 0
+                // trivially passes (Amt comparison is on raw u64).
+                return self.current_minerals >= def.build_cost_minerals
+                    && self.current_energy >= def.build_cost_energy;
+            }
+        }
+        if let Some(registry) = self.deliverable_registry {
+            if let Some(def) = registry.get(design_id) {
+                if let Some(meta) = def.deliverable.as_ref() {
+                    return self.current_minerals >= meta.cost.minerals
+                        && self.current_energy >= meta.cost.energy;
+                }
+            }
+        }
+        true
     }
 
     fn can_afford_building(&self, building_id: &str) -> bool {
