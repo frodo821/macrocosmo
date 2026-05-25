@@ -797,8 +797,43 @@ fn handle_build_structure(
             }
         }
 
-        // Find an empty slot
-        let empty_slot = buildings.slots.iter().position(|s| s.is_none());
+        // Hotfix-3: same-building dedup at the colony level.
+        // Mirrors the system-building branch above (line 736-746).
+        // The brp QA report observed a single colony with 165
+        // stacked `mine` orders — Rule 5b re-emits every Reason
+        // tick and pre-hotfix the planet-building branch had no
+        // dedup, so each re-emit found a free slot and pushed
+        // another order. The same-building-id-already-queued check
+        // collapses the runaway stack to one outstanding order at
+        // a time per (colony, building_id). A future "build two
+        // mines for parallel slots" workflow can opt out by
+        // emitting with an explicit `target_slot` param (not
+        // wired today).
+        if building_queue
+            .queue
+            .iter()
+            .any(|o| o.building_id.as_str() == building_id_str)
+        {
+            debug!(
+                "build_structure (planet): '{}' already queued at colony {:?} (system {:?}), skipping duplicate emission",
+                building_id_str, colony_entity, sys
+            );
+            continue;
+        }
+
+        // Find an empty slot, excluding slots already targeted by
+        // pending orders in this queue (defense in depth — without
+        // this two distinct building_id orders could race for the
+        // same slot index; the same-id dedup above already covers
+        // the common case but a future expansion may emit multiple
+        // building kinds per tick).
+        let pending_slots: std::collections::HashSet<usize> =
+            building_queue.queue.iter().map(|o| o.target_slot).collect();
+        let empty_slot = buildings
+            .slots
+            .iter()
+            .enumerate()
+            .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
         let Some(slot_idx) = empty_slot else { continue };
 
         building_queue.push_build_order(BuildingOrder {

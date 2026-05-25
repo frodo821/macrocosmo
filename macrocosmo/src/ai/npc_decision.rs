@@ -53,6 +53,38 @@ pub struct DedupParams<'w, 's> {
     pub planet_systems: Query<'w, 's, &'static crate::galaxy::Planet>,
 }
 
+/// Hotfix-3: bundle of queries / resources used to drive the
+/// resource gate + Rule 6 fleet census. Centralised in one
+/// `SystemParam` so the outer `npc_decision_tick` fn stays under
+/// Bevy's 16-param limit even after the gate plumbing lands.
+#[derive(SystemParam)]
+pub struct ResourceGateParams<'w, 's> {
+    /// Per-StarSystem stockpile. Resources are local to the system
+    /// (see `CLAUDE.md` — "ResourceStockpile on StarSystem"). We sum
+    /// across the Mid's `member_systems` for the empire-wide
+    /// affordability check.
+    pub stockpiles:
+        Query<'w, 's, &'static crate::colony::ResourceStockpile, With<crate::galaxy::StarSystem>>,
+    /// Per-colony `BuildQueue`. Walked once per empire to fold
+    /// already-queued ship orders into the Rule 6 fleet census so
+    /// the count rises the moment Rule 6 emits, not 30 hexadies
+    /// later when the ship spawns.
+    pub build_queues: Query<
+        'w,
+        's,
+        (
+            &'static crate::colony::building_queue::BuildQueue,
+            &'static crate::faction::FactionOwner,
+        ),
+    >,
+    /// Building registry borrow for [`super::mid_adapter::MidGameAdapter::can_afford_building`].
+    pub building_registry: Option<Res<'w, crate::colony::BuildingRegistry>>,
+    /// Ship design registry borrow. Folded into this bundle (was a
+    /// standalone param) to free a slot so [`ResourceGateParams`]
+    /// itself fits under Bevy's 16-param ceiling.
+    pub design_registry: Option<Res<'w, crate::ship_design::ShipDesignRegistry>>,
+}
+
 /// Marker component: this empire's decisions are made by the AI policy.
 /// Applied to NPC empires automatically, and optionally to the player
 /// empire when `--ai-player` is passed or `AiPlayerMode(true)` is set.
@@ -366,6 +398,12 @@ pub struct EmpireShortInputs {
     pub net_production_energy: f64,
     /// Empire-wide net food production (`net_production_food`).
     pub net_production_food: f64,
+    /// Hotfix-3: sum of `ResourceStockpile.minerals` across the
+    /// region's `member_systems`. Consumed by Rule 5b's resource
+    /// gate (`ShortGameAdapter::can_afford_building`).
+    pub current_minerals: crate::amount::Amt,
+    /// Hotfix-3: sum of `ResourceStockpile.energy`.
+    pub current_energy: crate::amount::Amt,
 }
 
 /// Rank candidate unsurveyed systems by "accessibility" — a raw-distance
@@ -588,7 +626,6 @@ pub fn npc_decision_tick(
         &crate::ship::CommandQueue,
     )>,
     research_queues: Query<&ResearchQueue, With<Empire>>,
-    design_registry: Option<Res<crate::ship_design::ShipDesignRegistry>>,
     empire_rulers: Query<&EmpireRuler, With<Empire>>,
     ruler_q: Query<(&StationedAt, Option<&AboardShip>), With<Ruler>>,
     // Round 9 PR #2 Step 4 + Round 11 Bug A + #468 PR-1: dedup against
@@ -620,6 +657,10 @@ pub fn npc_decision_tick(
     // automatically activate cross-region isolation.
     mid_agents: Query<(Entity, &super::mid_agent::MidAgent)>,
     regions: Query<&crate::region::Region>,
+    // Hotfix-3: bundled because individual stockpile + build queue +
+    // building registry params would push the function over Bevy's
+    // 16-param limit.
+    resource_gate: ResourceGateParams,
     #[cfg(feature = "ai-log")] mut log: Option<ResMut<super::debug_log::AiLogConfig>>,
 ) {
     use crate::knowledge::SystemVisibilityTier;
@@ -1111,10 +1152,12 @@ pub fn npc_decision_tick(
                     .unwrap_or([0.0, 0.0, 0.0]);
                 let has_pending = pending_assigned_ships.contains(&ship_entity);
                 let is_idle = system.is_some() && queue.commands.is_empty() && !has_pending;
-                let can_survey = design_registry
+                let can_survey = resource_gate
+                    .design_registry
                     .as_ref()
                     .is_some_and(|r| r.can_survey(&ship.design_id));
-                let can_colonize = design_registry
+                let can_colonize = resource_gate
+                    .design_registry
                     .as_ref()
                     .is_some_and(|r| r.can_colonize(&ship.design_id));
                 let is_combat = !can_survey && !can_colonize && !ship.is_immobile();
@@ -1212,6 +1255,95 @@ pub fn npc_decision_tick(
             let split = colonizable_demand.min(all_idle_colonizers.len());
             (&all_idle_colonizers[..split], &all_idle_colonizers[split..])
         };
+
+        // Hotfix-3 (A): empire-wide fleet census. The Rule 6 logic
+        // needs to see the explorer that's currently surveying
+        // (which is in `ShipState::Surveying`, NOT
+        // `ShipState::InSystem`, so it was evicted by the
+        // `info.system.is_some()` filter that builds
+        // `NpcContext.ships`). We re-walk `all_ships` here with
+        // only the empire-ownership filter so every alive ship is
+        // counted regardless of state.
+        //
+        // Same-design ships already queued in any colony build
+        // queue owned by this empire are also folded in so the
+        // count rises the moment Rule 6 emits a `build_ship`
+        // proposal, not 30 hexadies later when the ship spawns.
+        // Without this, the gate fires once, the dedup absorbs
+        // re-emissions for that one build, but the moment build
+        // completes the new ship starts surveying and Rule 6 sees
+        // `survey_count == 0` again — infinite loop returns.
+        let mut census = crate::ai::mid_adapter::FleetComposition::default();
+        if let Some(ref registry) = resource_gate.design_registry {
+            for (_, ship, _, _) in &all_ships {
+                if ship.owner != crate::ship::Owner::Empire(entity) {
+                    continue;
+                }
+                let can_survey = registry.can_survey(&ship.design_id);
+                let can_colonize = registry.can_colonize(&ship.design_id);
+                let is_combat = !can_survey && !can_colonize && !ship.is_immobile();
+                if can_survey {
+                    census.survey_count += 1;
+                }
+                if can_colonize {
+                    census.colony_count += 1;
+                }
+                if is_combat {
+                    census.combat_count += 1;
+                }
+            }
+            // Fold queued (not-yet-spawned) ship orders from every
+            // empire-owned colony into the census. `BuildKind::Ship`
+            // entries name a `design_id`; `Deliverable` entries do
+            // not contribute (they expand into Core / payload items,
+            // not ships).
+            for (queue, owner) in &resource_gate.build_queues {
+                if owner.0 != entity {
+                    continue;
+                }
+                for order in &queue.queue {
+                    if !matches!(order.kind, crate::colony::building_queue::BuildKind::Ship) {
+                        continue;
+                    }
+                    let can_survey = registry.can_survey(&order.design_id);
+                    let can_colonize = registry.can_colonize(&order.design_id);
+                    // Mirror the per-ship `is_combat` derivation. We
+                    // can't reach `is_immobile()` from a design id
+                    // without instantiating; queued ships are always
+                    // mobile by construction (Lua-defined hulls have
+                    // sublight_speed > 0 for the player-facing
+                    // designs Rule 6 emits), so we treat them as
+                    // mobile here.
+                    let is_combat = !can_survey && !can_colonize;
+                    if can_survey {
+                        census.survey_count += 1;
+                    }
+                    if can_colonize {
+                        census.colony_count += 1;
+                    }
+                    if is_combat {
+                        census.combat_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Hotfix-3 (B): empire-wide stockpile. Sum across the Mid's
+        // `member_systems`. Today every empire has one region whose
+        // `member_systems` is the empire's owned-system set, so this
+        // equals the empire total. Multi-region splits (PR2c+) keep
+        // the per-region sum intact — each Mid sees only its own
+        // region's stockpile, which is the correct soft gate for
+        // per-region build decisions.
+        let mut current_minerals = crate::amount::Amt::ZERO;
+        let mut current_energy = crate::amount::Amt::ZERO;
+        for &sys in member_systems_slice {
+            if let Ok(stockpile) = resource_gate.stockpiles.get(sys) {
+                current_minerals = current_minerals.add(stockpile.minerals);
+                current_energy = current_energy.add(stockpile.energy);
+            }
+        }
+
         let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
             faction: entity,
             context: &context,
@@ -1221,6 +1353,11 @@ pub fn npc_decision_tick(
             member_systems: member_systems_slice,
             expansion_frontier: &context.expansion_frontier_systems,
             idle_couriers: idle_couriers_slice,
+            fleet_composition: census,
+            current_minerals,
+            current_energy,
+            design_registry: resource_gate.design_registry.as_deref(),
+            building_registry: resource_gate.building_registry.as_deref(),
         };
         // Stance is read from the per-MidAgent state. Today every
         // rule ignores stance (`MidStanceAgent::decide` accepts but
@@ -1344,6 +1481,12 @@ pub fn npc_decision_tick(
                 free_building_slots,
                 net_production_energy,
                 net_production_food,
+                // Hotfix-3: reuse the stockpile sum already
+                // computed for the Mid adapter — same `member_systems`
+                // scope, same numbers. The Short adapter consumes
+                // these via `can_afford_building` (Rule 5b).
+                current_minerals,
+                current_energy,
             },
         );
 

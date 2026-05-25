@@ -143,7 +143,14 @@ impl MidStanceAgent {
         // ship within one tick.
         let idle_couriers = adapter.idle_couriers();
         let frontier = adapter.expansion_frontier_systems();
-        if !frontier.is_empty() && !idle_couriers.is_empty() {
+        // Hotfix-3 resource gate: `deploy_deliverable` decomposes
+        // into `build_deliverable(infrastructure_core)` at the
+        // colony, so the same stockpile check applies. Pre-hotfix a
+        // starving empire flooded Cores onto the frontier list.
+        if !frontier.is_empty()
+            && !idle_couriers.is_empty()
+            && adapter.can_afford_design("infrastructure_core")
+        {
             for (ship, &target) in idle_couriers.iter().zip(frontier.iter()) {
                 let cmd = Command::new(cmd_ids::deploy_deliverable(), faction_id, now)
                     .with_param(
@@ -168,7 +175,18 @@ impl MidStanceAgent {
         let can_build = adapter.can_build_ships();
         let systems_with_core = adapter.systems_with_core();
         let colony_count = adapter.colony_count();
-        if can_build < 1.0 && systems_with_core > 0.0 && colony_count > 0.0 {
+        if can_build < 1.0
+            && systems_with_core > 0.0
+            && colony_count > 0.0
+            // Hotfix-3 resource gate: don't emit shipyard build
+            // proposals an empty stockpile cannot pay for. Pre-hotfix
+            // the system-building dedup absorbed the per-tick
+            // re-emission, but only after the slot was already
+            // booked — a minerals-starved empire still left the
+            // shipyard order frozen in the queue forever, starving
+            // every later rule that needs the shipyard.
+            && adapter.can_afford_building("shipyard")
+        {
             let cmd = Command::new(cmd_ids::build_structure(), faction_id, now)
                 .with_param("building_id", CommandValue::Str("shipyard".into()));
             // `build_structure` has no `target_system` param — the
@@ -191,17 +209,33 @@ impl MidStanceAgent {
         if can_build >= 1.0 {
             let comp = adapter.fleet_composition();
 
-            if comp.survey_count == 0 && adapter.has_unsurveyed_targets() {
-                let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
-                    .with_param("design_id", CommandValue::Str("explorer_mk1".into()));
-                proposals.push(Proposal::faction_wide(cmd));
+            // Hotfix-3: priority order is `survey → colony → combat<3`.
+            // The branch picks the highest-priority *unmet need*, then
+            // applies the resource gate. Failing the gate means
+            // "wait, don't spend" — we do NOT fall through to a
+            // cheaper branch because the cheaper need wasn't the one
+            // we identified. Mirrors how a starving human player
+            // would defer the build rather than switch designs.
+            //
+            // Pre-hotfix the gate condition didn't exist, so this
+            // structural shape (separate need-detection then gate)
+            // is new. The legacy fall-through behaviour
+            // (survey_count != 0 → check colony → check combat) is
+            // preserved for the need-detection step itself.
+            let pick = if comp.survey_count == 0 && adapter.has_unsurveyed_targets() {
+                Some("explorer_mk1")
             } else if comp.colony_count == 0 && adapter.has_colonizable_targets() {
-                let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
-                    .with_param("design_id", CommandValue::Str("colony_ship_mk1".into()));
-                proposals.push(Proposal::faction_wide(cmd));
+                Some("colony_ship_mk1")
             } else if comp.combat_count < 3 {
+                Some("patrol_corvette")
+            } else {
+                None
+            };
+            if let Some(design_id) = pick
+                && adapter.can_afford_design(design_id)
+            {
                 let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
-                    .with_param("design_id", CommandValue::Str("patrol_corvette".into()));
+                    .with_param("design_id", CommandValue::Str(design_id.into()));
                 proposals.push(Proposal::faction_wide(cmd));
             }
         }
@@ -254,6 +288,11 @@ mod tests {
         fleet_composition: FleetComposition,
         has_unsurveyed_targets: bool,
         has_colonizable_targets: bool,
+        /// Hotfix-3 resource gate. `None` = trait default (always
+        /// affordable). `Some(set)` = explicit allow-list of
+        /// `design_id` strings the stub considers fundable.
+        affordable_designs: Option<std::collections::HashSet<String>>,
+        affordable_buildings: Option<std::collections::HashSet<String>>,
     }
 
     impl StubAdapter {
@@ -273,6 +312,8 @@ mod tests {
                 fleet_composition: FleetComposition::default(),
                 has_unsurveyed_targets: false,
                 has_colonizable_targets: false,
+                affordable_designs: None,
+                affordable_buildings: None,
             }
         }
     }
@@ -319,6 +360,18 @@ mod tests {
         }
         fn has_colonizable_targets(&self) -> bool {
             self.has_colonizable_targets
+        }
+        fn can_afford_design(&self, design_id: &str) -> bool {
+            match &self.affordable_designs {
+                Some(set) => set.contains(design_id),
+                None => true,
+            }
+        }
+        fn can_afford_building(&self, building_id: &str) -> bool {
+            match &self.affordable_buildings {
+                Some(set) => set.contains(building_id),
+                None => true,
+            }
         }
     }
 
@@ -770,5 +823,220 @@ mod tests {
                 .all(|p| p.command.kind.as_str() != "fortify_system"),
             "can_build < 1 → no fortify",
         );
+    }
+
+    // ---- Hotfix-3: resource gate + Rule 6 fleet_composition semantics ----
+    //
+    // Pre-hotfix Rule 6 saw `survey_count == 0` for an empire whose
+    // only explorer was currently surveying (because the surveying
+    // ship's `ShipState::Surveying` left `info.system == None` and
+    // `NpcContext.ships` filtered those out). The infinite-build loop
+    // that followed (`build_ship explorer_mk1` every Reason tick)
+    // bankrupted starter empires by stacking maintenance against a
+    // depleted stockpile.
+
+    /// Pin: Rule 6's explorer branch stays silent when the empire's
+    /// fleet census already contains a surveyor — alive OR currently
+    /// `Surveying` OR `InFTL` OR `SubLight`. The hotfix routes the
+    /// census via `BevyMidGameAdapter.fleet_composition` (pre-computed
+    /// in `npc_decision_tick` over the unfiltered `all_ships` query +
+    /// build queue), so even a ship in `ShipState::Surveying` is
+    /// counted.
+    #[test]
+    fn rule_6_explorer_not_re_built_while_alive_survey_ship_exists() {
+        let mut affordable = std::collections::HashSet::new();
+        affordable.insert("explorer_mk1".into());
+        affordable.insert("colony_ship_mk1".into());
+        affordable.insert("patrol_corvette".into());
+        let stub = StubAdapter {
+            can_build: 1.0,
+            colony_count: 1.0,
+            total_ships: 10.0,
+            // survey_count == 1 → explorer branch must be silent
+            // even though `has_unsurveyed_targets` is true and the
+            // resource gate permits the build. This is the
+            // surveying-explorer case: the ship is alive but in
+            // `ShipState::Surveying`, and pre-hotfix the
+            // `info.system.is_some()` filter on `NpcContext.ships`
+            // dropped it, collapsing the count to 0.
+            fleet_composition: FleetComposition {
+                survey_count: 1,
+                colony_count: 1,
+                combat_count: 3,
+            },
+            has_unsurveyed_targets: true,
+            has_colonizable_targets: false,
+            affordable_designs: Some(affordable),
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        for p in &proposals {
+            if p.command.kind.as_str() == "build_ship" {
+                match p.command.params.get("design_id") {
+                    Some(CommandValue::Str(s)) => assert_ne!(
+                        s.as_ref(),
+                        "explorer_mk1",
+                        "Rule 6 must not re-emit explorer while one is alive",
+                    ),
+                    _ => panic!("build_ship missing design_id"),
+                }
+            }
+        }
+    }
+
+    /// Pin: when every surveyor has been destroyed (census shows
+    /// `survey_count == 0`), Rule 6 still fires — confirms the
+    /// hotfix did not over-correct into "never re-build".
+    #[test]
+    fn rule_6_explorer_re_built_when_all_destroyed() {
+        let mut affordable = std::collections::HashSet::new();
+        affordable.insert("explorer_mk1".into());
+        let stub = StubAdapter {
+            can_build: 1.0,
+            colony_count: 1.0,
+            total_ships: 10.0,
+            fleet_composition: FleetComposition {
+                survey_count: 0,
+                colony_count: 0,
+                combat_count: 5,
+            },
+            has_unsurveyed_targets: true,
+            affordable_designs: Some(affordable),
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let build = proposals
+            .iter()
+            .find(|p| p.command.kind.as_str() == "build_ship")
+            .expect("Rule 6 must rebuild explorer after every surveyor destroyed");
+        match build.command.params.get("design_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "explorer_mk1"),
+            _ => panic!("expected design_id"),
+        }
+    }
+
+    /// Pin: Rule 6's explorer branch stays silent when the empire's
+    /// stockpile cannot pay for the build, even if every other
+    /// condition (no survey ship, has unsurveyed targets) matches.
+    /// This stops the runaway "build, fail, retry" loop the brp QA
+    /// report observed.
+    #[test]
+    fn rule_6_silent_when_stockpile_cannot_afford_explorer() {
+        let stub = StubAdapter {
+            can_build: 1.0,
+            colony_count: 1.0,
+            total_ships: 10.0,
+            fleet_composition: FleetComposition {
+                survey_count: 0,
+                colony_count: 0,
+                combat_count: 5,
+            },
+            has_unsurveyed_targets: true,
+            // affordable_designs = Some(empty) → can_afford_design
+            // returns false for every id, including explorer_mk1.
+            affordable_designs: Some(std::collections::HashSet::new()),
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "build_ship"),
+            "stockpile zero → Rule 6 must not emit any build_ship",
+        );
+    }
+
+    /// Pin: Rule 5a's shipyard branch honours the building-cost
+    /// resource gate. Pre-hotfix the dedup absorbed re-emissions but
+    /// the order was still booked the moment a slot opened — even if
+    /// the minerals weren't there to invest.
+    #[test]
+    fn rule_5a_silent_when_stockpile_cannot_afford_shipyard() {
+        let stub = StubAdapter {
+            can_build: 0.0,
+            systems_with_core: 1.0,
+            colony_count: 2.0,
+            affordable_buildings: Some(std::collections::HashSet::new()),
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "build_structure"),
+            "stockpile zero → Rule 5a must not emit shipyard",
+        );
+    }
+
+    /// Pin: priority semantics — Rule 6 picks the
+    /// highest-priority unmet need, then applies the gate. A
+    /// failing gate on the picked design must NOT fall through to
+    /// the next branch. Pre-fold-in the gate was inlined per-branch
+    /// with `else if`, which would have let an explorer-needing
+    /// empire substitute a cheaper colony / corvette purchase the
+    /// player did not authorise.
+    #[test]
+    fn rule_6_does_not_fall_through_to_cheaper_branch_when_top_priority_gate_fails() {
+        // Survey is the top priority (survey_count == 0 &&
+        // has_unsurveyed_targets), but the empire can only afford
+        // colony_ship_mk1, not explorer_mk1.
+        let mut affordable = std::collections::HashSet::new();
+        affordable.insert("colony_ship_mk1".into());
+        affordable.insert("patrol_corvette".into());
+        let stub = StubAdapter {
+            can_build: 1.0,
+            colony_count: 1.0,
+            total_ships: 10.0,
+            fleet_composition: FleetComposition {
+                survey_count: 0,
+                colony_count: 0,
+                combat_count: 1,
+            },
+            has_unsurveyed_targets: true,
+            has_colonizable_targets: true,
+            affordable_designs: Some(affordable),
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals
+                .iter()
+                .all(|p| p.command.kind.as_str() != "build_ship"),
+            "Rule 6 must NOT substitute a cheaper design when its top-priority pick fails the gate",
+        );
+    }
+
+    /// Soft gate sanity: deficit spending (revenue < expense, but
+    /// stockpile non-zero) is PERMITTED. The hotfix is a stockpile
+    /// gate, not a black-budget gate.
+    #[test]
+    fn rule_6_permits_deficit_spending_when_stockpile_positive() {
+        // The stub's `affordable_designs = None` is the trait
+        // default (always affordable), modelling a real adapter
+        // whose stockpile passes the soft check even though the
+        // empire's metrics would predict a future deficit. With
+        // every other Rule 6 gate met, the build must emit.
+        let stub = StubAdapter {
+            can_build: 1.0,
+            colony_count: 1.0,
+            total_ships: 10.0,
+            fleet_composition: FleetComposition {
+                survey_count: 0,
+                colony_count: 0,
+                combat_count: 5,
+            },
+            has_unsurveyed_targets: true,
+            affordable_designs: None,
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let build = proposals
+            .iter()
+            .find(|p| p.command.kind.as_str() == "build_ship")
+            .expect("deficit-but-non-zero stockpile must still permit Rule 6");
+        match build.command.params.get("design_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(s.as_ref(), "explorer_mk1"),
+            _ => panic!("expected design_id"),
+        }
     }
 }

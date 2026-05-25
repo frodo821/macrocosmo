@@ -20,6 +20,7 @@ use macrocosmo_ai::{Command, FactionId, Proposal};
 
 use super::npc_decision::NpcContext;
 use crate::ai::convert::to_ai_faction;
+use crate::amount::Amt;
 
 /// What the Mid layer can read about the game world. Bevy-agnostic
 /// in spirit — the trait stays decoupled from `Query` / `Resource`
@@ -96,6 +97,18 @@ pub trait MidGameAdapter {
     /// the call site can copy a single value (matches the legacy
     /// `let survey_count = … let colony_count_ships = … let
     /// combat_count = …` block).
+    ///
+    /// **Hotfix-3 semantics**: counts every empire-owned ship that
+    /// currently exists OR is queued in any of the empire's colony
+    /// build queues, regardless of `ShipState` (InSystem, SubLight,
+    /// InFTL, Surveying, Settling, Refitting, Loitering, Scouting). The
+    /// previous semantics (filter on `system.is_some()` inside
+    /// `NpcContext.ships`) drove an infinite-build loop for
+    /// `explorer_mk1`: once an explorer transitioned to `Surveying`,
+    /// `survey_count` dropped to 0 and Rule 6 re-emitted `build_ship`
+    /// every Reason tick until the empire ran out of minerals. Queued
+    /// orders are folded in so the count rises the moment a build is
+    /// pushed, not 30 hexadies later when the ship spawns.
     fn fleet_composition(&self) -> FleetComposition;
 
     /// Whether the empire has any unsurveyed systems known to it.
@@ -169,6 +182,54 @@ pub trait MidGameAdapter {
     fn idle_couriers(&self) -> &[Entity] {
         &[]
     }
+
+    /// Hotfix-3 resource gate: `true` when the empire's combined
+    /// minerals + energy stockpile (summed across the Mid's
+    /// `member_systems`) can afford `design_id`'s build cost RIGHT
+    /// NOW. **Soft gate** — ignores future revenue / maintenance
+    /// accrual, permits deficit spending as long as the stockpile is
+    /// non-zero. Rules 6 (`build_ship`) and 3.5 (`deploy_deliverable
+    /// → build_deliverable`) consult this before emitting a
+    /// proposal; absent the gate a starving empire re-emits every
+    /// Reason tick and the handler-side dedup eventually fills the
+    /// build queue with orders that can never make progress because
+    /// `tick_production`'s investment step has nothing to draw on.
+    ///
+    /// **Default `true`** = preserves StubAdapter behaviour. An
+    /// unknown `design_id` also returns `true` so the adapter does
+    /// not silently suppress a Rule emission on a typo (the handler
+    /// will warn-and-skip).
+    fn can_afford_design(&self, _design_id: &str) -> bool {
+        true
+    }
+
+    /// Hotfix-3 resource gate: same soft-stockpile check as
+    /// [`Self::can_afford_design`] but keyed on a Building id. Used
+    /// by Rule 5a (`build_structure` shipyard) and the Short-side
+    /// Rule 5b (slot fill — mine / farm / power_plant) so a
+    /// minerals-starved empire stops stacking orders the colony
+    /// build queue cannot drain.
+    ///
+    /// **Default `true`** = preserves StubAdapter behaviour.
+    fn can_afford_building(&self, _building_id: &str) -> bool {
+        true
+    }
+
+    /// Current minerals stockpile (sum across `member_systems`).
+    /// Exposed so rule implementations / tests can introspect the
+    /// gate decision; production rules consume the boolean
+    /// [`Self::can_afford_design`] / [`Self::can_afford_building`]
+    /// helpers instead. Default `Amt(u64::MAX)` so StubAdapter
+    /// callers never accidentally trigger the gate.
+    fn current_minerals(&self) -> Amt {
+        Amt(u64::MAX)
+    }
+
+    /// Current energy stockpile (sum across `member_systems`). See
+    /// [`Self::current_minerals`].
+    fn current_energy(&self) -> Amt {
+        Amt(u64::MAX)
+    }
 }
 
 /// Three counts Rule 6 needs to pick the next ship to build.
@@ -217,6 +278,36 @@ pub struct BevyMidGameAdapter<'a> {
     /// idle_colonizers vs. idle_couriers so the two rules never
     /// double-book the same ship.
     pub idle_couriers: &'a [Entity],
+    /// Hotfix-3: pre-computed empire-wide fleet composition.
+    /// Includes ships in every `ShipState` variant (in-transit,
+    /// surveying, settling, etc.) AND any same-design ships
+    /// currently queued in colony `BuildQueue`s, so the count rises
+    /// the moment Rule 6 emits a `build_ship` order rather than 30
+    /// hexadies later when the ship spawns. Closes the infinite
+    /// `explorer_mk1` loop where the surveying-ship's
+    /// `system: None` evicted it from `NpcContext.ships` and Rule 6
+    /// re-emitted every tick.
+    pub fleet_composition: FleetComposition,
+    /// Hotfix-3: sum of `ResourceStockpile.minerals` across this
+    /// Mid's `member_systems`. Consumed by [`MidGameAdapter::can_afford_design`]
+    /// / [`MidGameAdapter::can_afford_building`] gates so a starving
+    /// empire stops emitting build orders the colony queue cannot
+    /// drain. Soft gate: zero stockpile blocks emission, deficit
+    /// spending (`stockpile > 0 && revenue < expense`) is permitted.
+    pub current_minerals: Amt,
+    /// Hotfix-3: sum of `ResourceStockpile.energy`. See
+    /// [`Self::current_minerals`].
+    pub current_energy: Amt,
+    /// Hotfix-3: design registry borrow used by
+    /// [`MidGameAdapter::can_afford_design`] to look up
+    /// `build_cost_minerals` / `build_cost_energy`. `None` only in
+    /// test setups that never load the Lua registry; an unknown
+    /// `design_id` returns `true` from the gate so a typo does not
+    /// silently suppress an emission (the handler will warn).
+    pub design_registry: Option<&'a crate::ship_design::ShipDesignRegistry>,
+    /// Hotfix-3: building registry borrow used by
+    /// [`MidGameAdapter::can_afford_building`].
+    pub building_registry: Option<&'a crate::colony::BuildingRegistry>,
 }
 
 impl<'a> BevyMidGameAdapter<'a> {
@@ -299,16 +390,14 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
     }
 
     fn fleet_composition(&self) -> FleetComposition {
-        // Three independent passes (rather than one fused pass) is
-        // intentional — a future ship that satisfies multiple
-        // predicates (e.g. both `can_survey` and `is_combat`) must be
-        // counted in every matching bucket.
-        let ships = &self.context.ships;
-        FleetComposition {
-            survey_count: ships.iter().filter(|s| s.can_survey).count(),
-            colony_count: ships.iter().filter(|s| s.can_colonize).count(),
-            combat_count: ships.iter().filter(|s| s.is_combat).count(),
-        }
+        // Hotfix-3: return the empire-wide census pre-computed in
+        // `npc_decision_tick` (covers every `ShipState` variant +
+        // BuildQueue-queued ships). Pre-hotfix this iterated
+        // `NpcContext.ships`, which is filtered on
+        // `system.is_some()` — surveying / in-transit ships were
+        // silently evicted, causing Rule 6 to re-emit `build_ship
+        // explorer_mk1` every tick until the empire starved.
+        self.fleet_composition
     }
 
     fn has_unsurveyed_targets(&self) -> bool {
@@ -336,6 +425,40 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
 
     fn idle_couriers(&self) -> &[Entity] {
         self.idle_couriers
+    }
+
+    fn can_afford_design(&self, design_id: &str) -> bool {
+        // Unknown design → permissive: avoid silently suppressing
+        // a Rule emission on a typo; the handler will warn.
+        let Some(registry) = self.design_registry else {
+            return true;
+        };
+        let Some(def) = registry.get(design_id) else {
+            return true;
+        };
+        // Soft gate: each resource must be individually fundable
+        // out of the current stockpile. Cost == 0 trivially passes
+        // (Amt comparison is on raw u64).
+        self.current_minerals >= def.build_cost_minerals
+            && self.current_energy >= def.build_cost_energy
+    }
+
+    fn can_afford_building(&self, building_id: &str) -> bool {
+        let Some(registry) = self.building_registry else {
+            return true;
+        };
+        let Some(def) = registry.get(building_id) else {
+            return true;
+        };
+        self.current_minerals >= def.minerals_cost && self.current_energy >= def.energy_cost
+    }
+
+    fn current_minerals(&self) -> Amt {
+        self.current_minerals
+    }
+
+    fn current_energy(&self) -> Amt {
+        self.current_energy
     }
 }
 

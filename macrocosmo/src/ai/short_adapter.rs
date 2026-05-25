@@ -79,6 +79,18 @@ pub trait ShortGameAdapter {
     /// Net food production for this colony. Same proxy story as
     /// [`Self::free_building_slots`].
     fn net_production_food(&self) -> f64;
+
+    /// Hotfix-3 resource gate: `true` when the empire's combined
+    /// stockpile can fund `building_id`'s minerals + energy cost
+    /// RIGHT NOW. Soft gate — permits deficit spending as long as
+    /// the stockpile is non-zero. Used by Rule 5b (slot fill —
+    /// `power_plant` / `farm` / `mine`) so a minerals-starved
+    /// colony stops stacking orders the build queue cannot drain.
+    ///
+    /// **Default `true`** = preserves StubAdapter behaviour.
+    fn can_afford_building(&self, _building_id: &str) -> bool {
+        true
+    }
 }
 
 /// Bevy implementation of [`ShortGameAdapter`]. Constructed
@@ -109,6 +121,19 @@ pub struct BevyShortAgentAdapter<'a> {
     pub free_building_slots: f64,
     pub net_production_energy: f64,
     pub net_production_food: f64,
+    /// Hotfix-3: sum of `ResourceStockpile.minerals` across the
+    /// empire's owned systems. Consumed by
+    /// [`ShortGameAdapter::can_afford_building`] in Rule 5b. Zero
+    /// when the empire has no owned systems (defensive).
+    pub current_minerals: crate::amount::Amt,
+    /// Hotfix-3: sum of `ResourceStockpile.energy`. See
+    /// [`Self::current_minerals`].
+    pub current_energy: crate::amount::Amt,
+    /// Hotfix-3: building registry borrow. `None` only in test
+    /// setups that never load the Lua registry; an unknown
+    /// `building_id` returns `true` from the gate so a typo does
+    /// not silently suppress an emission (the handler will warn).
+    pub building_registry: Option<&'a crate::colony::BuildingRegistry>,
 }
 
 impl<'a> ShortGameAdapter for BevyShortAgentAdapter<'a> {
@@ -142,5 +167,15 @@ impl<'a> ShortGameAdapter for BevyShortAgentAdapter<'a> {
 
     fn net_production_food(&self) -> f64 {
         self.net_production_food
+    }
+
+    fn can_afford_building(&self, building_id: &str) -> bool {
+        let Some(registry) = self.building_registry else {
+            return true;
+        };
+        let Some(def) = registry.get(building_id) else {
+            return true;
+        };
+        self.current_minerals >= def.minerals_cost && self.current_energy >= def.energy_cost
     }
 }

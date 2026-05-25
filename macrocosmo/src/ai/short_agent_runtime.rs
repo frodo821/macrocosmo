@@ -464,6 +464,10 @@ pub fn run_short_agents(
     regions: Query<&Region>,
     mid_agents: Query<&super::mid_agent::MidAgent>,
     short_inputs: Res<ShortAgentTickInputs>,
+    // Hotfix-3: building registry needed by Rule 5b's
+    // `can_afford_building` gate. `Option<Res<_>>` so test setups
+    // that never load the Lua registry continue to work.
+    building_registry: Option<Res<crate::colony::BuildingRegistry>>,
     clock: Res<GameClock>,
     mut last_tick: Local<i64>,
 ) {
@@ -595,6 +599,15 @@ pub fn run_short_agents(
                 .unwrap_or((0.0, 0.0, 0.0)),
             ShortScope::Fleet(_) => (0.0, 0.0, 0.0),
         };
+        // Hotfix-3: empire stockpile sums for the resource gate.
+        // Mid populates `current_minerals` / `current_energy` per
+        // empire in the same `npc_decision_tick` pass; we read them
+        // out here. `Amt::ZERO` for empires the Mid skipped this
+        // frame — gate then trivially fails (correct fallback for
+        // "we don't know what they have").
+        let (current_minerals, current_energy) = inputs
+            .map(|i| (i.current_minerals, i.current_energy))
+            .unwrap_or((crate::amount::Amt::ZERO, crate::amount::Amt::ZERO));
         let adapter = BevyShortAgentAdapter {
             empire,
             scope: agent.scope,
@@ -604,6 +617,9 @@ pub fn run_short_agents(
             free_building_slots,
             net_production_energy,
             net_production_food,
+            current_minerals,
+            current_energy,
+            building_registry: building_registry.as_deref(),
         };
         let proposals = ShortStanceAgent::decide(&adapter, faction, now);
         // Record this fleet's survey claims so sibling Fleet
