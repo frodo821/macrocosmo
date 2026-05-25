@@ -807,7 +807,44 @@ pub fn dispatch_ai_pending_commands(
     mut params: DispatchParams,
 ) {
     let now = clock.elapsed;
-    let drained = bus.drain_commands();
+    let raw_drained = bus.drain_commands();
+    if raw_drained.is_empty() {
+        return;
+    }
+
+    // #444 hotfix: eager macro decomposition.
+    //
+    // Mid Rule 3.5 (#444) and #446/#447 emit *macro* commands like
+    // `deploy_deliverable` and `colonize_system` that need to be
+    // expanded into the 4-step primitive chain (`build_deliverable
+    // → load_deliverable → reposition → unload_deliverable`) +
+    // `colonize_planet` tail before the dispatcher can route them.
+    //
+    // Today the only place that runs the game-side
+    // `StaticDecompositionRegistry` is `run_short_agents` via
+    // `CampaignReactiveShort::tick`, and the Mid layer never goes
+    // through a Campaign — it emits straight onto the bus. Without
+    // this expansion the macros reach `drain_ai_commands`, get
+    // logged with the "reached consumer undecomposed" debug message,
+    // and silently drop, which is the core symptom of #444 (NPC
+    // empires never move).
+    //
+    // The expansion is recursive (`deploy_deliverable` macros further
+    // into primitives, etc.) but capped at `MAX_EXPANSION_DEPTH = 4`
+    // levels so a registry mistake (`A → [A, B]`) can't lock the
+    // dispatcher in an infinite loop. The cap is well above the
+    // worst real chain (`colonize_system → deploy_deliverable +
+    // colonize_planet → 4 primitives + colonize_planet`, depth 2),
+    // so production paths are unaffected.
+    //
+    // Macros that already have a primitive entry in `dispatch_table`
+    // (today: `colonize_system`) are intentionally NOT expanded —
+    // they keep their legacy in-place `PendingAssignment` semantics
+    // and the existing colonize-system flow continues to work. The
+    // skip-list lives in `dispatch_table_primitive_kinds()` so it
+    // stays in sync with the routing table below.
+    let decomp_registry = crate::ai::decomposition_rules::build_default_registry();
+    let drained = expand_macros_eagerly(raw_drained, &decomp_registry, now);
     if drained.is_empty() {
         return;
     }
@@ -1279,6 +1316,101 @@ pub fn process_ai_pending_commands(
     for cmd in mature {
         bus.push_command_already_dispatched(cmd);
     }
+}
+
+/// #444 hotfix: cap on macro-expansion recursion depth used by
+/// [`expand_macros_eagerly`]. Set higher than the worst real chain
+/// (`colonize_system` → `deploy_deliverable` + `colonize_planet`
+/// → 4 primitives + `colonize_planet`, depth 2) so a future macro
+/// addition does not force a constant bump; but small enough that
+/// a buggy registry rule (`A → [A, …]`) self-terminates rather than
+/// hanging the dispatcher.
+const MAX_MACRO_EXPANSION_DEPTH: usize = 4;
+
+/// #444 hotfix: list of `CommandKindId`s the dispatcher routes as
+/// primitives via the `dispatch_table` in
+/// [`dispatch_ai_pending_commands`]. These kinds are intentionally
+/// **not** expanded by [`expand_macros_eagerly`] even when the
+/// decomposition registry knows a rule for them — the primitive
+/// dispatch path is the contract callers rely on for
+/// `colonize_system` (Mid Rule 3 emits it expecting
+/// `PendingAssignment::colonize_system` semantics, not a
+/// 4-step deploy chain). Add a row here only after auditing
+/// `dispatch_table` to confirm the kind has a routing entry.
+fn dispatch_table_primitive_kinds() -> &'static [&'static str] {
+    // Hard-coded as static strings (rather than calling cmd_ids::*)
+    // because `cmd_ids::xxx()` returns an `Arc<str>`-backed
+    // `CommandKindId`, which has nontrivial init cost and complicates
+    // a `const` slice. The string literals are checked against the
+    // registry's IDs by `dispatch_table_skip_list_matches_table()`
+    // in tests, so a typo in either place fails CI.
+    &["colonize_system"]
+}
+
+/// #444 hotfix: recursively expand macro commands against the
+/// decomposition registry, skipping kinds that ship a primitive
+/// route via `dispatch_table` (see
+/// [`dispatch_table_primitive_kinds`]).
+///
+/// Returns a flat `Vec<Command>` of primitives + skipped macros in
+/// the original emit order. Macros that the registry knows about
+/// are dropped from the output and replaced by their expansions
+/// (recursively, up to `MAX_MACRO_EXPANSION_DEPTH` levels).
+/// Macros without a registry rule pass through unchanged so future
+/// rule additions are a single registry change.
+///
+/// `now` is the current `GameClock.elapsed` tick — forwarded to
+/// each rule's `expand` function so the synthetic primitives carry
+/// the same `at` as the macro they came from.
+pub fn expand_macros_eagerly(
+    drained: Vec<Command>,
+    registry: &macrocosmo_ai::StaticDecompositionRegistry,
+    now: i64,
+) -> Vec<Command> {
+    use macrocosmo_ai::DecompositionRegistry;
+    let skip_list = dispatch_table_primitive_kinds();
+    let plan_state = macrocosmo_ai::PlanState::default();
+    let mut out: Vec<Command> = Vec::with_capacity(drained.len());
+    // Depth-first work stack: each entry pairs a command with its
+    // current recursion depth. Pushing children with `depth + 1`
+    // means a cycle (`A → A`) hits `MAX_MACRO_EXPANSION_DEPTH` and
+    // self-terminates rather than spinning forever.
+    let mut stack: Vec<(Command, usize)> = drained.into_iter().rev().map(|c| (c, 0)).collect();
+    while let Some((cmd, depth)) = stack.pop() {
+        let kind_str = cmd.kind.as_str();
+        if skip_list.iter().any(|k| *k == kind_str) {
+            out.push(cmd);
+            continue;
+        }
+        if depth >= MAX_MACRO_EXPANSION_DEPTH {
+            // Bail out: refuse to recurse further. Pass the command
+            // through unchanged so downstream layers can log /
+            // diagnose. `warn!` because a real workload should
+            // never hit this — only a buggy rule can.
+            warn!(
+                "AI macro expansion hit depth cap ({}) for kind={}; \
+                 stopping recursion and forwarding macro unchanged",
+                MAX_MACRO_EXPANSION_DEPTH, kind_str
+            );
+            out.push(cmd);
+            continue;
+        }
+        match registry.lookup(&cmd.kind) {
+            Some(rule) => {
+                let children = (rule.expand)(&cmd, &plan_state, now);
+                // Push children in reverse so they pop in original
+                // order — keeps the emit / dispatch ordering
+                // identical to the rule's `Vec<Command>`.
+                for child in children.into_iter().rev() {
+                    stack.push((child, depth + 1));
+                }
+            }
+            None => {
+                out.push(cmd);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

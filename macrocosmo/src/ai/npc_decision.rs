@@ -276,6 +276,14 @@ pub struct NpcContext {
     pub unsurveyed_systems: Vec<Entity>,
     /// Surveyed systems that are not yet colonized (potential colony targets).
     pub colonizable_systems: Vec<Entity>,
+    /// #444 hotfix: surveyed-but-not-owned systems outside the
+    /// region's `member_systems`, sorted by region-centroid distance.
+    /// Consumed by `MidStanceAgent` Rule 3.5
+    /// (`deploy_deliverable(infrastructure_core)`) so the empire can
+    /// seed sovereignty anchors past the seed-region boundary.
+    /// Filtered upstream against `pending_deploy_targets` so
+    /// re-emission within the light-speed window is suppressed.
+    pub expansion_frontier_systems: Vec<Entity>,
     /// All ships owned by the empire being decided for.
     pub ships: Vec<ShipInfo>,
     /// `true` when the empire has an active research target in its queue.
@@ -657,6 +665,11 @@ pub fn npc_decision_tick(
     // empires in the loop below.
     let survey_kind = cmd_ids::survey_system();
     let colonize_kind = cmd_ids::colonize_system();
+    // #444 hotfix: also dedup `deploy_deliverable` per-empire so Rule 3.5
+    // doesn't re-emit onto the same frontier target every mid_cadence
+    // tick while the previous emit is still in flight (Ruler → ship
+    // courier window) or sitting in `AiCommandOutbox`.
+    let deploy_kind = cmd_ids::deploy_deliverable();
     let mut outbox_survey_per_empire: std::collections::HashMap<
         Entity,
         std::collections::HashSet<Entity>,
@@ -665,7 +678,11 @@ pub fn npc_decision_tick(
         Entity,
         std::collections::HashSet<Entity>,
     > = std::collections::HashMap::new();
-    // Both maps are mutated only inside the next block (single pass over
+    let mut outbox_deploy_per_empire: std::collections::HashMap<
+        Entity,
+        std::collections::HashSet<Entity>,
+    > = std::collections::HashMap::new();
+    // The maps are mutated only inside the next block (single pass over
     // outbox.entries); the empire loop below reads via shared `&` only.
     if !dedup.outbox.entries.is_empty() {
         // Build issuer FactionId → empire Entity once (faction_id
@@ -686,6 +703,8 @@ pub fn npc_decision_tick(
                 Some(&mut outbox_survey_per_empire)
             } else if cmd.kind.as_str() == colonize_kind.as_str() {
                 Some(&mut outbox_colonize_per_empire)
+            } else if cmd.kind.as_str() == deploy_kind.as_str() {
+                Some(&mut outbox_deploy_per_empire)
             } else {
                 None
             };
@@ -720,6 +739,19 @@ pub fn npc_decision_tick(
     // already trying to colonize that system" and a second emission
     // is exactly the leak we want to suppress.
     let colonize_planet_kind = cmd_ids::colonize_planet();
+    // #444 hotfix: track in-flight `load_deliverable` / `reposition` /
+    // `unload_deliverable` per empire so a sibling tick doesn't
+    // double-deploy onto the same frontier target while the courier
+    // chain is still resolving. The chain is the primitives that
+    // `deploy_deliverable` decomposes into; if any of them is
+    // in-flight, the empire is already committing a Core to that
+    // system. `build_deliverable` lives in `BuildQueue` not
+    // `PendingAiShipCommand`, so the dedup map relies on the outbox
+    // scan above + the `colonize_planet` arm here (the macro's
+    // tail) to cover that phase.
+    let load_kind = cmd_ids::load_deliverable();
+    let reposition_kind = cmd_ids::reposition();
+    let unload_kind = cmd_ids::unload_deliverable();
     for pending in &dedup.pending_ai_ship_commands {
         let kind_str = pending.kind.as_str();
         if kind_str == survey_kind.as_str() {
@@ -729,6 +761,15 @@ pub fn npc_decision_tick(
                 .insert(pending.target_system);
         } else if kind_str == colonize_kind.as_str() || kind_str == colonize_planet_kind.as_str() {
             outbox_colonize_per_empire
+                .entry(pending.issuer_empire)
+                .or_default()
+                .insert(pending.target_system);
+        } else if kind_str == deploy_kind.as_str()
+            || kind_str == load_kind.as_str()
+            || kind_str == reposition_kind.as_str()
+            || kind_str == unload_kind.as_str()
+        {
+            outbox_deploy_per_empire
                 .entry(pending.issuer_empire)
                 .or_default()
                 .insert(pending.target_system);
@@ -844,6 +885,16 @@ pub fn npc_decision_tick(
             pending_colonize_targets.extend(set.iter().copied());
         }
 
+        // #444 hotfix: in-flight `deploy_deliverable` chain targets (the
+        // 4 primitives `deploy_deliverable` decomposes into +
+        // outbox-resident macros). Rule 3.5 reads this to suppress
+        // re-emission while a Core is already on the way.
+        let mut pending_deploy_targets: std::collections::HashSet<Entity> =
+            std::collections::HashSet::new();
+        if let Some(set) = outbox_deploy_per_empire.get(&entity) {
+            pending_deploy_targets.extend(set.iter().copied());
+        }
+
         // Extract system intel. Hostile / colonizable signals still come
         // from the KnowledgeStore (those require detailed snapshots),
         // but `unsurveyed_systems` is derived from the galaxy-wide star
@@ -905,6 +956,70 @@ pub fn npc_decision_tick(
             .map(|(_, p)| p.as_array())
             .collect();
 
+        // #444 hotfix: expansion frontier.
+        //
+        // Pool = systems the empire has surveyed (so it knows where the
+        // star is) but has NOT yet planted a Core in / colonised /
+        // marked as member of this Mid's region. Hostile / pending
+        // (load/repos/unload/deploy in flight) systems are filtered out.
+        //
+        // Ranking = ascending distance from the region's centroid. The
+        // centroid is the mean of `member_systems` positions (falls back
+        // to ruler stationed system when member_systems is empty, then
+        // to [0,0,0] when neither is available — same defensive fallback
+        // chain used for `reference_pos` below). The result feeds Rule
+        // 3.5 (`deploy_deliverable(infrastructure_core)`).
+        let region_centroid: [f64; 3] = {
+            let mut sum = [0.0_f64; 3];
+            let mut count = 0_u32;
+            for &sys in member_systems_slice {
+                if let Some((_, p)) = star_positions.iter().find(|(e, _)| *e == sys) {
+                    let pa = p.as_array();
+                    sum[0] += pa[0];
+                    sum[1] += pa[1];
+                    sum[2] += pa[2];
+                    count += 1;
+                }
+            }
+            if count > 0 {
+                let c = count as f64;
+                [sum[0] / c, sum[1] / c, sum[2] / c]
+            } else {
+                // Defensive fallback for test setups where the
+                // region has no member systems with resolvable
+                // positions. The origin is the same default
+                // `reference_pos` would land on after exhausting its
+                // own surveyed-waypoint / ruler-stationed-system
+                // chain; using it here keeps ranking deterministic
+                // without re-running that chain twice.
+                [0.0, 0.0, 0.0]
+            }
+        };
+        let mut frontier_ranked: Vec<(Entity, f64)> = star_positions
+            .iter()
+            .filter(|(e, _)| surveyed_ids.contains(e))
+            .filter(|(e, _)| !owned_core_systems.contains(e))
+            .filter(|(e, _)| !pending_deploy_targets.contains(e))
+            .filter(|(e, _)| !pending_colonize_targets.contains(e))
+            .filter(|(e, _)| !hostile_systems_set.contains(e))
+            .filter(|(e, _)| !member_systems_set.contains(e))
+            .filter_map(|(e, p)| {
+                let pa = p.as_array();
+                let dx = pa[0] - region_centroid[0];
+                let dy = pa[1] - region_centroid[1];
+                let dz = pa[2] - region_centroid[2];
+                let d2 = dx * dx + dy * dy + dz * dz;
+                if d2.is_finite() { Some((e, d2)) } else { None }
+            })
+            .collect();
+        frontier_ranked.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.0.cmp(&b.0))
+        });
+        let expansion_frontier_systems: Vec<Entity> =
+            frontier_ranked.into_iter().map(|(e, _)| e).collect();
+
         // Resolve the empire's reference position for tiebreaks.
         let ruler_stationed_system: Option<Entity> = empire_rulers
             .get(entity)
@@ -938,14 +1053,19 @@ pub fn npc_decision_tick(
                     .map(|vm| vm.get(*e) >= SystemVisibilityTier::Catalogued)
                     .unwrap_or(true)
             })
-            // PR2b: only survey systems inside this Mid's region.
-            // Note: Rule 2's classical use case is "explore the
-            // frontier of known space" — restricting to the region's
-            // own member systems means survey targets must already
-            // belong to this region. PR2c will introduce a separate
-            // "expansion frontier" rule that proposes adding a system
-            // to the region.
-            .filter(|(e, _)| member_systems_set.contains(e))
+            // #444 hotfix: NO region-scope filter on survey.
+            //
+            // The previous gate (`member_systems_set.contains(e)`) was
+            // dead-on-arrival for starter empires whose region is just
+            // `{capital}` — the capital is always already-surveyed, so
+            // `candidates` collapsed to empty and the AI never surveyed
+            // anything for the entire game. Rule 2 (survey) is
+            // intentionally galaxy-wide: surveyed-but-not-owned systems
+            // become the input to Rule 3.5 (`expansion_frontier_systems`)
+            // which proposes them as deploy_deliverable targets, growing
+            // the region naturally. Re-binding survey to a region scope
+            // can land as a future PR once we have multi-region split
+            // policy worked out (#449 PR2c+).
             .map(|(e, p)| (e, p.as_array()))
             .collect();
         let unsurveyed_systems =
@@ -1045,6 +1165,7 @@ pub fn npc_decision_tick(
             hostile_systems,
             unsurveyed_systems,
             colonizable_systems,
+            expansion_frontier_systems,
             ships,
             is_researching,
             ruler_entity,
@@ -1054,33 +1175,52 @@ pub fn npc_decision_tick(
 
         // Route the per-MidAgent decision through the layered
         // MidStanceAgent (#448). Pre-compute idle_combat /
-        // idle_colonizers with the same expressions the agent's rules
-        // use (Rules 1 / 3) so the adapter can hand them straight in
-        // without re-scanning the ship list. PR2d removes the Mid-side
-        // `idle_surveyors` (Rule 2 lives on per-Fleet ShortAgent now);
-        // `npc_decision_tick` still publishes the empire-wide
-        // `unsurveyed_systems` ranking via `NpcContext` so the Short
-        // adapter can slice it per fleet without re-running
-        // `rank_survey_targets`.
+        // idle_colonizers / idle_couriers with the same expressions
+        // the agent's rules use (Rules 1 / 3 / 3.5) so the adapter
+        // can hand them straight in without re-scanning the ship
+        // list. PR2d removes the Mid-side `idle_surveyors` (Rule 2
+        // lives on per-Fleet ShortAgent now); `npc_decision_tick`
+        // still publishes the empire-wide `unsurveyed_systems`
+        // ranking via `NpcContext` so the Short adapter can slice it
+        // per fleet without re-running `rank_survey_targets`.
+        //
+        // #444 hotfix: partition idle colony-capable ships into Rule 3
+        // claimants (`idle_colonizers`) and Rule 3.5 claimants
+        // (`idle_couriers`). Each ship appears in exactly one slice
+        // so the two rules never double-book the same hull. The
+        // partitioning policy is "Rule 3 takes the first N where N =
+        // colonizable_systems.len(); leftover ships flow to Rule
+        // 3.5". This biases toward filling existing-Core systems
+        // before expanding the frontier, which matches the
+        // empire-growth priority order (no point spending a ship on
+        // a frontier Core if a closer colonisable target is still
+        // sitting empty).
         let idle_combat: Vec<Entity> = context
             .ships
             .iter()
             .filter(|s| s.is_idle && s.is_combat)
             .map(|s| s.entity)
             .collect();
-        let idle_colonizers: Vec<Entity> = context
+        let all_idle_colonizers: Vec<Entity> = context
             .ships
             .iter()
             .filter(|s| s.is_idle && s.can_colonize)
             .map(|s| s.entity)
             .collect();
+        let colonizable_demand = context.colonizable_systems.len();
+        let (idle_colonizers_slice, idle_couriers_slice): (&[Entity], &[Entity]) = {
+            let split = colonizable_demand.min(all_idle_colonizers.len());
+            (&all_idle_colonizers[..split], &all_idle_colonizers[split..])
+        };
         let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
             faction: entity,
             context: &context,
             bus: &bus.0,
             idle_combat: &idle_combat,
-            idle_colonizers: &idle_colonizers,
+            idle_colonizers: idle_colonizers_slice,
             member_systems: member_systems_slice,
+            expansion_frontier: &context.expansion_frontier_systems,
+            idle_couriers: idle_couriers_slice,
         };
         // Stance is read from the per-MidAgent state. Today every
         // rule ignores stance (`MidStanceAgent::decide` accepts but
