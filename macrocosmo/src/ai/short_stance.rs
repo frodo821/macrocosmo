@@ -86,9 +86,17 @@ impl ShortStanceAgent {
                     } else {
                         "mine"
                     };
-                    let cmd = Command::new(cmd_ids::build_structure(), faction_id, now)
-                        .with_param("building_id", CommandValue::Str(building_id.into()));
-                    proposals.push(Proposal::faction_wide(cmd));
+                    // Hotfix-3 resource gate: don't stack orders an
+                    // empty stockpile cannot fund. Without this a
+                    // single colony absorbed every Reason tick's
+                    // `mine` emit until the queue had 100+ identical
+                    // orders (cf. the brp QA report: "AI re-queues
+                    // identical 'mine' building order every tick").
+                    if adapter.can_afford_building(building_id) {
+                        let cmd = Command::new(cmd_ids::build_structure(), faction_id, now)
+                            .with_param("building_id", CommandValue::Str(building_id.into()));
+                        proposals.push(Proposal::faction_wide(cmd));
+                    }
                 }
             }
         }
@@ -117,6 +125,9 @@ mod tests {
         free_building_slots: f64,
         net_production_energy: f64,
         net_production_food: f64,
+        /// Hotfix-3 resource gate. `None` = permissive default;
+        /// `Some(set)` = explicit allow-list of building ids.
+        affordable_buildings: Option<std::collections::HashSet<String>>,
     }
 
     impl StubAdapter {
@@ -130,6 +141,7 @@ mod tests {
                 free_building_slots: 0.0,
                 net_production_energy: 0.0,
                 net_production_food: 0.0,
+                affordable_buildings: None,
             }
         }
 
@@ -143,6 +155,7 @@ mod tests {
                 free_building_slots: 0.0,
                 net_production_energy: 0.0,
                 net_production_food: 0.0,
+                affordable_buildings: None,
             }
         }
     }
@@ -171,6 +184,12 @@ mod tests {
         }
         fn net_production_food(&self) -> f64 {
             self.net_production_food
+        }
+        fn can_afford_building(&self, building_id: &str) -> bool {
+            match &self.affordable_buildings {
+                Some(set) => set.contains(building_id),
+                None => true,
+            }
         }
     }
 
