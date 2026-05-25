@@ -83,11 +83,17 @@ pub struct ResourceGateParams<'w, 's> {
     /// pending order in region B would erroneously reduce region
     /// A's available stockpile (the stockpile sum and the pending
     /// subtraction must share the same region scope).
+    ///
+    /// #532 F3: tuple also carries `&BuildingQueue` (planet-level
+    /// mine/farm/power_plant queue). Folded onto the same colony
+    /// query rather than spawning a parallel query — same param
+    /// slot, no 16-param ceiling pressure.
     pub build_queues: Query<
         'w,
         's,
         (
             &'static crate::colony::building_queue::BuildQueue,
+            &'static crate::colony::building_queue::BuildingQueue,
             &'static crate::colony::Colony,
             &'static crate::faction::FactionOwner,
         ),
@@ -1371,7 +1377,7 @@ pub fn npc_decision_tick(
             // "do we have enough surveyors yet?". The region-scope
             // filter applies only to the pending stockpile subtraction
             // walk below, not here.
-            for (queue, _colony, owner) in &resource_gate.build_queues {
+            for (queue, _bldg_queue, _colony, owner) in &resource_gate.build_queues {
                 if owner.0 != entity {
                     continue;
                 }
@@ -1428,18 +1434,13 @@ pub fn npc_decision_tick(
         // production tick drained the stockpile.
         //
         // The pending-aware form subtracts `cost - invested` for
-        // every queued ship/deliverable order (colony `BuildQueue`)
-        // and every queued building order (system-level
-        // `SystemBuildingQueue` — shipyard / port / research_lab).
-        // Per-colony `BuildingQueue` (mine / farm / power_plant
-        // construction) is intentionally **not** walked here: those
-        // queues live on Colony entities outside this
-        // `ResourceGateParams` for now (adding the query would push
-        // the bundle past Bevy's 16-param limit). The same-tick
-        // dedup at `handle_build_structure` is the backstop for
-        // planet-building re-emits in the meantime; once the
-        // adapter rules need it the planet `BuildingQueue` will be
-        // folded in too.
+        // every queued ship/deliverable order (colony `BuildQueue`),
+        // every queued building order (system-level
+        // `SystemBuildingQueue` — shipyard / port / research_lab),
+        // and every queued planet-building order (per-colony
+        // `BuildingQueue` — mine / farm / power_plant). Demolition
+        // orders intentionally excluded (refund semantics);
+        // `upgrade_queue` is AI-unreachable today.
         //
         // `Amt::sub` is saturating: if pending > stockpile the
         // available value clamps to zero rather than wrapping, so
@@ -1452,7 +1453,7 @@ pub fn npc_decision_tick(
         // adding work to a queue whose tail will starve".
         let mut pending_minerals = crate::amount::Amt::ZERO;
         let mut pending_energy = crate::amount::Amt::ZERO;
-        for (queue, colony, owner) in &resource_gate.build_queues {
+        for (queue, bldg_queue, colony, owner) in &resource_gate.build_queues {
             if owner.0 != entity {
                 continue;
             }
@@ -1477,6 +1478,15 @@ pub fn npc_decision_tick(
                 let e_rem = order.energy_cost.sub(order.energy_invested);
                 pending_minerals = pending_minerals.add(m_rem);
                 pending_energy = pending_energy.add(e_rem);
+            }
+            // #532 F3: per-colony BuildingQueue (mine/farm/power_plant)
+            // pending — without this, Rule 5b could cross-id stack
+            // (mine + farm + power_plant each pass the gate after one
+            // consumes most resources; handler dedup only catches
+            // same-id repeats).
+            for order in &bldg_queue.queue {
+                pending_minerals = pending_minerals.add(order.minerals_remaining);
+                pending_energy = pending_energy.add(order.energy_remaining);
             }
         }
         for (sys_entity, sys_queue) in &resource_gate.system_building_queues {

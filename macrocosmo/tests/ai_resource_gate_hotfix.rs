@@ -526,6 +526,69 @@ fn system_building_queue_pending_also_subtracts_from_stockpile() {
     );
 }
 
+/// #532 F3: per-colony `BuildingQueue` (mine / farm / power_plant) pending
+/// orders must also subtract from the pending-aware stockpile. Without this,
+/// Rule 5b can stack cross-id planet buildings — `handle_build_structure`'s
+/// same-tick dedup only collapses same-id duplicates, so an empire with
+/// stockpile just enough for one mine could still push a mine + a farm +
+/// a power_plant in successive ticks (each id passes the gate on its own,
+/// each id is unique against the handler's dedup, all three orders land,
+/// all three starve).
+///
+/// We pre-queue a single mine `BuildingOrder` on the colony's
+/// `BuildingQueue`, then snapshot the post-tick
+/// `RegionShortInputs.current_minerals/energy` — which is the value Short
+/// Rule 5b's `adapter.can_afford_building` reads. If F3 is wired correctly,
+/// the published value drops by ≥ the pending mine's remaining cost.
+#[test]
+fn resource_gate_subtracts_pending_planet_building_from_stockpile() {
+    let mut app = test_app();
+    let (empire, _home) = spawn_empire_with_colony(&mut app);
+    advance_time(&mut app, 1);
+    let (m_before, e_before) = snapshot_current_amounts(&app, empire);
+
+    let colony = find_empire_owned_colony(&mut app, empire);
+    // Mine cost in `create_test_building_registry`: 150 minerals / 50 energy.
+    // Pre-queue with full remaining cost (no investment yet) so the gate
+    // sees the full pending amount.
+    {
+        let mut q = app
+            .world_mut()
+            .get_mut::<BuildingQueue>(colony)
+            .expect("test colony should carry a BuildingQueue");
+        q.queue.push(BuildingOrder {
+            order_id: 99_998,
+            building_id: BuildingId::new("mine"),
+            target_slot: 0,
+            minerals_remaining: Amt::units(150),
+            energy_remaining: Amt::units(50),
+            build_time_remaining: 10,
+        });
+    }
+
+    advance_time(&mut app, 1);
+    let (m_after, e_after) = snapshot_current_amounts(&app, empire);
+
+    let m_subtracted = m_before.sub(m_after);
+    let e_subtracted = e_before.sub(e_after);
+    assert!(
+        m_subtracted >= Amt::units(150),
+        "#532 F3: pending mine's minerals_remaining (150) must lower current_minerals by ≥ 150; \
+         got delta = {:?}, before = {:?}, after = {:?}",
+        m_subtracted,
+        m_before,
+        m_after,
+    );
+    assert!(
+        e_subtracted >= Amt::units(50),
+        "#532 F3: pending mine's energy_remaining (50) must lower current_energy by ≥ 50; \
+         got delta = {:?}, before = {:?}, after = {:?}",
+        e_subtracted,
+        e_before,
+        e_after,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // #532 F2: Rule 8 fortify resource gate (PR #531 finding 2 fold-in)
 // ---------------------------------------------------------------------------
