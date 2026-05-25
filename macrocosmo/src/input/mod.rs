@@ -402,13 +402,16 @@ fn register_engine_defaults(r: &mut KeybindingRegistry) {
     r.register_default(OBSERVER_EXIT, KeyCombo::key(KeyCode::Escape));
 
     // --- #490: Omniscient (god-view) toggle ---
-    // Dev-only; intentionally **unbound by default** after the #490
-    // fold-in (NICE-TO-FIX 5b). Players who want to bind it must add an
-    // entry for `ui.toggle_omniscient` to their `keybindings.toml`
-    // (e.g. `"ui.toggle_omniscient" = "F9"`). The `toggle_omniscient_mode`
-    // system still falls back to a hardcoded `F9` check in headless
-    // tests that don't install `KeybindingPlugin`, so test coverage
-    // continues to drive the toggle without depending on the registry.
+    // Dev-only; bound to F9 by default. The #490 fold-in originally
+    // **removed** this default as an over-correction (NICE-TO-FIX 5b),
+    // which silently broke F9 because the `toggle_omniscient_mode`
+    // system consults the registry first and only falls back to a
+    // hardcoded `F9` when no registry is installed. In normal gameplay
+    // `KeybindingPlugin` *is* installed, so the registry path always
+    // wins — and a missing entry meant the key did nothing. Restoring
+    // the default here keeps F9 functional out of the box; players can
+    // still override the binding in `keybindings.toml`.
+    r.register_default(UI_TOGGLE_OMNISCIENT, KeyCombo::key(KeyCode::F9));
 
     // --- Debug ---
     r.register_default(DEBUG_LOG_PLAYER_INFO, KeyCombo::key(KeyCode::KeyI));

@@ -1156,6 +1156,46 @@ fn dispatch_ship_command_per_ship<F>(
         let intended_state = crate::knowledge::command_kind_to_intended_state(kind_str);
         let has_return_leg = crate::knowledge::command_kind_has_return_leg(kind_str);
 
+        // Hotfix (#490/#528 fold-in): skip the projection write when
+        // the kind has no `intended_state` to express
+        // (`load_deliverable` / `unload_deliverable` today). PR #528's
+        // eager macro decomposition for `deploy_deliverable` emits the
+        // primitive chain `build → load → reposition → unload` into the
+        // outbox simultaneously; without this guard, the trailing
+        // `unload_deliverable` projection (with `intended_state = None`,
+        // `intended_system = ship.home_port` sentinel) would clobber
+        // the meaningful `reposition` extrapolation that just ran a few
+        // commands earlier — leaving the renderer with no dashed
+        // extrapolation line and freezing the ship marker at the
+        // origin. The player dispatch path already skips spatial-less
+        // commands per #493 (`dispatcher_skips_spatial_less_commands`);
+        // this aligns AI dispatch with the same contract.
+        if intended_state.is_none() {
+            debug!(
+                "{} dispatch: skipping projection write for ship {:?} (kind has no intended_state — \
+                 spatial-less primitive; preserves any prior reposition extrapolation in the same tick)",
+                kind_str, ship_entity
+            );
+            // Spawn the in-flight holder anyway (it's still needed for
+            // command_consumer apply / dedup), but fall through past
+            // the projection write below.
+            commands_buf.spawn(PendingAiShipCommand {
+                kind: cmd.kind.clone(),
+                target_system,
+                target_planet,
+                ship: ship_entity,
+                issuer_empire: empire_entity,
+                sent_at: now,
+                arrives_at,
+            });
+            if let Some(ref factory) = assignment_factory {
+                commands_buf
+                    .entity(ship_entity)
+                    .insert(factory(empire_entity, target_system, now));
+            }
+            continue;
+        }
+
         let projection = compute_ship_projection(
             ship_entity,
             snapshot.as_ref(),
