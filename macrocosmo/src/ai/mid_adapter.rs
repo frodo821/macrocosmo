@@ -235,6 +235,30 @@ pub trait MidGameAdapter {
         true
     }
 
+    /// #532 F2 resource gate: returns the id of the cheapest
+    /// direct-buildable combat design the empire can currently afford
+    /// (pending-aware via [`Self::can_afford_design`]), or `None` if
+    /// no affordable combat design exists.
+    ///
+    /// Rule 8 (fortify) uses this to emit `build_ship{design_id}`
+    /// directly, bypassing the legacy `fortify_system` auto-pick which
+    /// has no affordability check. Mirrors Rules 5a / 6's
+    /// "adapter-decides-then-Mid-emits" pattern: the adapter owns the
+    /// registry walk + gate, the Mid only constructs the [`Command`].
+    ///
+    /// "Combat" matches the legacy `handle_fortify_system` heuristic:
+    /// `is_direct_buildable && !can_survey && !can_colonize`. Cheapest
+    /// tiebreaker = sum of `build_cost_minerals + build_cost_energy`
+    /// (`Amt::saturating_add`).
+    ///
+    /// **Default `None`** = preserves StubAdapter behaviour. The
+    /// `fortify_system` command-kind / handler intentionally remain
+    /// reachable for non-Rule-8 emitters (e.g. future Lua policy
+    /// scripts); only Rule 8's choice of command kind changes.
+    fn affordable_fortify_design(&self) -> Option<String> {
+        None
+    }
+
     /// Current minerals stockpile **net of pending build orders**
     /// (sum across `member_systems` minus
     /// `Σ (minerals_cost - minerals_invested)` across colony
@@ -508,6 +532,26 @@ impl<'a> MidGameAdapter for BevyMidGameAdapter<'a> {
         self.current_minerals >= def.minerals_cost && self.current_energy >= def.energy_cost
     }
 
+    fn affordable_fortify_design(&self) -> Option<String> {
+        // Mirrors the legacy `handle_fortify_system` auto-pick:
+        // `is_direct_buildable && !can_survey && !can_colonize`. Layer
+        // the pending-aware affordability gate on top, then pick the
+        // cheapest by `build_cost_minerals + build_cost_energy`. The
+        // cheapest tiebreaker is the conservative "spend least" choice
+        // — Rule 8 fortifies a low-priority empire-wide combat gap, so
+        // burning the smaller stockpile makes sense; once #467
+        // introduces stance-weighted priorities Rule 8 may want to
+        // pick by combat-effectiveness instead, but that's a follow-up.
+        let registry = self.design_registry?;
+        registry
+            .designs
+            .values()
+            .filter(|d| d.is_direct_buildable && !d.can_survey && !d.can_colonize)
+            .filter(|d| self.can_afford_design(&d.id))
+            .min_by_key(|d| d.build_cost_minerals.add(d.build_cost_energy).0)
+            .map(|d| d.id.clone())
+    }
+
     fn current_minerals(&self) -> Amt {
         self.current_minerals
     }
@@ -530,7 +574,291 @@ pub fn arbitrate(proposals: Vec<Proposal>) -> Vec<Command> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use macrocosmo_ai::{CommandKindId, FactionId, Locality, SystemRef};
+    use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    use macrocosmo_ai::{AiBus, CommandKindId, FactionId, Locality, SystemRef};
+
+    /// Build a neutral [`NpcContext`] for adapter-method unit tests.
+    /// `NpcContext` has no `Default` impl (its fields are populated by
+    /// the per-empire ECS scan in `npc_decision_tick`), so the tests
+    /// hand-build an empty one here.
+    fn neutral_npc_context() -> NpcContext {
+        NpcContext {
+            hostile_systems: vec![],
+            unsurveyed_systems: vec![],
+            colonizable_systems: vec![],
+            expansion_frontier_systems: vec![],
+            ships: vec![],
+            is_researching: false,
+            ruler_entity: None,
+            ruler_system: None,
+            ruler_aboard: false,
+        }
+    }
+
+    /// Build a minimal `BevyMidGameAdapter` for adapter-method unit
+    /// tests. `NpcContext` / bus / per-tick scratch slices are all set
+    /// to neutral defaults — tests override only the registry +
+    /// stockpile fields they care about.
+    fn make_adapter<'a>(
+        faction: Entity,
+        context: &'a NpcContext,
+        bus: &'a AiBus,
+        member_systems: &'a [Entity],
+        design_registry: Option<&'a ShipDesignRegistry>,
+        current_minerals: Amt,
+        current_energy: Amt,
+    ) -> BevyMidGameAdapter<'a> {
+        BevyMidGameAdapter {
+            faction,
+            context,
+            bus,
+            idle_combat: &[],
+            idle_colonizers: &[],
+            member_systems,
+            expansion_frontier: &[],
+            idle_couriers: &[],
+            fleet_composition: FleetComposition::default(),
+            current_minerals,
+            current_energy,
+            design_registry,
+            building_registry: None,
+            deliverable_registry: None,
+        }
+    }
+
+    /// Helper: build a ship design with explicit cost/role fields. All
+    /// other fields collapse to neutral defaults the gate doesn't
+    /// inspect.
+    fn design(
+        id: &str,
+        can_survey: bool,
+        can_colonize: bool,
+        minerals: Amt,
+        energy: Amt,
+    ) -> ShipDesignDefinition {
+        ShipDesignDefinition {
+            id: id.into(),
+            name: id.into(),
+            description: String::new(),
+            hull_id: "hull".into(),
+            modules: vec![],
+            can_survey,
+            can_colonize,
+            maintenance: Amt::ZERO,
+            build_cost_minerals: minerals,
+            build_cost_energy: energy,
+            build_time: 30,
+            hp: 100.0,
+            sublight_speed: 0.1,
+            ftl_range: 5.0,
+            revision: 0,
+            is_direct_buildable: true,
+        }
+    }
+
+    /// #532 F2: `affordable_fortify_design` returns the cheapest
+    /// **combat** (`is_direct_buildable && !can_survey && !can_colonize`)
+    /// design the empire can afford. Survey + colony designs must be
+    /// filtered out even when they're cheaper, and unaffordable
+    /// combat designs must be skipped in favour of cheaper affordable
+    /// ones.
+    #[test]
+    fn affordable_fortify_design_picks_cheapest_affordable_combat() {
+        let mut registry = ShipDesignRegistry::default();
+        // Cheaper survey design — must be filtered out by the
+        // !can_survey predicate.
+        registry.insert(design(
+            "explorer",
+            true,
+            false,
+            Amt::units(50),
+            Amt::units(20),
+        ));
+        // Cheap combat design (corvette) — should win the pick.
+        registry.insert(design(
+            "patrol_corvette",
+            false,
+            false,
+            Amt::units(100),
+            Amt::units(50),
+        ));
+        // Expensive combat design (cruiser) — affordable but not
+        // cheapest.
+        registry.insert(design(
+            "heavy_cruiser",
+            false,
+            false,
+            Amt::units(500),
+            Amt::units(300),
+        ));
+
+        let faction = Entity::from_raw_u32(1).unwrap();
+        let context = neutral_npc_context();
+        let bus = AiBus::default();
+        let adapter = make_adapter(
+            faction,
+            &context,
+            &bus,
+            &[],
+            Some(&registry),
+            Amt::units(10_000),
+            Amt::units(10_000),
+        );
+
+        assert_eq!(
+            adapter.affordable_fortify_design(),
+            Some("patrol_corvette".into()),
+            "must pick the cheapest combat design when multiple are affordable",
+        );
+    }
+
+    /// #532 F2: when no combat design is affordable, the adapter
+    /// returns `None` and Rule 8 stays silent.
+    #[test]
+    fn affordable_fortify_design_returns_none_when_bankrupt() {
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(design(
+            "patrol_corvette",
+            false,
+            false,
+            Amt::units(100),
+            Amt::units(50),
+        ));
+
+        let faction = Entity::from_raw_u32(1).unwrap();
+        let context = neutral_npc_context();
+        let bus = AiBus::default();
+        // Bankrupt stockpile — pending-adjusted balance is zero so
+        // the gate rejects every design.
+        let adapter = make_adapter(
+            faction,
+            &context,
+            &bus,
+            &[],
+            Some(&registry),
+            Amt::ZERO,
+            Amt::ZERO,
+        );
+
+        assert_eq!(
+            adapter.affordable_fortify_design(),
+            None,
+            "bankrupt empire must surface no combat design (Rule 8 silent)",
+        );
+    }
+
+    /// #532 F2: registry that contains only survey + colony designs
+    /// (no combat) returns `None` even with a fat stockpile. Pre-fix
+    /// the legacy `fortify_system` auto-pick would fall through to
+    /// "any direct-buildable design" and queue a survey ship; the
+    /// gate avoids this misuse by filtering on role first.
+    #[test]
+    fn affordable_fortify_design_returns_none_when_no_combat_designs() {
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(design(
+            "explorer",
+            true,
+            false,
+            Amt::units(50),
+            Amt::units(20),
+        ));
+        registry.insert(design(
+            "colony_ship",
+            false,
+            true,
+            Amt::units(80),
+            Amt::units(40),
+        ));
+
+        let faction = Entity::from_raw_u32(1).unwrap();
+        let context = neutral_npc_context();
+        let bus = AiBus::default();
+        let adapter = make_adapter(
+            faction,
+            &context,
+            &bus,
+            &[],
+            Some(&registry),
+            Amt::units(10_000),
+            Amt::units(10_000),
+        );
+
+        assert_eq!(
+            adapter.affordable_fortify_design(),
+            None,
+            "no combat design in registry → None (even with fat stockpile)",
+        );
+    }
+
+    /// #532 F2: partial affordability — only the cheaper combat design
+    /// is affordable, so it wins even when an expensive option exists.
+    /// Demonstrates the gate-then-pick ordering: affordability filter
+    /// runs **before** the min-cost tiebreaker.
+    #[test]
+    fn affordable_fortify_design_skips_unaffordable_combat_designs() {
+        let mut registry = ShipDesignRegistry::default();
+        registry.insert(design(
+            "patrol_corvette",
+            false,
+            false,
+            Amt::units(100),
+            Amt::units(50),
+        ));
+        registry.insert(design(
+            "heavy_cruiser",
+            false,
+            false,
+            Amt::units(500),
+            Amt::units(300),
+        ));
+
+        let faction = Entity::from_raw_u32(1).unwrap();
+        let context = neutral_npc_context();
+        let bus = AiBus::default();
+        // Enough for corvette (100m / 50e), nowhere near cruiser
+        // (500m / 300e).
+        let adapter = make_adapter(
+            faction,
+            &context,
+            &bus,
+            &[],
+            Some(&registry),
+            Amt::units(150),
+            Amt::units(80),
+        );
+
+        assert_eq!(
+            adapter.affordable_fortify_design(),
+            Some("patrol_corvette".into()),
+            "must skip the unaffordable cruiser and pick the affordable corvette",
+        );
+    }
+
+    /// #532 F2 sanity: with no design registry attached, the adapter
+    /// returns `None` (no registry = no way to surface a design id).
+    /// Production always attaches one; this case covers test setups
+    /// that wire `design_registry: None`.
+    #[test]
+    fn affordable_fortify_design_returns_none_without_registry() {
+        let faction = Entity::from_raw_u32(1).unwrap();
+        let context = neutral_npc_context();
+        let bus = AiBus::default();
+        let adapter = make_adapter(
+            faction,
+            &context,
+            &bus,
+            &[],
+            None,
+            Amt::units(10_000),
+            Amt::units(10_000),
+        );
+
+        assert_eq!(
+            adapter.affordable_fortify_design(),
+            None,
+            "no design registry → no design id surfaced",
+        );
+    }
 
     #[test]
     fn arbitrate_strips_locality_and_preserves_order() {

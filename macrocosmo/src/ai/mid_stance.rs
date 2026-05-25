@@ -254,9 +254,32 @@ impl MidStanceAgent {
         // ----- Rule 8: Fortify when shipyard exists but few ships.
         // Gated on `can_build_ships >= 1.0 && total_ships <
         // colony_count * 2`.
+        //
+        // #532 F2 resource gate: PR #531 added affordability gates to
+        // Rules 3.5 / 5a / 5b / 6 but **missed Rule 8**. Pre-fix this
+        // emitted `fortify_system` (no `design_id`), and the handler's
+        // auto-pick had no affordability check — a bankrupt empire
+        // with a shipyard and `total_ships < colony_count * 2` would
+        // still queue one unaffordable combat ship per Reason tick.
+        //
+        // Fix: the adapter picks the cheapest affordable
+        // direct-buildable combat design (`affordable_fortify_design`,
+        // pending-aware via `can_afford_design`), then we emit
+        // `build_ship{design_id}` directly. When no affordable combat
+        // design exists the rule is silent — a bankrupt empire
+        // shouldn't queue ships at all. Mirrors Rule 5a / Rule 6's
+        // "adapter-decides-then-Mid-emits" pattern.
+        //
+        // The `fortify_system` command kind + handler remain reachable
+        // for non-Rule-8 callers (e.g. future Lua policy scripts);
+        // only Rule 8's choice of command kind changes.
         let total_ships = adapter.total_ships();
-        if can_build >= 1.0 && total_ships < colony_count * 2.0 {
-            let cmd = Command::new(cmd_ids::fortify_system(), faction_id, now);
+        if can_build >= 1.0
+            && total_ships < colony_count * 2.0
+            && let Some(design_id) = adapter.affordable_fortify_design()
+        {
+            let cmd = Command::new(cmd_ids::build_ship(), faction_id, now)
+                .with_param("design_id", CommandValue::Str(design_id.into()));
             proposals.push(Proposal::faction_wide(cmd));
         }
 
@@ -293,6 +316,12 @@ mod tests {
         /// `design_id` strings the stub considers fundable.
         affordable_designs: Option<std::collections::HashSet<String>>,
         affordable_buildings: Option<std::collections::HashSet<String>>,
+        /// #532 F2: Rule 8's adapter-side pick. `Some(id)` = the stub
+        /// surfaces a concrete combat design id for the rule to emit;
+        /// `None` = rule must stay silent (no affordable combat design).
+        /// Defaults to `Some("patrol_corvette")` so legacy Rule 8 tests
+        /// that don't care about F2 semantics keep firing.
+        fortify_design: Option<String>,
     }
 
     impl StubAdapter {
@@ -314,6 +343,7 @@ mod tests {
                 has_colonizable_targets: false,
                 affordable_designs: None,
                 affordable_buildings: None,
+                fortify_design: Some("patrol_corvette".into()),
             }
         }
     }
@@ -372,6 +402,9 @@ mod tests {
                 Some(set) => set.contains(building_id),
                 None => true,
             }
+        }
+        fn affordable_fortify_design(&self) -> Option<String> {
+            self.fortify_design.clone()
         }
     }
 
@@ -710,19 +743,35 @@ mod tests {
         // Conditions for both fire: weak fleet + can_build >= 1 +
         // total_ships < colony_count * 2. Rule 7 returns immediately
         // after retreat — Rule 8 must not emit.
+        //
+        // Force combat_count >= 3 so Rule 6's third branch (build a
+        // corvette when combat < 3) is silent and the only path to a
+        // `build_ship` proposal would be Rule 8. Then assert no
+        // build_ship + retreat present.
         let stub = StubAdapter {
             fleet_ready: 0.2,
             can_build: 1.0,
             total_ships: 1.0,
             colony_count: 3.0,
+            fleet_composition: FleetComposition {
+                survey_count: 1,
+                colony_count: 1,
+                combat_count: 3,
+            },
             ..StubAdapter::empty()
         };
         let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
         assert!(
             proposals
                 .iter()
+                .all(|p| p.command.kind.as_str() != "build_ship"),
+            "Rule 7 must early-return before Rule 8 runs (no build_ship)",
+        );
+        assert!(
+            proposals
+                .iter()
                 .all(|p| p.command.kind.as_str() != "fortify_system"),
-            "Rule 7 must early-return before Rule 8 runs",
+            "#532 F2: Rule 8 no longer emits fortify_system either",
         );
         assert!(
             proposals
@@ -759,10 +808,14 @@ mod tests {
         );
     }
 
-    // ---- Rule 8 (fortify_system) ----
+    // ---- Rule 8 (fortify — #532 F2: now emits build_ship) ----
 
     #[test]
     fn rule_8_fires_when_shipyard_present_and_few_ships() {
+        // #532 F2: Rule 8 now emits `build_ship{design_id}` directly,
+        // sourced from `adapter.affordable_fortify_design()`. The stub
+        // defaults `fortify_design` to `Some("patrol_corvette")` so
+        // pre-F2 tests stay green.
         let stub = StubAdapter {
             can_build: 1.0,
             colony_count: 3.0,
@@ -778,11 +831,26 @@ mod tests {
             ..StubAdapter::empty()
         };
         let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        let build = proposals
+            .iter()
+            .find(|p| p.command.kind.as_str() == "build_ship")
+            .expect("Rule 8 must emit build_ship (post-F2)");
+        match build.command.params.get("design_id") {
+            Some(CommandValue::Str(s)) => assert_eq!(
+                s.as_ref(),
+                "patrol_corvette",
+                "Rule 8 must emit the adapter-picked design id",
+            ),
+            _ => panic!("Rule 8 build_ship missing design_id param"),
+        }
+        // Sanity: #532 F2 — fortify_system is no longer emitted by
+        // Rule 8 itself (the command kind / handler remain for other
+        // call paths).
         assert!(
             proposals
                 .iter()
-                .any(|p| p.command.kind.as_str() == "fortify_system"),
-            "Rule 8 must emit fortify_system",
+                .all(|p| p.command.kind.as_str() != "fortify_system"),
+            "#532 F2: Rule 8 no longer emits fortify_system",
         );
     }
 
@@ -803,8 +871,14 @@ mod tests {
         assert!(
             proposals
                 .iter()
+                .all(|p| p.command.kind.as_str() != "build_ship"),
+            "total_ships >= colony_count*2 → no Rule 8 build_ship",
+        );
+        assert!(
+            proposals
+                .iter()
                 .all(|p| p.command.kind.as_str() != "fortify_system"),
-            "total_ships >= colony_count*2 → no fortify",
+            "#532 F2: also no legacy fortify_system",
         );
     }
 
@@ -820,8 +894,46 @@ mod tests {
         assert!(
             proposals
                 .iter()
+                .all(|p| p.command.kind.as_str() != "build_ship"),
+            "can_build < 1 → no Rule 8 build_ship",
+        );
+        assert!(
+            proposals
+                .iter()
                 .all(|p| p.command.kind.as_str() != "fortify_system"),
-            "can_build < 1 → no fortify",
+            "#532 F2: also no legacy fortify_system",
+        );
+    }
+
+    /// #532 F2: Rule 8 must stay silent when no affordable combat
+    /// design exists (`adapter.affordable_fortify_design()` → `None`).
+    /// Pre-F2 this rule emitted `fortify_system` with no
+    /// affordability check, and the handler's auto-pick queued an
+    /// unaffordable combat ship anyway. Post-fix the rule defers
+    /// rather than booking an order the stockpile can't pay for.
+    #[test]
+    fn rule_8_silent_when_no_affordable_combat_design() {
+        let stub = StubAdapter {
+            can_build: 1.0,
+            colony_count: 3.0,
+            total_ships: 1.0,
+            fleet_composition: FleetComposition {
+                survey_count: 1,
+                colony_count: 1,
+                combat_count: 3,
+            },
+            // Adapter says "no affordable combat design" — bankrupt
+            // empire case.
+            fortify_design: None,
+            ..StubAdapter::empty()
+        };
+        let proposals = MidStanceAgent::decide(&stub, &Stance::default(), "vesk", 10);
+        assert!(
+            proposals.iter().all(|p| {
+                let k = p.command.kind.as_str();
+                k != "build_ship" && k != "fortify_system"
+            }),
+            "Rule 8 must stay silent when affordable_fortify_design returns None",
         );
     }
 

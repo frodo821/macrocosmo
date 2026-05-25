@@ -525,3 +525,170 @@ fn system_building_queue_pending_also_subtracts_from_stockpile() {
         e_subtracted,
     );
 }
+
+// ---------------------------------------------------------------------------
+// #532 F2: Rule 8 fortify resource gate (PR #531 finding 2 fold-in)
+// ---------------------------------------------------------------------------
+
+/// Install a known cheap combat design for Rule 8's adapter pick. The
+/// test design registry seeded by `test_app()` doesn't include a
+/// deterministic cheapest-combat option; we add `patrol_corvette`
+/// (cost 100m / 50e) explicitly so the pick is pinnable.
+fn install_patrol_corvette(app: &mut App) {
+    use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
+    let mut registry = app.world_mut().resource_mut::<ShipDesignRegistry>();
+    registry.insert(ShipDesignDefinition {
+        id: "patrol_corvette".into(),
+        name: "Patrol Corvette".into(),
+        description: String::new(),
+        hull_id: "corvette".into(),
+        modules: vec![],
+        can_survey: false,
+        can_colonize: false,
+        maintenance: Amt::new(0, 500),
+        build_cost_minerals: Amt::units(100),
+        build_cost_energy: Amt::units(50),
+        build_time: 30,
+        hp: 100.0,
+        sublight_speed: 0.1,
+        ftl_range: 5.0,
+        revision: 0,
+        is_direct_buildable: true,
+    });
+}
+
+/// Attach a shipyard slot modifier to `system` so the empire's
+/// `can_build_ships` metric reaches 1.0 (Rule 8's gate). Mirrors
+/// `build_npc_with_shipyard_colony` in `ai_ship_build_queue.rs` —
+/// pushes onto the existing `SystemModifiers.shipyard_build_parallel_slots`
+/// in place rather than spawning a station ship, so the test stays
+/// minimal. `spawn_test_system` already attaches a default
+/// `SystemModifiers` component.
+fn attach_shipyard_to_system(world: &mut World, system: Entity) {
+    use macrocosmo::amount::SignedAmt;
+    use macrocosmo::galaxy::SystemModifiers;
+    use macrocosmo::modifier::Modifier;
+    let mut sys_mods = world
+        .get_mut::<SystemModifiers>(system)
+        .expect("spawn_test_system attaches SystemModifiers by default");
+    sys_mods
+        .shipyard_build_parallel_slots
+        .push_modifier(Modifier {
+            id: "fixture_shipyard".into(),
+            label: "Fixture Shipyard".into(),
+            base_add: SignedAmt::units(1),
+            multiplier: SignedAmt::ZERO,
+            add: SignedAmt::ZERO,
+            expires_at: None,
+            on_expire_event: None,
+        });
+}
+
+/// Drain the empire's existing stockpile to zero on its home system.
+/// Used to force Rule 8's affordability gate to reject every combat
+/// design. We can't pass `Amt::ZERO` to `spawn_test_colony` because
+/// the helper attaches the stockpile to the *star system* and we
+/// already spawned with `10_000` to keep other tests in this file
+/// happy; this resets the field post-spawn.
+fn drain_stockpile(world: &mut World, system: Entity) {
+    use macrocosmo::colony::ResourceStockpile;
+    if let Some(mut s) = world.get_mut::<ResourceStockpile>(system) {
+        s.minerals = Amt::ZERO;
+        s.energy = Amt::ZERO;
+    }
+}
+
+/// Count ship-kind orders for `empire` across every colony BuildQueue,
+/// optionally filtered by `design_id`. Walks the whole world because
+/// we don't know in advance which colony Rule 8's pipeline picked as
+/// the host.
+fn count_ship_orders_for_empire(app: &mut App, empire: Entity, design_id: Option<&str>) -> usize {
+    let world = app.world_mut();
+    let mut q = world.query::<(&BuildQueue, &FactionOwner)>();
+    q.iter(world)
+        .filter(|(_, owner)| owner.0 == empire)
+        .map(|(queue, _)| {
+            queue
+                .queue
+                .iter()
+                .filter(|o| matches!(o.kind, BuildKind::Ship))
+                .filter(|o| design_id.is_none_or(|id| o.design_id == id))
+                .count()
+        })
+        .sum()
+}
+
+/// #532 F2 (bankrupt case): an empire with a shipyard but zero
+/// stockpile must NOT queue any combat ship via Rule 8. Pre-fix Rule
+/// 8 emitted `fortify_system` (no `design_id`) and the handler's
+/// auto-pick had no affordability check — every Reason tick added an
+/// unaffordable combat order. Post-fix `affordable_fortify_design`
+/// returns `None` for the bankrupt empire and Rule 8 stays silent.
+#[test]
+fn rule_8_fortify_no_build_when_bankrupt_with_shipyard() {
+    let mut app = test_app();
+    install_patrol_corvette(&mut app);
+    let (empire, home) = spawn_empire_with_colony(&mut app);
+
+    // Add a shipyard so `can_build_ships` metric climbs to 1.0 →
+    // Rule 8's first gate passes.
+    attach_shipyard_to_system(app.world_mut(), home);
+    // Bankrupt the stockpile so the F2 affordability gate must
+    // reject every combat design.
+    drain_stockpile(app.world_mut(), home);
+
+    // Run several Reason ticks so the AI pipeline has multiple
+    // chances to emit. If F2 is wired correctly, Rule 8 stays silent
+    // every tick and no `build_ship` order lands.
+    for _ in 0..6 {
+        advance_time(&mut app, 1);
+    }
+
+    let ship_orders = count_ship_orders_for_empire(&mut app, empire, None);
+    assert_eq!(
+        ship_orders, 0,
+        "#532 F2: bankrupt empire with shipyard must NOT queue any ship via Rule 8; \
+         found {} ship order(s) in BuildQueue",
+        ship_orders,
+    );
+}
+
+/// #532 F2 (affordable case): an empire with a shipyard and enough
+/// stockpile to pay for the cheapest combat design must queue exactly
+/// one `build_ship{design_id = "patrol_corvette"}` order via Rule 8's
+/// new build_ship emit path.
+///
+/// Sanity check that the fix doesn't over-correct into "never builds":
+/// the gate refuses bankrupt empires but still permits the build when
+/// resources are present.
+#[test]
+fn rule_8_fortify_queues_build_ship_when_affordable_with_shipyard() {
+    let mut app = test_app();
+    install_patrol_corvette(&mut app);
+    let (empire, home) = spawn_empire_with_colony(&mut app);
+
+    // Shipyard present + stockpile already at 10_000 (set by
+    // `spawn_empire_with_colony`) → both Rule 8 gates pass.
+    attach_shipyard_to_system(app.world_mut(), home);
+
+    // Let the AI pipeline run several ticks. Rule 8 only fires when
+    // `total_ships < colony_count * 2`; the test fixture has 1 Core
+    // ship + 1 colony, so the threshold (= 2) is met for the first
+    // emit and then the handler-side dedup absorbs subsequent ticks.
+    for _ in 0..6 {
+        advance_time(&mut app, 1);
+    }
+
+    // Look specifically for patrol_corvette — the cheapest combat
+    // design we just installed. Rule 8 picks the cheapest affordable
+    // combat design (via `affordable_fortify_design`), so the test
+    // design registry's other combat designs (if any) will lose the
+    // tiebreaker.
+    let corvette_orders = count_ship_orders_for_empire(&mut app, empire, Some("patrol_corvette"));
+    assert!(
+        corvette_orders >= 1,
+        "#532 F2: shipyard + affordable stockpile must queue ≥ 1 patrol_corvette via Rule 8; \
+         got {} corvette order(s)",
+        corvette_orders,
+    );
+}
