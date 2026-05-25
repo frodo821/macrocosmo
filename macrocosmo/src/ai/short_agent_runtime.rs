@@ -520,15 +520,22 @@ pub fn run_short_agents(
         let faction = to_ai_faction(empire);
 
         // PR2d: route this agent through `ShortStanceAgent` (Rules 2
-        // and 5b). Inputs are sourced from the per-empire scratch
+        // and 5b). Inputs are sourced from the per-region scratch
         // populated by `npc_decision_tick` upstream — Bug A dedup
-        // (`pending_survey_targets`) and the empire's `member_systems`
-        // intersection are already applied there. The Mid-side empire
-        // scratch may be missing if the empire's MidAgent was skipped
-        // this frame (player-empire with `auto_managed = false`); in
-        // that case `idle_surveyors` / `unsurveyed_targets` collapse
-        // to empty slices and `ShortStanceAgent` stays silent.
-        let inputs = short_inputs.per_empire.get(&empire);
+        // (`pending_survey_targets`) and the region's `member_systems`
+        // intersection are already applied there. The Mid-side region
+        // scratch may be missing if the MidAgent was skipped this
+        // frame (`auto_managed = false`, e.g. player empire); in that
+        // case `idle_surveyors` / `unsurveyed_targets` collapse to
+        // empty slices and `ShortStanceAgent` stays silent.
+        //
+        // PR #531 Codex review fold-in (finding 2): look up by
+        // **region entity** (= `mid.region`) so multi-MidAgent
+        // empires read their own region's stockpile sum + fleet
+        // assignments, not "whichever region was inserted last by
+        // the upstream MidAgent loop". Single-MidAgent empires
+        // observe the same behaviour as the pre-fix per-empire key.
+        let inputs = short_inputs.per_region.get(&mid.region);
         // Per-fleet view of `unsurveyed_targets`: filter out anything
         // a sibling Fleet in this empire already claimed earlier in
         // the loop. Allocated owned (not borrowed from `inputs`) so

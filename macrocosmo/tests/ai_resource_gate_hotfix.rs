@@ -328,15 +328,35 @@ fn push_pending_ship_order(
     });
 }
 
-/// Capture `EmpireShortInputs.current_minerals / current_energy` after a
-/// single Mid tick. Asserts the empire's inputs row is populated.
+/// Capture `RegionShortInputs.current_minerals / current_energy` after a
+/// single Mid tick. Asserts the inputs row for the empire's primary
+/// region is populated.
+///
+/// PR #531 Codex review fold-in (finding 2): `ShortAgentTickInputs` is
+/// keyed by **region entity** rather than empire entity, so single-region
+/// test setups resolve the empire's primary region via the
+/// `find_empire_region` helper before indexing.
 fn snapshot_current_amounts(app: &App, empire: Entity) -> (Amt, Amt) {
+    let region = find_empire_region(app, empire);
     let inputs = app.world().resource::<ShortAgentTickInputs>();
-    let empire_inputs = inputs
-        .per_empire
+    let region_inputs = inputs
+        .per_region
+        .get(&region)
+        .expect("RegionShortInputs should be populated for the empire's primary region");
+    (region_inputs.current_minerals, region_inputs.current_energy)
+}
+
+/// Resolve the empire's primary `Region` entity. Used by tests that need
+/// to look up `ShortAgentTickInputs.per_region` keys. Panics if no region
+/// has been backfilled yet (always the case after the first Update
+/// because `backfill_mid_agents_for_ai_controlled` runs every frame).
+fn find_empire_region(app: &App, empire: Entity) -> Entity {
+    let registry = app.world().resource::<macrocosmo::region::RegionRegistry>();
+    *registry
+        .by_empire
         .get(&empire)
-        .expect("EmpireShortInputs should be populated for the empire");
-    (empire_inputs.current_minerals, empire_inputs.current_energy)
+        .and_then(|regions| regions.first())
+        .expect("RegionRegistry should contain at least one region for the empire")
 }
 
 /// #529 A migration: the AI's pending-aware resource gate subtracts every
@@ -361,7 +381,7 @@ fn resource_gate_subtracts_pending_orders_from_stockpile() {
     let (empire, _home) = spawn_empire_with_colony(&mut app);
 
     // Prime: schema::declare_all runs in Startup, the Mid pipeline
-    // populates `EmpireShortInputs` from the first Update onwards.
+    // populates `RegionShortInputs` from the first Update onwards.
     advance_time(&mut app, 1);
     let (m_before, e_before) = snapshot_current_amounts(&app, empire);
 

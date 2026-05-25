@@ -75,14 +75,29 @@ pub struct ResourceGateParams<'w, 's> {
     /// stockpile sum before the resource gate sees it, so the AI
     /// accounts for its own in-flight commitments when deciding
     /// whether to emit a new build.
+    ///
+    /// PR #531 Codex review fold-in (finding 1): the tuple now
+    /// carries `&Colony` so the pending-subtraction walk can resolve
+    /// each colony's host system via [`crate::colony::Colony::system`]
+    /// and gate by `member_systems_set` — without this filter a
+    /// pending order in region B would erroneously reduce region
+    /// A's available stockpile (the stockpile sum and the pending
+    /// subtraction must share the same region scope).
     pub build_queues: Query<
         'w,
         's,
         (
             &'static crate::colony::building_queue::BuildQueue,
+            &'static crate::colony::Colony,
             &'static crate::faction::FactionOwner,
         ),
     >,
+    /// Planet → host-system resolver used by `Colony::system()` inside
+    /// the per-colony `BuildQueue` walk. Folded into this bundle
+    /// alongside `build_queues` so the call site can look up a
+    /// colony's region membership without adding a top-level
+    /// `Query<&Planet>` (16-param limit).
+    pub planets: Query<'w, 's, &'static crate::galaxy::Planet>,
     /// Per-StarSystem `SystemBuildingQueue` (#529 A migration). Lists
     /// in-flight system-building orders (shipyard / port / research
     /// lab) whose `minerals_remaining` / `energy_remaining` is
@@ -363,26 +378,39 @@ pub struct LastAiDecisionTick(pub i64);
 
 /// Per-tick precompute that `npc_decision_tick` publishes for the
 /// downstream `run_short_agents` system (#449 PR2d). Lets the
-/// per-`ShortAgent` Rule ports read empire-level data without
+/// per-`ShortAgent` Rule ports read region-level data without
 /// re-running the ECS scans `npc_decision_tick` already performed.
 ///
-/// The map is keyed by **empire entity** (the `MidAgent → Region →
-/// empire` chain a Short uses). Cleared at the start of every
-/// `npc_decision_tick` so stale entries from a despawned empire never
-/// leak into the next tick.
+/// PR #531 Codex review fold-in (finding 2): the map is keyed by
+/// **region entity** (= `MidAgent.region`). Pre-fix it was keyed by
+/// empire entity, which silently overwrote earlier MidAgent outputs
+/// when an empire had multiple MidAgents / Regions — every downstream
+/// `run_short_agents` call then read whichever region was inserted
+/// last, making colony ShortAgents gate Rule 5b against another
+/// region's stockpile. Per-region keying preserves the per-MidAgent
+/// stockpile sums + survey assignment slices that PR2c+ multi-region
+/// splits depend on.
+///
+/// Cleared at the start of every `npc_decision_tick` so stale entries
+/// from a despawned region never leak into the next tick.
 ///
 /// Not registered with `Reflect` — purely transient per-tick scratch.
 #[derive(Resource, Default, Debug)]
 pub struct ShortAgentTickInputs {
-    pub per_empire: std::collections::HashMap<Entity, EmpireShortInputs>,
+    pub per_region: std::collections::HashMap<Entity, RegionShortInputs>,
 }
 
-/// Inputs needed by `ShortStanceAgent::decide` for one empire on one
+/// Inputs needed by `ShortStanceAgent::decide` for one region on one
 /// tick. Built by `npc_decision_tick` from the same data it produces
 /// for the Mid layer; consumed by `run_short_agents` to build per-agent
 /// `BevyShortAgentAdapter`s.
+///
+/// PR #531 Codex review fold-in (finding 2): renamed from
+/// `EmpireShortInputs` to reflect that the contents (stockpile sums,
+/// fleet partitions, survey assignments) are region-scoped — each
+/// MidAgent / Region produces one row.
 #[derive(Default, Debug)]
-pub struct EmpireShortInputs {
+pub struct RegionShortInputs {
     /// Per-fleet idle surveyor list: `Ship.fleet == Some(fleet)` AND
     /// `is_idle && can_survey`. Built once per empire; per-fleet
     /// ShortAgents look up by their `ShortScope::Fleet(fleet)` key.
@@ -700,10 +728,14 @@ pub fn npc_decision_tick(
     last_tick.0 = now;
 
     // PR2d: clear stale per-tick scratch from the previous tick before
-    // the empire loop below repopulates it. `run_short_agents` runs
+    // the MidAgent loop below repopulates it. `run_short_agents` runs
     // `.after(npc_decision_tick)` so the data we populate here is the
     // input it consumes the same frame.
-    short_inputs.per_empire.clear();
+    //
+    // PR #531 Codex review fold-in: keyed per-region (was per-empire)
+    // so a multi-MidAgent empire keeps a row per region instead of
+    // overwriting earlier inserts.
+    short_inputs.per_region.clear();
 
     // #299 / #446: precompute per-empire "systems with our own Core"
     // before the empire loop. Used to filter `colonizable_systems` —
@@ -1325,7 +1357,14 @@ pub fn npc_decision_tick(
             // entries name a `design_id`; `Deliverable` entries do
             // not contribute (they expand into Core / payload items,
             // not ships).
-            for (queue, owner) in &resource_gate.build_queues {
+            //
+            // PR #531 Codex review fold-in: the Rule 6 fleet census is
+            // intentionally empire-wide — a ship being built in region
+            // B still belongs to the empire and counts toward
+            // "do we have enough surveyors yet?". The region-scope
+            // filter applies only to the pending stockpile subtraction
+            // walk below, not here.
+            for (queue, _colony, owner) in &resource_gate.build_queues {
                 if owner.0 != entity {
                     continue;
                 }
@@ -1406,8 +1445,24 @@ pub fn npc_decision_tick(
         // adding work to a queue whose tail will starve".
         let mut pending_minerals = crate::amount::Amt::ZERO;
         let mut pending_energy = crate::amount::Amt::ZERO;
-        for (queue, owner) in &resource_gate.build_queues {
+        for (queue, colony, owner) in &resource_gate.build_queues {
             if owner.0 != entity {
+                continue;
+            }
+            // PR #531 Codex review fold-in (finding 1): region-scope
+            // the pending subtraction so it matches the stockpile-sum
+            // scope above. Without this gate, a pending ship /
+            // deliverable in region B would erroneously reduce
+            // region A's available stockpile and could incorrectly
+            // block Rule 6 / Rule 3.5 / shipyard decisions for an
+            // empire whose MidAgents see independent region budgets.
+            // Mirrors the `member_systems_set.contains(&sys_entity)`
+            // gate on `system_building_queues` below — both walks
+            // now share the same region scope.
+            let Some(sys) = colony.system(&resource_gate.planets) else {
+                continue;
+            };
+            if !member_systems_set.contains(&sys) {
                 continue;
             }
             for order in &queue.queue {
@@ -1566,9 +1621,16 @@ pub fn npc_decision_tick(
             .0
             .current(&metric_id("net_production_food"))
             .unwrap_or(0.0);
-        short_inputs.per_empire.insert(
-            entity,
-            EmpireShortInputs {
+        // PR #531 Codex review fold-in (finding 2): key by **region
+        // entity** (= the MidAgent's region), not empire entity. With
+        // one MidAgent per Region, this preserves per-region stockpile
+        // sums + survey assignments for multi-region empires —
+        // previously the second MidAgent's `entity`-keyed insert
+        // overwrote the first's data and `run_short_agents` saw only
+        // "whichever region was inserted last".
+        short_inputs.per_region.insert(
+            mid_agent.region,
+            RegionShortInputs {
                 idle_surveyors_by_fleet,
                 unsurveyed_targets: context.unsurveyed_systems.clone(),
                 survey_assignments_by_fleet,
