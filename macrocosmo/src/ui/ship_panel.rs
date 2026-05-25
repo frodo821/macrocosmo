@@ -698,68 +698,67 @@ pub fn draw_ship_panel(
         // if surviving members are docked. If the player wants to refit
         // the surviving members, they can open one of those members'
         // panels directly.
-        let fleet_refit_summary: Option<FleetRefitSummary> = (is_actionable
-            .then_some(()))
-        .and_then(|()| ship.fleet)
-        .and_then(|fleet_entity| {
-            let fleet = fleets.get(fleet_entity).ok()?;
-            let members = fleet_members.get(fleet_entity).ok()?;
-            let mut eligible = 0usize;
-            let mut total_m = Amt::ZERO;
-            let mut total_e = Amt::ZERO;
-            let mut max_time: i64 = 0;
-            for member in members.iter() {
-                let Ok((_, m_ship, m_state, _, _, _)) = ships_query.get(*member) else {
-                    continue;
-                };
-                let Some(m_design) = design_registry.get(&m_ship.design_id) else {
-                    continue;
-                };
-                if m_design.revision <= m_ship.design_revision {
-                    continue;
+        let fleet_refit_summary: Option<FleetRefitSummary> = (is_actionable.then_some(()))
+            .and_then(|()| ship.fleet)
+            .and_then(|fleet_entity| {
+                let fleet = fleets.get(fleet_entity).ok()?;
+                let members = fleet_members.get(fleet_entity).ok()?;
+                let mut eligible = 0usize;
+                let mut total_m = Amt::ZERO;
+                let mut total_e = Amt::ZERO;
+                let mut max_time: i64 = 0;
+                for member in members.iter() {
+                    let Ok((_, m_ship, m_state, _, _, _)) = ships_query.get(*member) else {
+                        continue;
+                    };
+                    let Some(m_design) = design_registry.get(&m_ship.design_id) else {
+                        continue;
+                    };
+                    if m_design.revision <= m_ship.design_revision {
+                        continue;
+                    }
+                    // #491 PR-2: Per-member docked filter routed through the
+                    // projection view — own-ship eligibility is decided on
+                    // the player's belief, not realtime ECS. A member with no
+                    // projection / snapshot is skipped (mirrors the outline
+                    // tree's no-store / pre-seed handling).
+                    let Some(m_view) = ship_view(
+                        *member,
+                        &m_ship,
+                        &m_state,
+                        viewing_knowledge,
+                        viewing_empire,
+                    ) else {
+                        continue;
+                    };
+                    if !matches!(m_view.state, ShipSnapshotState::InSystem) {
+                        continue;
+                    }
+                    let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {
+                        continue;
+                    };
+                    let (cm, ce, t) = crate::ship_design::refit_cost_to_design(
+                        &m_ship.modules,
+                        m_design,
+                        m_hull,
+                        module_registry,
+                    );
+                    eligible += 1;
+                    total_m = total_m.add(cm);
+                    total_e = total_e.add(ce);
+                    if t > max_time {
+                        max_time = t;
+                    }
                 }
-                // #491 PR-2: Per-member docked filter routed through the
-                // projection view — own-ship eligibility is decided on
-                // the player's belief, not realtime ECS. A member with no
-                // projection / snapshot is skipped (mirrors the outline
-                // tree's no-store / pre-seed handling).
-                let Some(m_view) = ship_view(
-                    *member,
-                    &m_ship,
-                    &m_state,
-                    viewing_knowledge,
-                    viewing_empire,
-                ) else {
-                    continue;
-                };
-                if !matches!(m_view.state, ShipSnapshotState::InSystem) {
-                    continue;
-                }
-                let Some(m_hull) = hull_registry.get(&m_ship.hull_id) else {
-                    continue;
-                };
-                let (cm, ce, t) = crate::ship_design::refit_cost_to_design(
-                    &m_ship.modules,
-                    m_design,
-                    m_hull,
-                    module_registry,
-                );
-                eligible += 1;
-                total_m = total_m.add(cm);
-                total_e = total_e.add(ce);
-                if t > max_time {
-                    max_time = t;
-                }
-            }
-            Some(FleetRefitSummary {
-                fleet_entity,
-                fleet_name: fleet.name.clone(),
-                eligible_count: eligible,
-                total_cost_minerals: total_m,
-                total_cost_energy: total_e,
-                max_refit_time: max_time,
-            })
-        });
+                Some(FleetRefitSummary {
+                    fleet_entity,
+                    fleet_name: fleet.name.clone(),
+                    eligible_count: eligible,
+                    total_cost_minerals: total_m,
+                    total_cost_energy: total_e,
+                    max_refit_time: max_time,
+                })
+            });
         // #57: Current ROE
         let current_roe = roe_query.get(ship_entity).copied().unwrap_or_default();
         // #57: Command delay for ROE changes.
