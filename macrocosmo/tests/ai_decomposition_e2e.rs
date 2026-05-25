@@ -72,36 +72,56 @@ use macrocosmo::ship::command_events::{
     ColonizeRequested, DeployDeliverableRequested, LoadDeliverableRequested, MoveRequested,
 };
 use macrocosmo::ship::{Cargo, CargoItem, Owner, Ship};
-use macrocosmo::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
 
 use common::{
     advance_time, spawn_mock_core_ship, spawn_test_ruler, spawn_test_ship,
     spawn_test_system_with_planet, test_app,
 };
 
-/// Build a minimal `infra_core` deliverable design and graft it onto
-/// the existing test design registry. Mirrors the `infrastructure_core`
-/// shape used by the production Lua scripts but with cost / build_time
-/// trimmed so handlers don't gate on production progress.
+/// Build a minimal `infra_core` deliverable definition and graft it
+/// onto the test deliverable registry. Mirrors the production
+/// `infrastructure_core` shape from `scripts/structures/cores.lua` but
+/// with cost / build_time trimmed so handlers don't gate on production
+/// progress.
+///
+/// #532 F1: this used to inject a fake `ShipDesignDefinition` keyed on
+/// the deliverable id because `handle_build_deliverable` previously
+/// resolved through `ShipDesignRegistry`. After F1 the handler resolves
+/// through `DeliverableRegistry`, so this fixture inserts the real
+/// shape — anything else and the bug-free production handler would
+/// reject `definition_id = "infra_core"` as unknown.
 fn install_infra_core_design(app: &mut App) {
-    let mut registry = app.world_mut().resource_mut::<ShipDesignRegistry>();
-    registry.insert(ShipDesignDefinition {
+    use macrocosmo::deep_space::{
+        DeliverableMetadata, DeliverableRegistry, ResourceCost, StructureDefinition,
+    };
+    let mut registry = app.world_mut().resource_mut::<DeliverableRegistry>();
+    registry.insert(StructureDefinition {
         id: "infra_core".into(),
         name: "Infrastructure Core".into(),
         description: String::new(),
-        hull_id: "deliverable_hull".into(),
-        modules: vec![],
-        can_survey: false,
-        can_colonize: false,
-        maintenance: Amt::ZERO,
-        build_cost_minerals: Amt::units(20),
-        build_cost_energy: Amt::units(10),
-        build_time: 5,
-        hp: 1.0,
-        sublight_speed: 0.0,
-        ftl_range: 0.0,
-        revision: 0,
-        is_direct_buildable: true,
+        max_hp: 1.0,
+        energy_drain: Amt::ZERO,
+        capabilities: std::collections::HashMap::new(),
+        prerequisites: None,
+        deliverable: Some(DeliverableMetadata {
+            cost: ResourceCost {
+                minerals: Amt::units(20),
+                energy: Amt::units(10),
+            },
+            build_time: 5,
+            cargo_size: 1,
+            scrap_refund: 0.25,
+            // The deploy / spawn pipeline is not exercised by this
+            // decomposition E2E test (cargo is pre-seeded; unload only
+            // checks the cargo entry by id, not the registry's
+            // `spawns_as_ship` ref). Leaving `None` keeps the fixture
+            // minimal.
+            spawns_as_ship: None,
+        }),
+        upgrade_to: Vec::new(),
+        upgrade_from: None,
+        on_built: None,
+        on_upgraded: None,
     });
 }
 

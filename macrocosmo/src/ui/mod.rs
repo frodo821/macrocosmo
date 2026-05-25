@@ -997,8 +997,21 @@ fn draw_top_bar_system(
 }
 
 // ---------------------------------------------------------------------------
-// System 2.5: draw_notifications_system — banner stack at the top (#151)
+// System 2.5: draw_notifications_system — horizontal pill row (#151)
 // ---------------------------------------------------------------------------
+//
+// Notifications are rendered as a row of small priority-colored circles
+// anchored to the right edge just below the top bar (Clausewitz-engine
+// style). Newest entries are placed rightmost so the eye lands on them
+// first. Each pill shows a single-character placeholder glyph (replaced
+// by the icon registry once #143 lands); hovering a pill reveals a
+// popup with the full title, description, TTL, Jump, and Dismiss
+// controls.
+
+const PILL_DIAMETER: f32 = 18.0;
+const PILL_SPACING: f32 = 4.0;
+const PILL_POPUP_MAX_WIDTH: f32 = 360.0;
+const PILL_POPUP_MIN_WIDTH: f32 = 260.0;
 
 fn draw_notifications_system(
     mut contexts: EguiContexts,
@@ -1009,8 +1022,6 @@ fn draw_notifications_system(
         return;
     };
 
-    // Snapshot the items so we can iterate without holding a borrow on the
-    // resource while we also mutate it (dismiss, jump).
     let items: Vec<crate::notifications::Notification> = queue.items.clone();
     if items.is_empty() {
         return;
@@ -1019,83 +1030,14 @@ fn draw_notifications_system(
     let mut to_dismiss: Vec<u64> = Vec::new();
     let mut jump_target: Option<Entity> = None;
 
-    egui::Area::new(egui::Id::new("notification_banners"))
-        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 48.0))
+    egui::Area::new(egui::Id::new("notification_pills"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 48.0))
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
-            ui.vertical_centered(|ui| {
-                ui.set_max_width(420.0);
+            ui.spacing_mut().item_spacing.x = PILL_SPACING;
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 for n in &items {
-                    let (border, fill) = match n.priority {
-                        NotificationPriority::High => (
-                            egui::Color32::from_rgb(220, 80, 80),
-                            egui::Color32::from_rgba_premultiplied(60, 14, 14, 230),
-                        ),
-                        NotificationPriority::Medium => (
-                            egui::Color32::from_rgb(230, 200, 90),
-                            egui::Color32::from_rgba_premultiplied(40, 36, 14, 220),
-                        ),
-                        NotificationPriority::Low => (
-                            egui::Color32::DARK_GRAY,
-                            egui::Color32::from_rgba_premultiplied(20, 20, 20, 200),
-                        ),
-                    };
-
-                    egui::Frame::group(ui.style())
-                        .stroke(egui::Stroke::new(1.5, border))
-                        .fill(fill)
-                        .inner_margin(egui::Margin::same(8))
-                        .show(ui, |ui| {
-                            ui.set_min_width(380.0);
-                            ui.horizontal(|ui| {
-                                ui.vertical(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(&n.title)
-                                            .strong()
-                                            .color(egui::Color32::WHITE),
-                                    );
-                                    if !n.description.is_empty() {
-                                        ui.label(
-                                            egui::RichText::new(&n.description)
-                                                .color(egui::Color32::LIGHT_GRAY),
-                                        );
-                                    }
-                                    if let Some(remaining) = n.remaining_seconds {
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "auto-dismiss in {:.0}s",
-                                                remaining.max(0.0),
-                                            ))
-                                            .small()
-                                            .weak(),
-                                        );
-                                    }
-                                });
-                                ui.with_layout(
-                                    egui::Layout::right_to_left(egui::Align::TOP),
-                                    |ui| {
-                                        if ui
-                                            .button(egui::RichText::new("✕").strong())
-                                            .on_hover_text("Dismiss")
-                                            .clicked()
-                                        {
-                                            to_dismiss.push(n.id);
-                                        }
-                                        if let Some(target) = n.target_system {
-                                            if ui
-                                                .button("Jump")
-                                                .on_hover_text("Select target system")
-                                                .clicked()
-                                            {
-                                                jump_target = Some(target);
-                                                to_dismiss.push(n.id);
-                                            }
-                                        }
-                                    },
-                                );
-                            });
-                        });
-                    ui.add_space(4.0);
+                    draw_notification_pill(ui, n, &mut to_dismiss, &mut jump_target);
                 }
             });
         });
@@ -1106,6 +1048,119 @@ fn draw_notifications_system(
     if let Some(target) = jump_target {
         selected_system.0 = Some(target);
     }
+}
+
+fn notification_pill_colors(priority: NotificationPriority) -> (egui::Color32, egui::Color32) {
+    match priority {
+        NotificationPriority::High => (
+            egui::Color32::from_rgb(255, 120, 120),
+            egui::Color32::from_rgb(170, 30, 30),
+        ),
+        NotificationPriority::Medium => (
+            egui::Color32::from_rgb(240, 210, 110),
+            egui::Color32::from_rgb(140, 110, 30),
+        ),
+        NotificationPriority::Low => (
+            egui::Color32::LIGHT_GRAY,
+            egui::Color32::from_rgb(60, 60, 60),
+        ),
+    }
+}
+
+fn draw_notification_pill(
+    ui: &mut egui::Ui,
+    n: &crate::notifications::Notification,
+    to_dismiss: &mut Vec<u64>,
+    jump_target: &mut Option<Entity>,
+) {
+    let (border, fill) = notification_pill_colors(n.priority);
+
+    let size = egui::vec2(PILL_DIAMETER, PILL_DIAMETER);
+    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    let radius = PILL_DIAMETER * 0.5;
+    let hovered = pill_response.hovered();
+    let painter = ui.painter();
+    painter.circle_filled(rect.center(), radius, fill);
+    painter.circle_stroke(
+        rect.center(),
+        radius,
+        egui::Stroke::new(if hovered { 1.8 } else { 1.2 }, border),
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        n.pill_glyph(),
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+
+    // Persist hover state across one frame so the cursor can travel from
+    // the pill into the popup without flicker.
+    let memory_id = ui.make_persistent_id(("notif_pill_hover", n.id));
+    let last_frame_active: bool = ui
+        .memory(|m| m.data.get_temp::<bool>(memory_id))
+        .unwrap_or(false);
+
+    let mut popup_hovered = false;
+    if hovered || last_frame_active {
+        let popup_id = ui.make_persistent_id(("notif_pill_popup", n.id));
+        let popup_pos = rect.right_bottom() + egui::vec2(0.0, PILL_SPACING);
+        let popup_response = egui::Area::new(popup_id)
+            .fixed_pos(popup_pos)
+            .order(egui::Order::Tooltip)
+            .pivot(egui::Align2::RIGHT_TOP)
+            .interactable(true)
+            .show(ui.ctx(), |ui| {
+                egui::Frame::popup(ui.style())
+                    .stroke(egui::Stroke::new(1.0, border))
+                    .show(ui, |ui| {
+                        ui.set_max_width(PILL_POPUP_MAX_WIDTH);
+                        ui.set_min_width(PILL_POPUP_MIN_WIDTH);
+                        ui.label(
+                            egui::RichText::new(&n.title)
+                                .strong()
+                                .color(egui::Color32::WHITE),
+                        );
+                        if !n.description.is_empty() {
+                            ui.label(
+                                egui::RichText::new(&n.description)
+                                    .color(egui::Color32::LIGHT_GRAY),
+                            );
+                        }
+                        if let Some(remaining) = n.remaining_seconds {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "auto-dismiss in {:.0}s",
+                                    remaining.max(0.0),
+                                ))
+                                .small()
+                                .weak(),
+                            );
+                        }
+                        ui.add_space(2.0);
+                        ui.horizontal(|ui| {
+                            if let Some(target) = n.target_system {
+                                if ui
+                                    .button("Jump")
+                                    .on_hover_text("Select target system")
+                                    .clicked()
+                                {
+                                    *jump_target = Some(target);
+                                    to_dismiss.push(n.id);
+                                }
+                            }
+                            if ui.button("✕ Dismiss").on_hover_text("Dismiss").clicked() {
+                                to_dismiss.push(n.id);
+                            }
+                        });
+                    });
+            });
+        popup_hovered = popup_response.response.hovered();
+    }
+
+    let active_now = hovered || popup_hovered;
+    ui.memory_mut(|m| m.data.insert_temp(memory_id, active_now));
 }
 
 // ---------------------------------------------------------------------------
