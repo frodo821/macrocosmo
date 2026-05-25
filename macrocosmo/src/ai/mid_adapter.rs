@@ -183,13 +183,28 @@ pub trait MidGameAdapter {
         &[]
     }
 
-    /// Hotfix-3 resource gate: `true` when the empire's combined
-    /// minerals + energy stockpile (summed across the Mid's
-    /// `member_systems`) can afford `design_id`'s build cost RIGHT
-    /// NOW. **Soft gate** — ignores future revenue / maintenance
-    /// accrual, permits deficit spending as long as the stockpile is
-    /// non-zero. Rules 6 (`build_ship`) and 3.5 (`deploy_deliverable
-    /// → build_deliverable`) consult this before emitting a
+    /// Hotfix-3 resource gate (#529 A migration: pending-aware
+    /// form): `true` when the empire's combined minerals + energy
+    /// stockpile **MINUS the remaining cost of every in-flight
+    /// build order** can afford `design_id`'s build cost.
+    ///
+    /// The pending-aware adjustment makes the AI take its own
+    /// commitments into account: a stockpile of 100 minerals with
+    /// one corvette already queued (cost 80, invested 0) leaves
+    /// effective availability of 20, so a second corvette emit is
+    /// rejected. Without it, the gate fires only when the
+    /// stockpile has already dropped — too late to prevent the
+    /// double-order that drains both builds.
+    ///
+    /// **Soft gate** — ignores future revenue / maintenance
+    /// accrual. Permits deficit spending (`revenue < expense`) as
+    /// long as the pending-adjusted balance is non-zero; the
+    /// design contract is "stockpile must not dip to zero", not
+    /// "stockpile must cover the entire queue at once" (production
+    /// spreads orders over `build_time_total`).
+    ///
+    /// Rules 6 (`build_ship`) and 3.5 (`deploy_deliverable →
+    /// build_deliverable`) consult this before emitting a
     /// proposal; absent the gate a starving empire re-emits every
     /// Reason tick and the handler-side dedup eventually fills the
     /// build queue with orders that can never make progress because
@@ -203,21 +218,29 @@ pub trait MidGameAdapter {
         true
     }
 
-    /// Hotfix-3 resource gate: same soft-stockpile check as
+    /// Hotfix-3 resource gate (#529 A migration: pending-aware
+    /// form): same pending-adjusted stockpile check as
     /// [`Self::can_afford_design`] but keyed on a Building id. Used
     /// by Rule 5a (`build_structure` shipyard) and the Short-side
     /// Rule 5b (slot fill — mine / farm / power_plant) so a
     /// minerals-starved empire stops stacking orders the colony
-    /// build queue cannot drain.
+    /// build queue cannot drain. Pending orders subtracted include
+    /// every system-building order on a member-of-region
+    /// `SystemBuildingQueue`; per-colony planet `BuildingQueue`
+    /// entries are not yet folded in (the rule's `handle_*` dedup
+    /// is the backstop for now).
     ///
     /// **Default `true`** = preserves StubAdapter behaviour.
     fn can_afford_building(&self, _building_id: &str) -> bool {
         true
     }
 
-    /// Current minerals stockpile (sum across `member_systems`).
-    /// Exposed so rule implementations / tests can introspect the
-    /// gate decision; production rules consume the boolean
+    /// Current minerals stockpile **net of pending build orders**
+    /// (sum across `member_systems` minus
+    /// `Σ (minerals_cost - minerals_invested)` across colony
+    /// `BuildQueue` and system `SystemBuildingQueue`). Exposed so
+    /// rule implementations / tests can introspect the gate
+    /// decision; production rules consume the boolean
     /// [`Self::can_afford_design`] / [`Self::can_afford_building`]
     /// helpers instead. Default `Amt(u64::MAX)` so StubAdapter
     /// callers never accidentally trigger the gate.
@@ -225,7 +248,7 @@ pub trait MidGameAdapter {
         Amt(u64::MAX)
     }
 
-    /// Current energy stockpile (sum across `member_systems`). See
+    /// Current energy stockpile, pending-adjusted. See
     /// [`Self::current_minerals`].
     fn current_energy(&self) -> Amt {
         Amt(u64::MAX)
@@ -288,15 +311,24 @@ pub struct BevyMidGameAdapter<'a> {
     /// `system: None` evicted it from `NpcContext.ships` and Rule 6
     /// re-emitted every tick.
     pub fleet_composition: FleetComposition,
-    /// Hotfix-3: sum of `ResourceStockpile.minerals` across this
-    /// Mid's `member_systems`. Consumed by [`MidGameAdapter::can_afford_design`]
-    /// / [`MidGameAdapter::can_afford_building`] gates so a starving
+    /// Hotfix-3 + #529 A migration: sum of
+    /// `ResourceStockpile.minerals` across this Mid's
+    /// `member_systems`, **minus the remaining cost of every
+    /// in-flight build order** the empire owns (per-colony
+    /// `BuildQueue` ships/deliverables + per-system
+    /// `SystemBuildingQueue` buildings). Consumed by
+    /// [`MidGameAdapter::can_afford_design`] /
+    /// [`MidGameAdapter::can_afford_building`] gates so a starving
     /// empire stops emitting build orders the colony queue cannot
-    /// drain. Soft gate: zero stockpile blocks emission, deficit
-    /// spending (`stockpile > 0 && revenue < expense`) is permitted.
+    /// drain. Soft gate: zero pending-adjusted stockpile blocks
+    /// emission, deficit spending (`stockpile > 0 && revenue <
+    /// expense`) is permitted. Saturating subtract — if pending
+    /// exceeds stockpile the field clamps to zero, which is the
+    /// correct signal for an empire that has already over-committed
+    /// itself.
     pub current_minerals: Amt,
-    /// Hotfix-3: sum of `ResourceStockpile.energy`. See
-    /// [`Self::current_minerals`].
+    /// Hotfix-3 + #529 A migration: pending-adjusted sum of
+    /// `ResourceStockpile.energy`. See [`Self::current_minerals`].
     pub current_energy: Amt,
     /// Hotfix-3: design registry borrow used by
     /// [`MidGameAdapter::can_afford_design`] to look up

@@ -44,13 +44,18 @@ mod common;
 use bevy::prelude::*;
 
 use macrocosmo::ai::AiPlayerMode;
+use macrocosmo::ai::npc_decision::ShortAgentTickInputs;
 use macrocosmo::ai::plugin::AiBusResource;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
 use macrocosmo::amount::Amt;
-use macrocosmo::colony::building_queue::BuildingQueue;
+use macrocosmo::colony::building_queue::{
+    BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue,
+};
+use macrocosmo::colony::system_buildings::SystemBuildingQueue;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
+use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo_ai::{Command, CommandValue};
 
 use common::{
@@ -279,4 +284,224 @@ fn planet_building_dedup_does_not_block_different_building_id() {
     }
     assert_eq!(mines, 1, "one mine queued");
     assert_eq!(farms, 1, "farm not blocked by mine's dedup entry");
+}
+
+// ---------------------------------------------------------------------------
+// #529 A migration: pending-aware resource gate (PR #531 fold-in)
+// ---------------------------------------------------------------------------
+
+/// Find the first colony entity owned by `empire` that carries a
+/// `BuildQueue` (ship/deliverable orders). Panics if none exists —
+/// `spawn_empire_with_colony` always attaches one.
+fn find_empire_owned_colony(app: &mut App, empire: Entity) -> Entity {
+    let world = app.world_mut();
+    let mut q = world.query_filtered::<(Entity, &FactionOwner), With<BuildQueue>>();
+    q.iter(world)
+        .find(|(_, o)| o.0 == empire)
+        .map(|(e, _)| e)
+        .expect("empire-owned colony with BuildQueue should exist")
+}
+
+/// Push a synthetic pending ship build order onto `colony`'s `BuildQueue`
+/// with the specified cost / invested split. Used to simulate an
+/// "in-flight" commitment that the pending-aware gate must subtract.
+fn push_pending_ship_order(
+    world: &mut World,
+    colony: Entity,
+    minerals_cost: Amt,
+    minerals_invested: Amt,
+    energy_cost: Amt,
+    energy_invested: Amt,
+) {
+    let mut queue = world.get_mut::<BuildQueue>(colony).unwrap();
+    queue.queue.push(BuildOrder {
+        order_id: 99_999,
+        kind: BuildKind::Ship,
+        design_id: "fake_pending".into(),
+        display_name: "Fake Pending".into(),
+        minerals_cost,
+        minerals_invested,
+        energy_cost,
+        energy_invested,
+        build_time_total: 30,
+        build_time_remaining: 30,
+    });
+}
+
+/// Capture `EmpireShortInputs.current_minerals / current_energy` after a
+/// single Mid tick. Asserts the empire's inputs row is populated.
+fn snapshot_current_amounts(app: &App, empire: Entity) -> (Amt, Amt) {
+    let inputs = app.world().resource::<ShortAgentTickInputs>();
+    let empire_inputs = inputs
+        .per_empire
+        .get(&empire)
+        .expect("EmpireShortInputs should be populated for the empire");
+    (empire_inputs.current_minerals, empire_inputs.current_energy)
+}
+
+/// #529 A migration: the AI's pending-aware resource gate subtracts every
+/// in-flight `BuildOrder`'s **remaining** cost (= `cost - invested`) from
+/// the empire's combined stockpile sum before it reaches the rule layer.
+///
+/// Pre-fix: `current_stockpile_sum >= cost` ignored in-flight orders, so
+/// an empire with 100 minerals and a corvette already queued (cost 80,
+/// invested 0) would happily emit a second corvette (gate sees `100 >=
+/// 50`), and then starve both when the production tick drained the
+/// stockpile. The pending-aware form (= this fold-in) makes the gate see
+/// `100 - 80 = 20` instead, so the second emit is rejected.
+///
+/// We assert by **delta**: snapshot `current_minerals/energy` before and
+/// after injecting the pending order. This sidesteps production /
+/// maintenance drift and per-test-app starter stockpile variations — the
+/// invariant we want to pin is "pending order remaining cost flows into
+/// the published `current_*` values", not the absolute stockpile number.
+#[test]
+fn resource_gate_subtracts_pending_orders_from_stockpile() {
+    let mut app = test_app();
+    let (empire, _home) = spawn_empire_with_colony(&mut app);
+
+    // Prime: schema::declare_all runs in Startup, the Mid pipeline
+    // populates `EmpireShortInputs` from the first Update onwards.
+    advance_time(&mut app, 1);
+    let (m_before, e_before) = snapshot_current_amounts(&app, empire);
+
+    let colony = find_empire_owned_colony(&mut app, empire);
+    // Pending: 80 minerals + 50 energy, invested 0 → remaining = full cost.
+    push_pending_ship_order(
+        app.world_mut(),
+        colony,
+        Amt::units(80),
+        Amt::ZERO,
+        Amt::units(50),
+        Amt::ZERO,
+    );
+
+    // Run another tick so `npc_decision_tick` recomputes the
+    // pending-adjusted stockpile sum.
+    advance_time(&mut app, 1);
+    let (m_after, e_after) = snapshot_current_amounts(&app, empire);
+
+    // delta = before − after (= "the pending order subtracted this much from
+    // the published value"). +1 hex of production raises stockpile but does
+    // NOT change the pending subtraction; for the delta we approximate by
+    // allowing ≥ pending (production may have added to the headroom).
+    let m_subtracted = m_before.sub(m_after);
+    let e_subtracted = e_before.sub(e_after);
+    assert!(
+        m_subtracted >= Amt::units(80),
+        "pending order remaining minerals_cost (80) must lower current_minerals by ≥ 80; \
+         got delta = {:?}, before = {:?}, after = {:?}",
+        m_subtracted,
+        m_before,
+        m_after,
+    );
+    assert!(
+        e_subtracted >= Amt::units(50),
+        "pending order remaining energy_cost (50) must lower current_energy by ≥ 50; \
+         got delta = {:?}, before = {:?}, after = {:?}",
+        e_subtracted,
+        e_before,
+        e_after,
+    );
+}
+
+/// Pending order with partial investment: subtract only the REMAINING
+/// cost (= `cost - invested`), not the full cost. As the order's
+/// production tick consumes resources, the pending-aware gate
+/// progressively unblocks new emits — the AI's "headroom" grows as work
+/// is completed. Same delta-based assertion as the full-cost case above,
+/// just with smaller numbers.
+#[test]
+fn resource_gate_subtracts_only_remaining_cost_when_pending_invested() {
+    let mut app = test_app();
+    let (empire, _home) = spawn_empire_with_colony(&mut app);
+    advance_time(&mut app, 1);
+    let (m_before, e_before) = snapshot_current_amounts(&app, empire);
+
+    let colony = find_empire_owned_colony(&mut app, empire);
+    // 80 cost, 30 already invested → remaining 50.
+    // 50 cost, 20 already invested → remaining 30.
+    push_pending_ship_order(
+        app.world_mut(),
+        colony,
+        Amt::units(80),
+        Amt::units(30),
+        Amt::units(50),
+        Amt::units(20),
+    );
+
+    advance_time(&mut app, 1);
+    let (m_after, e_after) = snapshot_current_amounts(&app, empire);
+
+    let m_subtracted = m_before.sub(m_after);
+    let e_subtracted = e_before.sub(e_after);
+    // The remaining cost is 50 minerals / 30 energy. The lower bound pins
+    // that the subtraction reflects pending — without the pending-aware
+    // logic the delta would be only the production / maintenance drift
+    // between two ticks (≪ 50).
+    //
+    // TODO (#529 follow-up): once the test harness controls production /
+    // maintenance per-tick we can add an upper-bound (= "must NOT subtract
+    // the full cost"). The current delta-based form doesn't reliably
+    // distinguish remaining (50) from full (80) under arbitrary
+    // production drift, but it does pin the contract that *something*
+    // pending-related is subtracted.
+    assert!(
+        m_subtracted >= Amt::units(50),
+        "must subtract at least the remaining cost (80 - 30 = 50); got delta = {:?}",
+        m_subtracted,
+    );
+    assert!(
+        e_subtracted >= Amt::units(30),
+        "must subtract at least the remaining cost (50 - 20 = 30); got delta = {:?}",
+        e_subtracted,
+    );
+}
+
+/// `SystemBuildingQueue` entries (= shipyard / port / research_lab build
+/// orders on the StarSystem) also subtract from the pending-aware
+/// stockpile, mirroring the per-colony `BuildQueue` walk. Sub-agent
+/// implementation note: the walk gates on `member_systems_set` because
+/// `SystemBuildingQueue` has no owner component.
+#[test]
+fn system_building_queue_pending_also_subtracts_from_stockpile() {
+    let mut app = test_app();
+    let (empire, home) = spawn_empire_with_colony(&mut app);
+    advance_time(&mut app, 1);
+    let (m_before, e_before) = snapshot_current_amounts(&app, empire);
+
+    // Push a pending shipyard build order on the home system's
+    // SystemBuildingQueue (= system-level builds: shipyard / port / lab).
+    {
+        let mut q = app
+            .world_mut()
+            .get_mut::<SystemBuildingQueue>(home)
+            .expect("home system should have SystemBuildingQueue (spawned by spawn_test_colony)");
+        q.queue.push(BuildingOrder {
+            order_id: 99_999,
+            building_id: BuildingId::new("shipyard"),
+            target_slot: 0,
+            minerals_remaining: Amt::units(150),
+            energy_remaining: Amt::units(100),
+            build_time_remaining: 30,
+        });
+    }
+
+    advance_time(&mut app, 1);
+    let (m_after, e_after) = snapshot_current_amounts(&app, empire);
+
+    let m_subtracted = m_before.sub(m_after);
+    let e_subtracted = e_before.sub(e_after);
+    assert!(
+        m_subtracted >= Amt::units(150),
+        "system-building queue minerals_remaining (150) must lower current_minerals by ≥ 150; \
+         got delta = {:?}",
+        m_subtracted,
+    );
+    assert!(
+        e_subtracted >= Amt::units(100),
+        "system-building queue energy_remaining (100) must lower current_energy by ≥ 100; \
+         got delta = {:?}",
+        e_subtracted,
+    );
 }

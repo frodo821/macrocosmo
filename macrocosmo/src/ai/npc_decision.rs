@@ -69,6 +69,12 @@ pub struct ResourceGateParams<'w, 's> {
     /// already-queued ship orders into the Rule 6 fleet census so
     /// the count rises the moment Rule 6 emits, not 30 hexadies
     /// later when the ship spawns.
+    ///
+    /// #529 A migration: also walked to subtract pending ship/
+    /// deliverable orders' remaining cost from the empire's
+    /// stockpile sum before the resource gate sees it, so the AI
+    /// accounts for its own in-flight commitments when deciding
+    /// whether to emit a new build.
     pub build_queues: Query<
         'w,
         's,
@@ -76,6 +82,22 @@ pub struct ResourceGateParams<'w, 's> {
             &'static crate::colony::building_queue::BuildQueue,
             &'static crate::faction::FactionOwner,
         ),
+    >,
+    /// Per-StarSystem `SystemBuildingQueue` (#529 A migration). Lists
+    /// in-flight system-building orders (shipyard / port / research
+    /// lab) whose `minerals_remaining` / `energy_remaining` is
+    /// subtracted from the stockpile sum for the same reason as
+    /// `build_queues`. Sovereignty / membership is enforced by
+    /// intersecting against the Mid's `member_systems_set` at the
+    /// call site (the queue itself doesn't carry an empire id).
+    pub system_building_queues: Query<
+        'w,
+        's,
+        (
+            Entity,
+            &'static crate::colony::system_buildings::SystemBuildingQueue,
+        ),
+        With<crate::galaxy::StarSystem>,
     >,
     /// Building registry borrow for [`super::mid_adapter::MidGameAdapter::can_afford_building`].
     pub building_registry: Option<Res<'w, crate::colony::BuildingRegistry>>,
@@ -398,11 +420,17 @@ pub struct EmpireShortInputs {
     pub net_production_energy: f64,
     /// Empire-wide net food production (`net_production_food`).
     pub net_production_food: f64,
-    /// Hotfix-3: sum of `ResourceStockpile.minerals` across the
-    /// region's `member_systems`. Consumed by Rule 5b's resource
-    /// gate (`ShortGameAdapter::can_afford_building`).
+    /// Hotfix-3 + #529 A migration: sum of
+    /// `ResourceStockpile.minerals` across the region's
+    /// `member_systems`, **minus the remaining cost of every
+    /// in-flight build order** the empire owns (per-colony
+    /// `BuildQueue` ships/deliverables + per-system
+    /// `SystemBuildingQueue` buildings). Consumed by Rule 5b's
+    /// resource gate (`ShortGameAdapter::can_afford_building`).
+    /// Saturating subtract: clamps to zero when pending > stockpile.
     pub current_minerals: crate::amount::Amt,
-    /// Hotfix-3: sum of `ResourceStockpile.energy`.
+    /// Hotfix-3 + #529 A migration: pending-adjusted sum of
+    /// `ResourceStockpile.energy`. See [`Self::current_minerals`].
     pub current_energy: crate::amount::Amt,
 }
 
@@ -1343,6 +1371,72 @@ pub fn npc_decision_tick(
                 current_energy = current_energy.add(stockpile.energy);
             }
         }
+
+        // #529 A migration: subtract the **remaining** cost of all
+        // pending build orders the empire has already committed to.
+        // The pre-migration gate compared `current_stockpile_sum >=
+        // cost`, which ignored in-flight orders — an empire with
+        // stockpile 100 and one corvette (cost 80, invested 0)
+        // already in queue would happily emit a second corvette
+        // (gate sees `100 >= 50`), then starve both when the
+        // production tick drained the stockpile.
+        //
+        // The pending-aware form subtracts `cost - invested` for
+        // every queued ship/deliverable order (colony `BuildQueue`)
+        // and every queued building order (system-level
+        // `SystemBuildingQueue` — shipyard / port / research_lab).
+        // Per-colony `BuildingQueue` (mine / farm / power_plant
+        // construction) is intentionally **not** walked here: those
+        // queues live on Colony entities outside this
+        // `ResourceGateParams` for now (adding the query would push
+        // the bundle past Bevy's 16-param limit). The same-tick
+        // dedup at `handle_build_structure` is the backstop for
+        // planet-building re-emits in the meantime; once the
+        // adapter rules need it the planet `BuildingQueue` will be
+        // folded in too.
+        //
+        // `Amt::sub` is saturating: if pending > stockpile the
+        // available value clamps to zero rather than wrapping, so
+        // the gate becomes "any new emit is rejected" — the correct
+        // signal for an empire that has already over-committed
+        // itself. The contract is "stockpile cannot dip to zero"
+        // not "stockpile must cover everything in the queue
+        // simultaneously" because production tick spreads orders
+        // over their build_time; the gate's job is "AI should stop
+        // adding work to a queue whose tail will starve".
+        let mut pending_minerals = crate::amount::Amt::ZERO;
+        let mut pending_energy = crate::amount::Amt::ZERO;
+        for (queue, owner) in &resource_gate.build_queues {
+            if owner.0 != entity {
+                continue;
+            }
+            for order in &queue.queue {
+                let m_rem = order.minerals_cost.sub(order.minerals_invested);
+                let e_rem = order.energy_cost.sub(order.energy_invested);
+                pending_minerals = pending_minerals.add(m_rem);
+                pending_energy = pending_energy.add(e_rem);
+            }
+        }
+        for (sys_entity, sys_queue) in &resource_gate.system_building_queues {
+            // SystemBuildingQueue has no owner component — gate by
+            // membership in the Mid's `member_systems` set. This is
+            // the same scope used for the stockpile sum above, so
+            // pending and stockpile are consistently region-scoped.
+            if !member_systems_set.contains(&sys_entity) {
+                continue;
+            }
+            for order in &sys_queue.queue {
+                pending_minerals = pending_minerals.add(order.minerals_remaining);
+                pending_energy = pending_energy.add(order.energy_remaining);
+            }
+            // Demolition/upgrade orders intentionally not folded in:
+            // demolition refunds resources rather than spending them,
+            // and the small minority of upgrade orders today are not
+            // emitted by the AI (player-only path). Adding them later
+            // is a 3-line change once a Rule actually issues them.
+        }
+        let current_minerals = current_minerals.sub(pending_minerals);
+        let current_energy = current_energy.sub(pending_energy);
 
         let adapter = crate::ai::mid_adapter::BevyMidGameAdapter {
             faction: entity,
