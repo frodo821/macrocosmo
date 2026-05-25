@@ -377,22 +377,110 @@ fn system_screen_pos(
     ))
 }
 
-/// #477: Resolve the on-screen position implied by a [`ShipProjection`].
+/// #532: Pure-math helper — given a projection and the current clock
+/// tick, return the lerp factor in `[0.0, 1.0]` for the own-ship marker
+/// between `[intended_takes_effect_at, expected_arrival_at]`.
+///
+/// Returns `None` when interpolation should not be applied (= the caller
+/// should fall back to the projected position). The marker only
+/// interpolates when **all** of the following hold:
+///
+/// 1. `now >= intended_takes_effect_at` — the dispatcher's command has
+///    locally reached the ship; before this tick the marker must stay
+///    pinned at the projected system to preserve the PR #530 no-FTL-leak
+///    contract.
+/// 2. `intended_state` is a transit-style state. We do not interpolate
+///    when the intended state is Surveying / Settling / etc. — those
+///    don't imply a moving position (the ship sits at the intended
+///    system).
+/// 3. The projection has both an `intended_takes_effect_at` and an
+///    `expected_arrival_at`. Without an arrival ETA the lerp endpoint is
+///    undefined.
+///
+/// Clamping: `now` past `expected_arrival_at` clamps to 1.0 (= the
+/// destination). The marker stays pinned at `intended_system` until the
+/// projection reconciler observes arrival, at which point the
+/// projected/intended layers converge and this helper is no longer
+/// consulted by the caller.
+pub fn intended_lerp_fraction(projection: &ShipProjection, now: i64) -> Option<f32> {
+    let intended_state = projection.intended_state.as_ref()?;
+    if !intended_state.is_in_transit() {
+        return None;
+    }
+    let takes_effect_at = projection.intended_takes_effect_at?;
+    let arrival_at = projection.expected_arrival_at?;
+    if now < takes_effect_at {
+        return None;
+    }
+    let total = (arrival_at.saturating_sub(takes_effect_at)).max(1) as f64;
+    let elapsed = (now.saturating_sub(takes_effect_at)).clamp(0, i64::MAX) as f64;
+    let frac = (elapsed / total).clamp(0.0, 1.0);
+    Some(frac as f32)
+}
+
+/// #532: Pure-math helper — compute the own-ship marker screen position
+/// from the resolved origin (projected) and destination (intended) world
+/// positions, the view scale, and the current clock tick.
+///
+/// `intended_pos` may be `None` (no intended target) — the marker stays
+/// at the projected position. When the lerp fraction returned by
+/// [`intended_lerp_fraction`] is `None` (= pre-effect / non-transit /
+/// missing arrival ETA), the marker also stays at the projected
+/// position.
+///
+/// Extracted from [`projection_screen_pos`] so the interpolation
+/// behaviour can be unit-tested without a Bevy `Query`. The real
+/// renderer goes through [`projection_screen_pos`] which resolves the
+/// star positions from `Query<&Position, With<StarSystem>>` and then
+/// delegates here.
+pub fn own_ship_marker_screen_pos(
+    projection: &ShipProjection,
+    projected_pos: &Position,
+    intended_pos: Option<&Position>,
+    view_scale: f32,
+    now: i64,
+) -> Vec2 {
+    let origin_screen = Vec2::new(
+        projected_pos.x as f32 * view_scale,
+        projected_pos.y as f32 * view_scale,
+    );
+    let Some(dest_pos) = intended_pos else {
+        return origin_screen;
+    };
+    let Some(frac) = intended_lerp_fraction(projection, now) else {
+        return origin_screen;
+    };
+    let dest_screen = Vec2::new(
+        dest_pos.x as f32 * view_scale,
+        dest_pos.y as f32 * view_scale,
+    );
+    origin_screen.lerp(dest_screen, frac)
+}
+
+/// #477 / #532: Resolve the on-screen position implied by a
+/// [`ShipProjection`].
 ///
 /// `view_scale` is `GalaxyView.scale`. Returns `None` if the projection's
 /// `projected_system` cannot be resolved to a [`Position`]. For
 /// `Loitering`, the position comes directly from the projection's inline
 /// coordinates and never consults `stars`.
 ///
-/// `InTransit`: the projection does not carry from/to/depart/eta
-/// interpolation fields, so we draw at `projected_system` (= the
-/// destination, per #475 / #476). This is coarser than the pre-#477
-/// realtime renderer (which interpolated along the leg), but is the
-/// light-coherent answer until #478 expands the projection schema.
+/// **#532 behaviour: interpolated transit marker.** When the projection
+/// has a divergent intended target in a transit-style state AND the
+/// dispatcher's clock has crossed `intended_takes_effect_at`, the marker
+/// is linearly interpolated from `projected_system` toward
+/// `intended_system` across
+/// `[intended_takes_effect_at, expected_arrival_at]`. Before
+/// `intended_takes_effect_at` (= the PR #530 dispatch window) the marker
+/// stays pinned at `projected_system` — that is the no-FTL-leak invariant
+/// the dispatch-window tests guard. After `expected_arrival_at` the
+/// lerp clamps to 1.0 (= sitting at the intended system) until the
+/// projection reconciles.
 pub fn projection_screen_pos(
     projection: &ShipProjection,
     stars: &Query<&Position, With<StarSystem>>,
     view_scale: f32,
+    now: i64,
 ) -> Option<Vec2> {
     if let ShipSnapshotState::Loitering { position } = &projection.projected_state {
         return Some(Vec2::new(
@@ -401,10 +489,23 @@ pub fn projection_screen_pos(
         ));
     }
     let system = projection.projected_system?;
-    let pos = stars.get(system).ok()?;
-    Some(Vec2::new(
-        pos.x as f32 * view_scale,
-        pos.y as f32 * view_scale,
+    let projected_pos = stars.get(system).ok()?;
+    // #532: resolve the intended destination only when it diverges from
+    // the projected system — interpolating against the same system is a
+    // no-op and would needlessly fail this helper if the intended system
+    // entity has been despawned. The pure-math helper handles the
+    // post-effect lerp; pre-effect callers stay pinned at the projected
+    // position.
+    let intended_pos = match projection.intended_system {
+        Some(sys) if Some(sys) != projection.projected_system => stars.get(sys).ok(),
+        _ => None,
+    };
+    Some(own_ship_marker_screen_pos(
+        projection,
+        projected_pos,
+        intended_pos,
+        view_scale,
+        now,
     ))
 }
 
@@ -737,27 +838,31 @@ pub fn draw_ships(
                     });
                 *system_ship_counts.entry(system).or_insert(0) += 1;
             }
-            // #477 / #491 (D-H-4): both transit variants render at the
-            // projected destination. The `InTransitFTL` vs
-            // `InTransitSubLight` distinction is currently only surfaced
-            // in panel labels (FTL ships cannot be intercepted); the
-            // gizmo renders the same dot for both. A future schema bump
-            // (epic #473 sub-issue E) will carry origin/destination
-            // positions for proper interpolation.
+            // #477 / #491 (D-H-4) / #532: both transit variants render the
+            // projected marker. Before `intended_takes_effect_at` (= PR
+            // #530's dispatch window) the marker stays at
+            // `projected_system`. After the command has locally reached
+            // the ship, the marker is linearly interpolated from
+            // `projected_system` toward `intended_system` across
+            // `[intended_takes_effect_at, expected_arrival_at]` — see
+            // `projection_screen_pos` for the contract. The
+            // `InTransitFTL` vs `InTransitSubLight` distinction is
+            // currently only surfaced in panel labels (FTL ships cannot
+            // be intercepted); the gizmo renders the same dot for both.
             ShipSnapshotState::InTransitSubLight | ShipSnapshotState::InTransitFTL => {
-                let Some(system) = item.projected_system else {
+                let Some(projection) = viewing_store.get_projection(item.entity) else {
                     continue;
                 };
-                let Ok(sys_pos) = stars.get(system) else {
+                let Some(marker) =
+                    projection_screen_pos(projection, &stars, view.scale, clock.elapsed)
+                else {
                     continue;
                 };
-                let cx = sys_pos.x as f32 * view.scale;
-                let cy = sys_pos.y as f32 * view.scale;
                 let (r, g, b) = ship_color_rgb(&item.design_id);
                 // Same semi-transparent marker the FTL ghost path used,
-                // marking the projected destination as the ship's
-                // light-coherent location.
-                gizmos.circle_2d(Vec2::new(cx, cy), 3.0, Color::srgba(r, g, b, 0.4));
+                // marking the dispatcher's light-coherent best estimate
+                // of the ship's position.
+                gizmos.circle_2d(marker, 3.0, Color::srgba(r, g, b, 0.4));
             }
             ShipSnapshotState::Settling => {
                 let Some(system) = item.projected_system else {
@@ -885,11 +990,17 @@ pub fn draw_ships(
         // (Loitering / pre-arrival InTransit), `projected_system` is None
         // — fall back to the projection's screen pos helper which handles
         // the Loitering case via inline coordinates.
+        // #532: when the marker is interpolating (post takes-effect), the
+        // dashed overlay still starts at `projected_system` — the dashed
+        // line acts as a route preview the moving dot is sliding along.
+        // The Loitering fallback below uses `projection_screen_pos` only
+        // for deep-space anchors (the lerp branch never triggers when
+        // `projected_system.is_none()`).
         let start = match item.projected_system {
             Some(sys) => system_screen_pos(sys, &stars, view.scale),
             None => viewing_store
                 .get_projection(item.entity)
-                .and_then(|p| projection_screen_pos(p, &stars, view.scale)),
+                .and_then(|p| projection_screen_pos(p, &stars, view.scale, clock.elapsed)),
         };
         let Some(start) = start else {
             continue;
@@ -923,9 +1034,14 @@ pub fn draw_ships(
     if let Some(selected_entity) = selected_ship.0 {
         if let Ok((_entity, ship, _state, Some(queue), _stats)) = ships.get(selected_entity) {
             if !queue.commands.is_empty() {
+                // #532: command-queue dashed path starts at the same
+                // interpolated marker position the main render path uses,
+                // so the overlay visually anchors to the moving dot
+                // mid-flight rather than jumping back to the projected
+                // origin.
                 let current_pos = viewing_store
                     .get_projection(selected_entity)
-                    .and_then(|p| projection_screen_pos(p, &stars, view.scale));
+                    .and_then(|p| projection_screen_pos(p, &stars, view.scale, clock.elapsed));
 
                 if let Some(mut prev_pos) = current_pos {
                     let (r, g, b) = ship_color_rgb(&ship.design_id);
