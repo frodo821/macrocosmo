@@ -457,6 +457,66 @@ pub fn own_ship_marker_screen_pos(
     origin_screen.lerp(dest_screen, frac)
 }
 
+/// #532 follow-up: Routing predicate for the `InSystem | Refitting`
+/// branch of [`draw_ships`].
+///
+/// Background: PR #534 wired the [`projection_screen_pos`] interpolation
+/// into the `InTransitSubLight | InTransitFTL` branch only. But
+/// `compute_ship_projection` in `knowledge::mod` commonly leaves
+/// `projected_state = InSystem` (carried over from the last known
+/// snapshot) while `intended_state = InTransit*`. Those projections
+/// route through `InSystem | Refitting` in `draw_ships` and never reach
+/// the interpolation helper — so the player saw a frozen marker even
+/// after `intended_takes_effect_at`.
+///
+/// This predicate decides whether the `InSystem | Refitting` arm should
+/// detour through [`projection_screen_pos`] (returning `true`) or
+/// continue grouping the ship into the docked-marker layer (returning
+/// `false`). The four conditions below jointly preserve every existing
+/// contract — particularly PR #530's pre-effect no-FTL-leak rule —
+/// while finally letting the post-effect interpolation actually fire.
+///
+/// Returns `true` only when **all** of the following hold:
+/// 1. `intended_state` is `Some` and a transit-style state (FTL /
+///    SubLight). Surveying / Settling intents anchor the ship at the
+///    target system and must not slide the marker between systems.
+/// 2. `intended_system != projected_system`. A reconciled / no-op move
+///    has no divergence to interpolate against; let the default docked
+///    grouping render the ship at its (already correct) system.
+/// 3. `now >= intended_takes_effect_at`. Before the command locally
+///    reaches the ship the marker MUST stay at `projected_system` — this
+///    is PR #530's no-FTL-leak invariant.
+/// 4. `expected_arrival_at` is `Some`. Without an arrival ETA the lerp
+///    endpoint is undefined; fall back to docked rendering rather than
+///    guessing.
+///
+/// The function is `pub` so the routing decision can be unit-tested
+/// directly without spinning up a full Bevy draw frame.
+pub fn should_draw_projected_marker_with_interpolation(
+    projection: &ShipProjection,
+    now: i64,
+) -> bool {
+    let Some(intent) = projection.intended_state.as_ref() else {
+        return false;
+    };
+    if !intent.is_in_transit() {
+        return false;
+    }
+    let Some(dest) = projection.intended_system else {
+        return false;
+    };
+    if Some(dest) == projection.projected_system {
+        return false;
+    }
+    let Some(eff) = projection.intended_takes_effect_at else {
+        return false;
+    };
+    if now < eff {
+        return false;
+    }
+    projection.expected_arrival_at.is_some()
+}
+
 /// #477 / #532: Resolve the on-screen position implied by a
 /// [`ShipProjection`].
 ///
@@ -825,7 +885,40 @@ pub fn draw_ships(
     for item in &render_items {
         match &item.projected_state {
             // Docked-style states render as a circle around the system.
+            //
+            // #532 follow-up: a projection with `projected_state =
+            // InSystem` may still describe a ship that has, from the
+            // dispatcher's POV, already left port — `compute_ship_projection`
+            // keeps the last-known snapshot's state while populating
+            // `intended_state = InTransit*` and the takes-effect / arrival
+            // ETAs. PR #534's interpolation only fired in the transit arm,
+            // so those ships rendered as frozen dots. Detour through
+            // `projection_screen_pos` when the routing predicate confirms
+            // the command has locally reached the ship — otherwise fall
+            // back to the docked grouping (which is the right answer
+            // pre-effect, and remains the right answer when there is no
+            // in-flight transit intent).
             ShipSnapshotState::InSystem | ShipSnapshotState::Refitting => {
+                let projection = viewing_store.get_projection(item.entity);
+                if let Some(projection) = projection {
+                    if should_draw_projected_marker_with_interpolation(projection, clock.elapsed) {
+                        if let Some(marker) =
+                            projection_screen_pos(projection, &stars, view.scale, clock.elapsed)
+                        {
+                            let (r, g, b) = ship_color_rgb(&item.design_id);
+                            // Mirror the InTransit arm's marker shape so
+                            // the ship looks visually identical across
+                            // the dispatch-to-arrival window regardless
+                            // of which projected_state happens to be
+                            // carried in the projection.
+                            gizmos.circle_2d(marker, 3.0, Color::srgba(r, g, b, 0.4));
+                        }
+                        // Skip the docked grouping for this frame — the
+                        // ship is rendered at the interpolated marker
+                        // above.
+                        continue;
+                    }
+                }
                 let Some(system) = item.projected_system else {
                     continue;
                 };
