@@ -6,8 +6,9 @@
 //! 1. Automatic mapping from important `GameEvent`s
 //! 2. The Lua `show_notification { ... }` API
 //!
-//! TTL is tracked in real seconds (not game time) so the banner UX is
-//! consistent regardless of game speed and pause state. Long-running banners
+//! TTL is tracked in **game time** (hexadies) so the banner respects pause
+//! and game-speed: paused notifications never auto-dismiss, and a fast-
+//! forwarded game burns through banners faster. Long-running banners
 //! ("high" priority) have no TTL and must be dismissed manually.
 
 use bevy::prelude::*;
@@ -41,9 +42,10 @@ impl NotificationPriority {
         )
     }
 
-    /// Real-time TTL for the banner, or `None` if the banner is sticky and
-    /// must be dismissed manually.
-    pub fn default_ttl_seconds(&self) -> Option<f32> {
+    /// Game-time TTL (in hexadies) for the banner, or `None` if the banner
+    /// is sticky and must be dismissed manually. Pause stops the countdown;
+    /// fast-forward accelerates it.
+    pub fn default_ttl_hexadies(&self) -> Option<f32> {
         match self {
             NotificationPriority::Medium => Some(6.0),
             NotificationPriority::High => None,
@@ -81,8 +83,9 @@ pub struct Notification {
     pub priority: NotificationPriority,
     /// Optional star system the banner can jump to when clicked.
     pub target_system: Option<Entity>,
-    /// Real-time seconds remaining before auto-dismiss. `None` = sticky.
-    pub remaining_seconds: Option<f32>,
+    /// Game-time hexadies remaining before auto-dismiss. `None` = sticky.
+    /// Counts down only while the game clock advances (i.e. not while paused).
+    pub remaining_hexadies: Option<f32>,
 }
 
 /// Resource holding all currently-displayed banner notifications.
@@ -135,7 +138,7 @@ impl NotificationQueue {
             icon,
             priority,
             target_system,
-            remaining_seconds: priority.default_ttl_seconds(),
+            remaining_hexadies: priority.default_ttl_hexadies(),
         };
 
         // Newest at the front of the stack
@@ -156,16 +159,16 @@ impl NotificationQueue {
         before != self.items.len()
     }
 
-    /// Tick all notifications by `delta_seconds` and remove any whose TTL
-    /// reached zero. Sticky (None TTL) entries are untouched.
-    pub fn tick(&mut self, delta_seconds: f32) {
+    /// Tick all notifications by `delta_hexadies` of game time and remove any
+    /// whose TTL reached zero. Sticky (None TTL) entries are untouched.
+    pub fn tick(&mut self, delta_hexadies: f32) {
         for item in self.items.iter_mut() {
-            if let Some(ref mut t) = item.remaining_seconds {
-                *t -= delta_seconds;
+            if let Some(ref mut t) = item.remaining_hexadies {
+                *t -= delta_hexadies;
             }
         }
         self.items
-            .retain(|item| item.remaining_seconds.is_none_or(|t| t > 0.0));
+            .retain(|item| item.remaining_hexadies.is_none_or(|t| t > 0.0));
     }
 }
 
@@ -178,7 +181,7 @@ impl Default for Notification {
             icon: None,
             priority: NotificationPriority::Medium,
             target_system: None,
-            remaining_seconds: None,
+            remaining_hexadies: None,
         }
     }
 }
@@ -204,15 +207,29 @@ impl Notification {
 
 /// Per-frame system that decays notification TTLs and removes expired ones.
 ///
-/// Real-time (`Time`) is used deliberately so the banner UX is independent
-/// of game speed / pause. Only TTL is decremented during pause — the
-/// banners themselves remain dismissible.
-pub fn tick_notifications(time: Res<Time>, mut queue: ResMut<NotificationQueue>) {
-    let dt = time.delta_secs();
-    if dt <= 0.0 {
+/// Decay is driven by `GameClock.elapsed` (hexadies), so pause halts the
+/// countdown and fast-forward accelerates it. `last_elapsed` is the
+/// previous frame's clock value; the first invocation only seeds it and
+/// skips ticking to avoid a giant initial delta after game load.
+pub fn tick_notifications(
+    clock: Res<GameClock>,
+    mut last_elapsed: Local<Option<i64>>,
+    mut queue: ResMut<NotificationQueue>,
+) {
+    let now = clock.elapsed;
+    let prev = match *last_elapsed {
+        Some(p) => p,
+        None => {
+            *last_elapsed = Some(now);
+            return;
+        }
+    };
+    *last_elapsed = Some(now);
+    let delta = now - prev;
+    if delta <= 0 {
         return;
     }
-    queue.tick(dt);
+    queue.tick(delta as f32);
 }
 
 /// Map a `GameEventKind` to a notification priority. `None` means the event
@@ -525,15 +542,15 @@ mod tests {
             .unwrap();
         assert_eq!(q.items.len(), 1);
         assert_eq!(q.items[0].id, id);
-        assert!(q.items[0].remaining_seconds.is_some());
-        assert!(q.items[0].remaining_seconds.unwrap() > 0.0);
+        assert!(q.items[0].remaining_hexadies.is_some());
+        assert!(q.items[0].remaining_hexadies.unwrap() > 0.0);
     }
 
     #[test]
     fn push_high_is_sticky() {
         let mut q = NotificationQueue::new();
         q.push("a", "b", None, NotificationPriority::High, None);
-        assert!(q.items[0].remaining_seconds.is_none());
+        assert!(q.items[0].remaining_hexadies.is_none());
     }
 
     #[test]
@@ -586,9 +603,9 @@ mod tests {
     fn tick_decrements_medium_and_expires() {
         let mut q = NotificationQueue::new();
         q.push("a", "", None, NotificationPriority::Medium, None);
-        let initial = q.items[0].remaining_seconds.unwrap();
+        let initial = q.items[0].remaining_hexadies.unwrap();
         q.tick(1.0);
-        let after = q.items[0].remaining_seconds.unwrap();
+        let after = q.items[0].remaining_hexadies.unwrap();
         assert!((initial - after - 1.0).abs() < 1e-4);
         // Force expiry
         q.tick(initial);

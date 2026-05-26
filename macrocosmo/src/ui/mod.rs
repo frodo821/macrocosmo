@@ -1004,14 +1004,15 @@ fn draw_top_bar_system(
 // anchored to the right edge just below the top bar (Clausewitz-engine
 // style). Newest entries are placed rightmost so the eye lands on them
 // first. Each pill shows a single-character placeholder glyph (replaced
-// by the icon registry once #143 lands); hovering a pill reveals a
-// popup with the full title, description, TTL, Jump, and Dismiss
-// controls.
+// by the icon registry once #143 lands).
+//
+// Input: hovering a pill shows a tooltip with title / description / TTL.
+// Left-click dismisses; right-click jumps to the related system (if any).
+// We avoid an interactive hover-popup because the cursor gap between the
+// pill and the popup made the buttons unreachable in practice.
 
 const PILL_DIAMETER: f32 = 18.0;
 const PILL_SPACING: f32 = 4.0;
-const PILL_POPUP_MAX_WIDTH: f32 = 360.0;
-const PILL_POPUP_MIN_WIDTH: f32 = 260.0;
 
 fn draw_notifications_system(
     mut contexts: EguiContexts,
@@ -1076,7 +1077,9 @@ fn draw_notification_pill(
     let (border, fill) = notification_pill_colors(n.priority);
 
     let size = egui::vec2(PILL_DIAMETER, PILL_DIAMETER);
-    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click());
+    // `click_and_drag` so egui surfaces both primary (`clicked`) and
+    // secondary (`secondary_clicked`) press events on the pill itself.
+    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
 
     let radius = PILL_DIAMETER * 0.5;
     let hovered = pill_response.hovered();
@@ -1095,72 +1098,48 @@ fn draw_notification_pill(
         egui::Color32::WHITE,
     );
 
-    // Persist hover state across one frame so the cursor can travel from
-    // the pill into the popup without flicker.
-    let memory_id = ui.make_persistent_id(("notif_pill_hover", n.id));
-    let last_frame_active: bool = ui
-        .memory(|m| m.data.get_temp::<bool>(memory_id))
-        .unwrap_or(false);
+    // Tooltip-only hover: pure information, no interactive widgets.
+    let has_target = n.target_system.is_some();
+    let title = n.title.clone();
+    let description = n.description.clone();
+    let remaining = n.remaining_hexadies;
+    pill_response.clone().on_hover_ui(|ui| {
+        ui.set_max_width(360.0);
+        ui.label(
+            egui::RichText::new(&title)
+                .strong()
+                .color(egui::Color32::WHITE),
+        );
+        if !description.is_empty() {
+            ui.label(egui::RichText::new(&description).color(egui::Color32::LIGHT_GRAY));
+        }
+        if let Some(h) = remaining {
+            ui.label(
+                egui::RichText::new(format!("auto-dismiss in {:.0} hex", h.max(0.0)))
+                    .small()
+                    .weak(),
+            );
+        }
+        ui.add_space(2.0);
+        let hint = if has_target {
+            "left-click: dismiss · right-click: jump"
+        } else {
+            "left-click: dismiss"
+        };
+        ui.label(egui::RichText::new(hint).small().weak());
+    });
 
-    let mut popup_hovered = false;
-    if hovered || last_frame_active {
-        let popup_id = ui.make_persistent_id(("notif_pill_popup", n.id));
-        let popup_pos = rect.right_bottom() + egui::vec2(0.0, PILL_SPACING);
-        let popup_response = egui::Area::new(popup_id)
-            .fixed_pos(popup_pos)
-            .order(egui::Order::Tooltip)
-            .pivot(egui::Align2::RIGHT_TOP)
-            .interactable(true)
-            .show(ui.ctx(), |ui| {
-                egui::Frame::popup(ui.style())
-                    .stroke(egui::Stroke::new(1.0, border))
-                    .show(ui, |ui| {
-                        ui.set_max_width(PILL_POPUP_MAX_WIDTH);
-                        ui.set_min_width(PILL_POPUP_MIN_WIDTH);
-                        ui.label(
-                            egui::RichText::new(&n.title)
-                                .strong()
-                                .color(egui::Color32::WHITE),
-                        );
-                        if !n.description.is_empty() {
-                            ui.label(
-                                egui::RichText::new(&n.description)
-                                    .color(egui::Color32::LIGHT_GRAY),
-                            );
-                        }
-                        if let Some(remaining) = n.remaining_seconds {
-                            ui.label(
-                                egui::RichText::new(format!(
-                                    "auto-dismiss in {:.0}s",
-                                    remaining.max(0.0),
-                                ))
-                                .small()
-                                .weak(),
-                            );
-                        }
-                        ui.add_space(2.0);
-                        ui.horizontal(|ui| {
-                            if let Some(target) = n.target_system {
-                                if ui
-                                    .button("Jump")
-                                    .on_hover_text("Select target system")
-                                    .clicked()
-                                {
-                                    *jump_target = Some(target);
-                                    to_dismiss.push(n.id);
-                                }
-                            }
-                            if ui.button("✕ Dismiss").on_hover_text("Dismiss").clicked() {
-                                to_dismiss.push(n.id);
-                            }
-                        });
-                    });
-            });
-        popup_hovered = popup_response.response.hovered();
+    if pill_response.clicked() {
+        to_dismiss.push(n.id);
+    } else if pill_response.secondary_clicked() {
+        if let Some(target) = n.target_system {
+            *jump_target = Some(target);
+            to_dismiss.push(n.id);
+        } else {
+            // No jump target — fall back to dismiss so right-click is never a no-op.
+            to_dismiss.push(n.id);
+        }
     }
-
-    let active_now = hovered || popup_hovered;
-    ui.memory_mut(|m| m.data.insert_temp(memory_id, active_now));
 }
 
 // ---------------------------------------------------------------------------

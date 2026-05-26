@@ -202,7 +202,7 @@ fn test_lua_notification_instant() {
     );
     assert!(id.is_some());
     assert_eq!(queue.items.len(), 1);
-    assert!(queue.items[0].remaining_seconds.is_none()); // sticky
+    assert!(queue.items[0].remaining_hexadies.is_none()); // sticky
 }
 
 /// Survey completion routed through PendingFactQueue surfaces only once

@@ -4968,7 +4968,7 @@ pub struct SavedNotification {
     pub icon: Option<String>,
     pub priority: SavedNotificationPriority,
     pub target_system_bits: Option<u64>,
-    pub remaining_seconds: Option<f32>,
+    pub remaining_hexadies: Option<f32>,
 }
 impl SavedNotification {
     pub fn from_live(v: &Notification) -> Self {
@@ -4979,7 +4979,7 @@ impl SavedNotification {
             icon: v.icon.clone(),
             priority: (&v.priority).into(),
             target_system_bits: v.target_system.map(|e| e.to_bits()),
-            remaining_seconds: v.remaining_seconds,
+            remaining_hexadies: v.remaining_hexadies,
         }
     }
     pub fn into_live(self, map: &EntityMap) -> Notification {
@@ -4990,7 +4990,7 @@ impl SavedNotification {
             icon: self.icon,
             priority: self.priority.into(),
             target_system: self.target_system_bits.map(|b| remap_entity(b, map)),
-            remaining_seconds: self.remaining_seconds,
+            remaining_hexadies: self.remaining_hexadies,
         }
     }
 }
