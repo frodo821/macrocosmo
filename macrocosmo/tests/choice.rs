@@ -38,6 +38,7 @@ fn spawn_player_empire(world: &mut World) -> Entity {
     world
         .spawn((
             PlayerEmpire,
+            TechTree::default(),
             GameFlags::default(),
             ScopedFlags::default(),
             GlobalParams::default(),
@@ -186,13 +187,13 @@ fn evaluate_marks_unmet_condition_and_cost() {
     app.add_systems(Update, drain_pending_choices);
     app.update();
 
-    let mut pending = app.world_mut().resource_mut::<PendingChoice>();
-    let active = pending.current.as_mut().expect("choice should be active");
+    let pending = app.world().resource::<PendingChoice>();
+    let active = pending.current.as_ref().expect("choice should be active");
 
     let tech = TechTree::default();
     let game_flags = GameFlags::default();
     let scoped = ScopedFlags::default();
-    evaluate_choice_availability(
+    let availability = evaluate_choice_availability(
         active,
         &tech,
         &game_flags,
@@ -201,17 +202,17 @@ fn evaluate_marks_unmet_condition_and_cost() {
     );
 
     assert!(
-        active.options[0].condition_unmet,
+        availability[0].condition_unmet,
         "tech-gated option must be unmet"
     );
-    assert!(!active.options[0].cost_unmet);
+    assert!(!availability[0].cost_unmet);
     assert!(
-        active.options[1].cost_unmet,
+        availability[1].cost_unmet,
         "expensive option must be unaffordable"
     );
-    assert!(active.options[1].unmet_reason.contains("minerals"));
-    assert!(!active.options[2].condition_unmet);
-    assert!(!active.options[2].cost_unmet);
+    assert!(availability[1].unmet_reason.contains("minerals"));
+    assert!(!availability[2].condition_unmet);
+    assert!(!availability[2].cost_unmet);
 }
 
 #[test]
@@ -309,23 +310,6 @@ fn apply_selection_deducts_cost_from_capital_stockpile() {
 
     app.update();
 
-    // The dialog system would normally call evaluate_choice_availability before
-    // exposing the option; here we call it manually so apply_pending_choice_selection
-    // sees cost_unmet = false.
-    {
-        let tech = TechTree::default();
-        let game_flags = GameFlags::default();
-        let scoped = ScopedFlags::default();
-        let capital_stock: Option<(Amt, Amt)> = {
-            let sp = app.world().get::<ResourceStockpile>(capital).unwrap();
-            Some((sp.minerals, sp.energy))
-        };
-        let mut pending = app.world_mut().resource_mut::<PendingChoice>();
-        if let Some(active) = pending.current.as_mut() {
-            evaluate_choice_availability(active, &tech, &game_flags, &scoped, capital_stock);
-        }
-    }
-
     app.world_mut()
         .resource_mut::<PendingChoiceSelection>()
         .pick = Some(1);
@@ -385,7 +369,8 @@ fn apply_selection_rejects_unavailable_option() {
 
     app.update();
 
-    // Mark the cost as unavailable by evaluating availability (as the UI does).
+    // Confirm the option is unavailable according to the same pure
+    // availability helper the apply system uses.
     {
         let tech = TechTree::default();
         let game_flags = GameFlags::default();
@@ -394,10 +379,11 @@ fn apply_selection_rejects_unavailable_option() {
             let sp = app.world().get::<ResourceStockpile>(capital).unwrap();
             Some((sp.minerals, sp.energy))
         };
-        let mut pending = app.world_mut().resource_mut::<PendingChoice>();
-        if let Some(active) = pending.current.as_mut() {
-            evaluate_choice_availability(active, &tech, &game_flags, &scoped, capital_stock);
-            assert!(active.options[0].cost_unmet);
+        let pending = app.world().resource::<PendingChoice>();
+        if let Some(active) = pending.current.as_ref() {
+            let availability =
+                evaluate_choice_availability(active, &tech, &game_flags, &scoped, capital_stock);
+            assert!(availability[0].cost_unmet);
         }
     }
 

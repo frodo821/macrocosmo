@@ -56,15 +56,24 @@ pub struct ChoiceOption {
     /// 1-based index into the Lua-side `options` table for this choice. Used
     /// at apply time to locate the `on_chosen` function.
     pub lua_option_index: usize,
-    /// Set to true when the UI computes that `condition` is unsatisfied.
-    /// Populated by the dialog just before rendering; the Lua side never
-    /// reads this.
+}
+
+/// Per-frame availability view for a choice option.
+///
+/// Kept out of [`ChoiceOption`] so UI rendering does not mutate the
+/// simulation-owned pending choice state. The apply path recomputes this
+/// before accepting a staged selection.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChoiceOptionAvailability {
     pub condition_unmet: bool,
-    /// Set to true when the UI computes that the cost is unaffordable.
     pub cost_unmet: bool,
-    /// Human-readable reason string ("requires X", "not enough minerals") for
-    /// UI tooltip display. Empty when the option is available.
     pub unmet_reason: String,
+}
+
+impl ChoiceOptionAvailability {
+    pub fn available(&self) -> bool {
+        !self.condition_unmet && !self.cost_unmet
+    }
 }
 
 /// The single currently-active modal choice. `None` means no choice is
@@ -90,10 +99,6 @@ pub struct ActiveChoice {
     pub icon: Option<String>,
     pub target_system: Option<Entity>,
     pub options: Vec<ChoiceOption>,
-    /// Effects that the most recent option's `on_chosen` produced, cached so
-    /// the UI can display a brief result summary after resolution. Cleared
-    /// when the next choice is promoted.
-    pub last_effects: Vec<DescriptiveEffect>,
 }
 
 impl PendingChoice {
@@ -238,7 +243,6 @@ fn parse_pending_choice(lua: &Lua, entry: &mlua::Table) -> Result<ActiveChoice, 
         icon,
         target_system,
         options,
-        last_effects: Vec::new(),
     })
 }
 
@@ -271,22 +275,18 @@ fn parse_choice_option(opt: &mlua::Table, index: usize) -> Result<ChoiceOption, 
         condition,
         cost,
         lua_option_index: index,
-        condition_unmet: false,
-        cost_unmet: false,
-        unmet_reason: String::new(),
     })
 }
 
 /// Evaluate each option's `condition` and `cost` against the current empire
-/// state + capital stockpile. Updates the `condition_unmet` / `cost_unmet`
-/// flags in-place so the dialog can grey unsatisfied options out.
+/// state + capital stockpile.
 pub fn evaluate_choice_availability(
-    choice: &mut ActiveChoice,
+    choice: &ActiveChoice,
     tech_tree: &TechTree,
     game_flags: &GameFlags,
     scoped_flags: &ScopedFlags,
     capital_stockpile: Option<(Amt, Amt)>,
-) {
+) -> Vec<ChoiceOptionAvailability> {
     let researched_techs: HashSet<String> = tech_tree
         .technologies
         .iter()
@@ -316,42 +316,46 @@ pub fn evaluate_choice_availability(
 
     let (m_avail, e_avail) = capital_stockpile.unwrap_or((Amt::ZERO, Amt::ZERO));
 
-    for opt in choice.options.iter_mut() {
-        opt.condition_unmet = false;
-        opt.cost_unmet = false;
-        opt.unmet_reason.clear();
+    choice
+        .options
+        .iter()
+        .map(|opt| {
+            let mut availability = ChoiceOptionAvailability::default();
 
-        if let Some(cond) = &opt.condition {
-            let result = cond.evaluate(&ctx);
-            if !result.is_satisfied() {
-                opt.condition_unmet = true;
-                opt.unmet_reason = "prerequisite not met".to_string();
-            }
-        }
-
-        if !opt.cost.is_zero() {
-            let mut shortage: Vec<String> = Vec::new();
-            if opt.cost.minerals > m_avail {
-                shortage.push(format!(
-                    "need {} minerals (have {})",
-                    opt.cost.minerals, m_avail
-                ));
-            }
-            if opt.cost.energy > e_avail {
-                shortage.push(format!(
-                    "need {} energy (have {})",
-                    opt.cost.energy, e_avail
-                ));
-            }
-            if !shortage.is_empty() {
-                opt.cost_unmet = true;
-                if !opt.unmet_reason.is_empty() {
-                    opt.unmet_reason.push_str("; ");
+            if let Some(cond) = &opt.condition {
+                let result = cond.evaluate(&ctx);
+                if !result.is_satisfied() {
+                    availability.condition_unmet = true;
+                    availability.unmet_reason = "prerequisite not met".to_string();
                 }
-                opt.unmet_reason.push_str(&shortage.join(", "));
             }
-        }
-    }
+
+            if !opt.cost.is_zero() {
+                let mut shortage: Vec<String> = Vec::new();
+                if opt.cost.minerals > m_avail {
+                    shortage.push(format!(
+                        "need {} minerals (have {})",
+                        opt.cost.minerals, m_avail
+                    ));
+                }
+                if opt.cost.energy > e_avail {
+                    shortage.push(format!(
+                        "need {} energy (have {})",
+                        opt.cost.energy, e_avail
+                    ));
+                }
+                if !shortage.is_empty() {
+                    availability.cost_unmet = true;
+                    if !availability.unmet_reason.is_empty() {
+                        availability.unmet_reason.push_str("; ");
+                    }
+                    availability.unmet_reason.push_str(&shortage.join(", "));
+                }
+            }
+
+            availability
+        })
+        .collect()
 }
 
 /// Run the `on_chosen` Lua callback for a given option and collect its
@@ -482,28 +486,50 @@ pub fn apply_pending_choice_selection(
     mut speed: ResMut<GameSpeed>,
     stars: Query<(Entity, &crate::galaxy::StarSystem)>,
     mut stockpiles: Query<&mut crate::colony::ResourceStockpile, With<crate::galaxy::StarSystem>>,
-    mut empire_q: Query<(&mut GameFlags, &mut ScopedFlags, &mut GlobalParams), With<PlayerEmpire>>,
+    mut empire_q: Query<
+        (
+            &TechTree,
+            &mut GameFlags,
+            &mut ScopedFlags,
+            &mut GlobalParams,
+        ),
+        With<PlayerEmpire>,
+    >,
 ) {
     let Some(pick) = selection.pick.take() else {
         return;
     };
-    let Some(active) = pending.current.as_mut() else {
+    let Some(active) = pending.current.as_ref() else {
         return;
     };
-    let Ok((mut game_flags, mut scoped_flags, mut global_params)) = empire_q.single_mut() else {
+    let Ok((tech_tree, mut game_flags, mut scoped_flags, mut global_params)) =
+        empire_q.single_mut()
+    else {
         warn!("No PlayerEmpire for choice selection");
         return;
     };
+
+    let capital_entity = stars.iter().find(|(_, s)| s.is_capital).map(|(e, _)| e);
+    let capital_stockpile =
+        capital_entity.and_then(|cap| stockpiles.get(cap).ok().map(|s| (s.minerals, s.energy)));
+    let availability = evaluate_choice_availability(
+        active,
+        tech_tree,
+        &game_flags,
+        &scoped_flags,
+        capital_stockpile,
+    );
 
     let Some(option) = active.options.get(pick - 1).cloned() else {
         warn!("Choice selection index out of range: {pick}");
         return;
     };
 
-    if option.condition_unmet || option.cost_unmet {
+    let option_availability = availability.get(pick - 1).cloned().unwrap_or_default();
+    if !option_availability.available() {
         warn!(
             "Ignoring unavailable choice option '{}': {}",
-            option.label, option.unmet_reason
+            option.label, option_availability.unmet_reason
         );
         return;
     }
@@ -511,7 +537,6 @@ pub fn apply_pending_choice_selection(
     // Subtract cost from the capital stockpile (best-effort — if no capital
     // exists, the cost is skipped with a log).
     if !option.cost.is_zero() {
-        let capital_entity = stars.iter().find(|(_, s)| s.is_capital).map(|(e, _)| e);
         if let Some(cap) = capital_entity {
             if let Ok(mut stockpile) = stockpiles.get_mut(cap) {
                 stockpile.minerals = stockpile.minerals.sub(option.cost.minerals);
@@ -542,13 +567,8 @@ pub fn apply_pending_choice_selection(
         );
     }
 
-    // Remember the resulting effects briefly (so the UI can show the summary
-    // before the dialog closes). We capture them on the resolved choice so
-    // the `last_effects` survive one more frame if needed.
-    active.last_effects = effects;
-
     // Release the Lua handle and pop the choice.
-    release_active_choice(&engine, lua_id);
+    release_active_choice(&engine, active.lua_id);
     pending.resolve_current();
 
     // Unpause only when nothing remains.
@@ -633,7 +653,7 @@ mod tests {
     fn evaluate_marks_unaffordable_option() {
         // Build a trivial active choice with a cost of 1000 minerals and
         // available stockpile of 100.
-        let mut active = ActiveChoice {
+        let active = ActiveChoice {
             lua_id: 1,
             title: "T".into(),
             description: "D".into(),
@@ -648,26 +668,22 @@ mod tests {
                     energy: Amt::ZERO,
                 },
                 lua_option_index: 1,
-                condition_unmet: false,
-                cost_unmet: false,
-                unmet_reason: String::new(),
             }],
-            last_effects: Vec::new(),
         };
 
         let tree = TechTree::default();
         let flags = GameFlags::default();
         let scoped = ScopedFlags::default();
-        evaluate_choice_availability(
-            &mut active,
+        let availability = evaluate_choice_availability(
+            &active,
             &tree,
             &flags,
             &scoped,
             Some((Amt::units(100), Amt::units(100))),
         );
-        assert!(active.options[0].cost_unmet);
-        assert!(!active.options[0].condition_unmet);
-        assert!(active.options[0].unmet_reason.contains("minerals"));
+        assert!(availability[0].cost_unmet);
+        assert!(!availability[0].condition_unmet);
+        assert!(availability[0].unmet_reason.contains("minerals"));
     }
 
     #[test]
@@ -682,7 +698,7 @@ mod tests {
             .unwrap();
         let cond = parse_condition(&cond_table).unwrap();
 
-        let mut active = ActiveChoice {
+        let active = ActiveChoice {
             lua_id: 1,
             title: "T".into(),
             description: "D".into(),
@@ -694,18 +710,14 @@ mod tests {
                 condition: Some(cond),
                 cost: ChoiceCost::default(),
                 lua_option_index: 1,
-                condition_unmet: false,
-                cost_unmet: false,
-                unmet_reason: String::new(),
             }],
-            last_effects: Vec::new(),
         };
 
         let tree = TechTree::default();
         let flags = GameFlags::default();
         let scoped = ScopedFlags::default();
-        evaluate_choice_availability(&mut active, &tree, &flags, &scoped, None);
-        assert!(active.options[0].condition_unmet);
+        let availability = evaluate_choice_availability(&active, &tree, &flags, &scoped, None);
+        assert!(availability[0].condition_unmet);
     }
 
     #[test]
@@ -800,7 +812,6 @@ mod tests {
             icon: None,
             target_system: None,
             options: Vec::new(),
-            last_effects: Vec::new(),
         });
         pending.enqueue(ActiveChoice {
             lua_id: 2,
@@ -809,7 +820,6 @@ mod tests {
             icon: None,
             target_system: None,
             options: Vec::new(),
-            last_effects: Vec::new(),
         });
 
         assert_eq!(pending.current.as_ref().unwrap().lua_id, 1);

@@ -26,7 +26,7 @@
 //! (an `on("*@observed", fn)` wildcard subscriber) calling the
 //! `push_notification { event_id, severity, message, source }` Lua API.
 //! The Rust-side drain system (`drain_pending_esc_notifications` in
-//! `crate::scripting::esc_notifications`) parses those entries and
+//! `crate::interactions::esc_notifications`) parses those entries and
 //! calls [`EscNotificationQueue::push`].
 //!
 //! [`EscNotificationQueue::push`] is also reachable from Rust for tests

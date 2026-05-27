@@ -1068,6 +1068,19 @@ fn notification_pill_colors(priority: NotificationPriority) -> (egui::Color32, e
     }
 }
 
+fn notification_pill_glyph(n: &crate::notifications::Notification) -> &str {
+    if let Some(ref icon) = n.icon {
+        if icon.chars().count() == 1 {
+            return icon.as_str();
+        }
+    }
+    match n.priority {
+        NotificationPriority::High => "!",
+        NotificationPriority::Medium => "i",
+        NotificationPriority::Low => ".",
+    }
+}
+
 fn draw_notification_pill(
     ui: &mut egui::Ui,
     n: &crate::notifications::Notification,
@@ -1093,7 +1106,7 @@ fn draw_notification_pill(
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        n.pill_glyph(),
+        notification_pill_glyph(n),
         egui::FontId::proportional(11.0),
         egui::Color32::WHITE,
     );
@@ -2911,7 +2924,7 @@ pub fn apply_design_refit(
 fn draw_choice_dialog_system(
     mut contexts: EguiContexts,
     ui_state: Res<UiState>,
-    mut pending: ResMut<PendingChoice>,
+    pending: Res<PendingChoice>,
     mut selection: ResMut<PendingChoiceSelection>,
     empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<crate::player::Empire>>,
     obs: ObserverUiState,
@@ -2931,21 +2944,16 @@ fn draw_choice_dialog_system(
         return;
     };
 
-    // Evaluate availability against current empire state + capital stockpile.
-    let capital_stockpile = ui_state.capital_stockpile;
-    if let Some(active) = pending.current.as_mut() {
-        crate::choice::evaluate_choice_availability(
-            active,
-            tech_tree,
-            game_flags,
-            scoped_flags,
-            capital_stockpile,
-        );
-    }
-
     let Some(active) = pending.current.as_ref() else {
         return;
     };
+    let availability = crate::choice::evaluate_choice_availability(
+        active,
+        tech_tree,
+        game_flags,
+        scoped_flags,
+        ui_state.capital_stockpile,
+    );
 
     let mut pick_index: Option<usize> = None;
     egui::Window::new(egui::RichText::new(&active.title).size(18.0).strong())
@@ -2964,7 +2972,8 @@ fn draw_choice_dialog_system(
             ui.add_space(4.0);
 
             for (i, opt) in active.options.iter().enumerate() {
-                let unavailable = opt.condition_unmet || opt.cost_unmet;
+                let option_availability = availability.get(i).cloned().unwrap_or_default();
+                let unavailable = !option_availability.available();
                 ui.add_enabled_ui(!unavailable, |ui| {
                     let label_text = if opt.cost.is_zero() {
                         opt.label.clone()
@@ -2994,8 +3003,9 @@ fn draw_choice_dialog_system(
                     if let Some(desc) = &opt.description {
                         response = response.on_hover_text(desc);
                     }
-                    if unavailable && !opt.unmet_reason.is_empty() {
-                        response = response.on_disabled_hover_text(&opt.unmet_reason);
+                    if unavailable && !option_availability.unmet_reason.is_empty() {
+                        response =
+                            response.on_disabled_hover_text(&option_availability.unmet_reason);
                     }
                     if response.clicked() {
                         // 1-based index to match `lua_option_index`.

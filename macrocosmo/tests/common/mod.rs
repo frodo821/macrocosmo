@@ -1095,12 +1095,15 @@ pub fn full_test_app() -> App {
         Update,
         (
             macrocosmo::time_system::advance_game_time,
-            macrocosmo::time_system::handle_speed_controls,
+            macrocosmo::interactions::time_controls::handle_speed_controls,
         ),
     );
 
     // --- Player system (from PlayerPlugin, excluding Startup spawn_player) ---
-    app.add_systems(Update, macrocosmo::player::log_player_info);
+    app.add_systems(
+        Update,
+        macrocosmo::interactions::player_controls::log_player_info,
+    );
     app.add_systems(Update, macrocosmo::player::update_ruler_location);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---

@@ -583,8 +583,8 @@ pub fn setup_globals_with_print_buffer(
     //
     // `push_notification { title, message, severity, source, event_id,
     //                      timestamp, children? }` enqueues a *post-hoc*
-    // ack-able notification into `EscNotificationQueue` (see
-    // `crate::ui::situation_center::notifications_tab`).
+    // ack-able notification into the interaction-layer ESC notification
+    // drain.
     //
     // Distinct from `show_notification` — that API drives the top-banner
     // stack (#151), which is a live TTL-based popup. `push_notification`

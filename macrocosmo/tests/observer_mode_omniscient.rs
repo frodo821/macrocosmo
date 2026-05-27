@@ -311,7 +311,10 @@ fn disabled_to_omniscient_round_trip() {
     app.init_resource::<ButtonInput<KeyCode>>();
     app.insert_resource(ObserverMode::default());
     app.insert_resource(ObserverView::default());
-    app.add_systems(Update, macrocosmo::observer::toggle_omniscient_mode);
+    app.add_systems(
+        Update,
+        macrocosmo::interactions::observer_controls::toggle_omniscient_mode,
+    );
 
     // No key pressed — stays Disabled.
     app.update();
@@ -362,7 +365,10 @@ fn f9_toggle_drives_state_through_app_update() {
         ..Default::default()
     });
     app.insert_resource(ObserverView::default());
-    app.add_systems(Update, macrocosmo::observer::toggle_omniscient_mode);
+    app.add_systems(
+        Update,
+        macrocosmo::interactions::observer_controls::toggle_omniscient_mode,
+    );
 
     // Press F9 → Omniscient (previous_kind = EmpireView via newtype).
     app.world_mut()
