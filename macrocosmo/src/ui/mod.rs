@@ -1090,9 +1090,10 @@ fn draw_notification_pill(
     let (border, fill) = notification_pill_colors(n.priority);
 
     let size = egui::vec2(PILL_DIAMETER, PILL_DIAMETER);
-    // `click_and_drag` so egui surfaces both primary (`clicked`) and
-    // secondary (`secondary_clicked`) press events on the pill itself.
-    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    // `Sense::click()` is enough — egui surfaces both `clicked()` (primary)
+    // and `secondary_clicked()` (right) on any widget that opts into click
+    // sense.
+    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click());
 
     let radius = PILL_DIAMETER * 0.5;
     let hovered = pill_response.hovered();
@@ -1112,11 +1113,14 @@ fn draw_notification_pill(
     );
 
     // Tooltip-only hover: pure information, no interactive widgets.
+    // `on_hover_ui` consumes the response and returns a new one — chain it so
+    // the tooltip closure is properly registered, then use the returned
+    // response for click detection.
     let has_target = n.target_system.is_some();
     let title = n.title.clone();
     let description = n.description.clone();
     let remaining = n.remaining_hexadies;
-    pill_response.clone().on_hover_ui(|ui| {
+    let response = pill_response.on_hover_ui(|ui| {
         ui.set_max_width(360.0);
         ui.label(
             egui::RichText::new(&title)
@@ -1142,9 +1146,9 @@ fn draw_notification_pill(
         ui.label(egui::RichText::new(hint).small().weak());
     });
 
-    if pill_response.clicked() {
+    if response.clicked() {
         to_dismiss.push(n.id);
-    } else if pill_response.secondary_clicked() {
+    } else if response.secondary_clicked() {
         if let Some(target) = n.target_system {
             *jump_target = Some(target);
             to_dismiss.push(n.id);
