@@ -10,15 +10,17 @@ Already represented in the current tree:
 - `time_system` owns clock state and advancement only; speed-control input lives under `interactions/time_controls.rs`.
 - Headless simulation smoke coverage exists in `tests/simulation_plugin.rs`.
 - A static forbidden-import regression check exists in `tests/simulation_boundary.rs`.
-- AI command consumer refactor is in progress:
+- AI command consumer refactor is committed in `3e1908a`:
   - `ai/command_params.rs`
   - `ai/command_route.rs`
   - `ai/command_handlers/{build,military,research}.rs`
   - `command_consumer.rs` is reduced toward bus drain + route dispatch.
-- Economic AI metrics now have pure snapshot structs under
-  `ai/metrics/economy.rs`, with ECS query reading kept in `emitters.rs`.
-- System-building station design lookup now has `SystemBuildingIndex`, rebuilt
-  from `BuildingRegistry` and used by the main station-capability call sites.
+- Economic AI metrics split is committed in `925e817`:
+  - pure snapshot structs live under `ai/metrics/economy.rs`;
+  - ECS query reading stays in `emitters.rs`.
+- System-building station design lookup is committed in `925e817`:
+  - `SystemBuildingIndex` centralizes station design lookup;
+  - the index is rebuilt from `BuildingRegistry` and used by the main station-capability call sites.
 
 Verification run for the current pass:
 
@@ -63,7 +65,7 @@ Before merging:
 
 ### Slice 2: AI Command Consumer SRP
 
-Status: implemented in the current working tree, pending review / final validation.
+Status: committed in `3e1908a`.
 
 Suggested PR title:
 
@@ -98,7 +100,7 @@ cargo test -p macrocosmo --test ai_deliverable_registry_resolution
 
 ### Slice 3: Economic Metrics Snapshot Split
 
-Status: implemented in the current working tree, pending review / final commit.
+Status: committed in `925e817`.
 
 Suggested PR title:
 
@@ -205,7 +207,7 @@ cargo test -p macrocosmo --test ai_debug_smoke
 
 ### Slice 6: System Building Capability Index
 
-Status: implemented in the current working tree, pending review / final commit.
+Status: committed in `925e817`.
 
 Suggested PR title:
 
