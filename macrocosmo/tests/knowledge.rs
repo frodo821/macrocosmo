@@ -2960,8 +2960,7 @@ fn test_sensor_buoy_observer_mode_two_empires_both_receive() {
     let empire_a = empire_entity(app.world_mut());
     common::set_empire_viewer_system(app.world_mut(), empire_a, sys_a);
     // Spawn a second non-PlayerEmpire empire with viewer at sys_b.
-    let empire_b =
-        spawn_secondary_empire_457(app.world_mut(), "obs_b_faction", "Empire B", sys_b);
+    let empire_b = spawn_secondary_empire_457(app.world_mut(), "obs_b_faction", "Empire B", sys_b);
 
     // Buoy + ship — within range so both empires can observe.
     spawn_sensor_buoy(app.world_mut(), [3.0, 0.0, 0.0]);
@@ -3006,22 +3005,8 @@ fn test_sensor_buoy_per_empire_observed_at_differs() {
     install_sensor_buoy_definition(&mut app);
 
     // Two empire viewers at very different distances from the buoy.
-    let sys_near = spawn_test_system(
-        app.world_mut(),
-        "Near",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
-    let sys_far = spawn_test_system(
-        app.world_mut(),
-        "Far",
-        [20.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let sys_near = spawn_test_system(app.world_mut(), "Near", [0.0, 0.0, 0.0], 1.0, true, true);
+    let sys_far = spawn_test_system(app.world_mut(), "Far", [20.0, 0.0, 0.0], 1.0, true, true);
     let empire_near = empire_entity(app.world_mut());
     common::set_empire_viewer_system(app.world_mut(), empire_near, sys_near);
     let empire_far =
@@ -3090,8 +3075,7 @@ fn test_relay_hostile_map_uses_receiver_relations() {
     );
     let empire_a = empire_entity(app.world_mut());
     common::set_empire_viewer_system(app.world_mut(), empire_a, sys_a);
-    let empire_b =
-        spawn_secondary_empire_457(app.world_mut(), "b_faction_457", "Empire B", sys_b);
+    let empire_b = spawn_secondary_empire_457(app.world_mut(), "b_faction_457", "Empire B", sys_b);
 
     // Spawn a hostile-owning faction entity (NOT the player empires) and a
     // hostile entity owned by it sitting at the remote system.

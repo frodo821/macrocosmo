@@ -50,6 +50,7 @@ pub mod debug_log;
 pub mod decomposition_rules;
 pub mod emit;
 pub mod emitters;
+pub(crate) mod metrics;
 pub mod mid_adapter;
 pub mod mid_agent;
 pub mod mid_stance;

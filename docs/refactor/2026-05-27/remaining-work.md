@@ -15,6 +15,10 @@ Already represented in the current tree:
   - `ai/command_route.rs`
   - `ai/command_handlers/{build,military,research}.rs`
   - `command_consumer.rs` is reduced toward bus drain + route dispatch.
+- Economic AI metrics now have pure snapshot structs under
+  `ai/metrics/economy.rs`, with ECS query reading kept in `emitters.rs`.
+- System-building station design lookup now has `SystemBuildingIndex`, rebuilt
+  from `BuildingRegistry` and used by the main station-capability call sites.
 
 Verification run for the current pass:
 
@@ -94,7 +98,7 @@ cargo test -p macrocosmo --test ai_deliverable_registry_resolution
 
 ### Slice 3: Economic Metrics Snapshot Split
 
-Status: not started.
+Status: implemented in the current working tree, pending review / final commit.
 
 Suggested PR title:
 
@@ -124,6 +128,7 @@ Validation candidates:
 
 ```text
 cargo test -p macrocosmo --lib emit_economic
+cargo test -p macrocosmo --lib ai::metrics::economy
 cargo test -p macrocosmo --test ai_resource_gate_hotfix
 ```
 
@@ -200,7 +205,7 @@ cargo test -p macrocosmo --test ai_debug_smoke
 
 ### Slice 6: System Building Capability Index
 
-Status: not started.
+Status: implemented in the current working tree, pending review / final commit.
 
 Suggested PR title:
 
@@ -224,6 +229,7 @@ Constraints:
 Validation candidates:
 
 ```text
+cargo test -p macrocosmo --lib system_building_index
 cargo test -p macrocosmo --test system_building_capabilities
 cargo test -p macrocosmo --test system_building_ship_migration
 cargo test -p macrocosmo --test ai_ship_build_queue
@@ -273,4 +279,3 @@ Future extraction order:
 2. Create `macrocosmo-core` only for stable pure contracts.
 3. Consider `macrocosmo-ai -> macrocosmo-core` only if it avoids duplication without importing engine/runtime concepts.
 4. Extract simulation/interactions crates only after `macrocosmo/src/simulation` has no UI/input/render imports and interactions are lifecycle consumers rather than owners.
-

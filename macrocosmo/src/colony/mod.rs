@@ -59,12 +59,21 @@ impl Plugin for ColonyPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<LastProductionTick>()
             .init_resource::<BuildingRegistry>()
+            .init_resource::<SystemBuildingIndex>()
             .init_resource::<AlertCooldowns>()
             .init_resource::<PendingSovereigntyChanges>()
             .init_resource::<ShipyardSpeedAccumulators>()
             .add_systems(
                 Startup,
                 load_building_registry.after(crate::scripting::load_all_scripts),
+            )
+            .add_systems(
+                Startup,
+                rebuild_system_building_index.after(load_building_registry),
+            )
+            .add_systems(
+                Update,
+                rebuild_system_building_index.run_if(resource_changed::<BuildingRegistry>),
             )
             // #439 Phase 3: world-spawn systems migrated from Startup to
             // OnEnter(NewGame). `spawn_capital_colony` constructs the

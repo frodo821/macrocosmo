@@ -1047,8 +1047,9 @@ pub fn relay_knowledge_propagate_system(
     let mut per_empire_systems: std::collections::HashMap<Entity, Vec<SystemKnowledgeEntry>> =
         std::collections::HashMap::new();
 
-    // Reverse design lookup is invariant across the loop body.
-    let reverse = crate::colony::system_buildings::build_reverse_design_map(&building_registry);
+    // Station-design lookup is invariant across the loop body.
+    let system_building_index =
+        crate::colony::system_buildings::SystemBuildingIndex::from_registry(&building_registry);
 
     for (_source_entity, source_structure, source_pos, relay) in &relays {
         let _ = relay.direction;
@@ -1137,7 +1138,7 @@ pub fn relay_knowledge_propagate_system(
             let relay_has_port = ships.iter().any(|(_e, ship, state, _pos, _hp, slot)| {
                 slot.is_some()
                     && matches!(state, crate::ship::ShipState::InSystem { system: s } if *s == sys_entity)
-                    && reverse.get(&ship.design_id).and_then(|bid| building_registry.get(bid.as_str())).is_some_and(|def| def.capabilities.contains_key("port"))
+                    && system_building_index.ship_has_capability(ship, &building_registry, "port")
             });
             // #445: Shipyard presence now derives from
             // `shipyard_build_parallel_slots` so the relayed snapshot

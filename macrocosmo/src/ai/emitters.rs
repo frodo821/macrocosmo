@@ -10,11 +10,15 @@ use bevy::prelude::*;
 
 use crate::ai::convert::to_ai_faction;
 use crate::ai::emit::AiBusWriter;
+use crate::ai::metrics::economy::{
+    EmpireEconomicSnapshot, EmpireInfrastructureSnapshot, EmpirePopulationSnapshot,
+    EmpireProductionSnapshot, EmpireStockpileSnapshot, emit_economic_snapshot,
+};
 use crate::ai::schema::foreign::foreign_metric_id;
 use crate::ai::schema::ids::metric;
 use crate::colony::{
     Buildings, Colony, FoodConsumption, Production, ResourceCapacity, ResourceStockpile,
-    SlotAssignment,
+    SlotAssignment, SystemBuildingIndex,
 };
 use crate::faction::FactionOwner;
 use crate::galaxy::{AtSystem, Hostile, Sovereignty};
@@ -181,6 +185,7 @@ pub fn emit_economic_metrics(
     planet_attrs: Query<&SystemAttributes, With<Planet>>,
     tech_tree: Option<Res<TechTree>>,
     ai_building_registry: Option<Res<crate::colony::BuildingRegistry>>,
+    ai_system_building_index: Option<Res<SystemBuildingIndex>>,
     core_ships: Query<(&crate::galaxy::AtSystem, &FactionOwner), With<crate::ship::CoreShip>>,
     // #445: Per-system shipyard parallel-slot count, sourced from the
     // canonical `SystemModifiers` rather than capability presence.
@@ -238,7 +243,13 @@ pub fn emit_economic_metrics(
         }
     }
     if let Some(ref registry) = ai_building_registry {
-        let reverse = crate::colony::system_buildings::build_reverse_design_map(registry);
+        let fallback_index;
+        let index = if let Some(index) = ai_system_building_index.as_deref() {
+            index
+        } else {
+            fallback_index = SystemBuildingIndex::from_registry(registry);
+            &fallback_index
+        };
         for (_entity, ship, state, _slot) in &ai_station_ships {
             let _system = match state {
                 ShipState::InSystem { system: s } => *s,
@@ -246,12 +257,8 @@ pub fn emit_economic_metrics(
                 _ => continue,
             };
             if let Owner::Empire(owner) = ship.owner {
-                if let Some(bid) = reverse.get(&ship.design_id) {
-                    if let Some(def) = registry.get(bid.as_str()) {
-                        if def.capabilities.contains_key("port") {
-                            *port_counts.entry(owner).or_default() += 1.0;
-                        }
-                    }
+                if index.ship_has_capability(ship, registry, "port") {
+                    *port_counts.entry(owner).or_default() += 1.0;
                 }
             }
         }
@@ -327,61 +334,6 @@ pub fn emit_economic_metrics(
             }
         }
 
-        // Emit production metrics
-        writer.emit(
-            &metric::for_faction("net_production_minerals", fid),
-            total_minerals_rate,
-        );
-        writer.emit(
-            &metric::for_faction("net_production_energy", fid),
-            total_energy_rate,
-        );
-        writer.emit(
-            &metric::for_faction("net_production_food", fid),
-            total_food_rate,
-        );
-        writer.emit(
-            &metric::for_faction("net_production_research", fid),
-            total_research_rate,
-        );
-
-        // Emit population metrics
-        writer.emit(
-            &metric::for_faction("population_total", fid),
-            total_population,
-        );
-        writer.emit(
-            &metric::for_faction("population_growth_rate", fid),
-            total_growth_rate,
-        );
-        writer.emit(
-            &metric::for_faction("population_carrying_capacity", fid),
-            total_carrying_capacity,
-        );
-        let pop_ratio = if total_carrying_capacity > 0.0 {
-            total_population / total_carrying_capacity
-        } else {
-            0.0
-        };
-        writer.emit(&metric::for_faction("population_ratio", fid), pop_ratio);
-
-        // Emit food metrics
-        writer.emit(
-            &metric::for_faction("food_consumption_rate", fid),
-            total_food_consumption,
-        );
-        writer.emit(
-            &metric::for_faction("food_surplus", fid),
-            total_food_rate - total_food_consumption,
-        );
-
-        // Emit territory metrics
-        writer.emit(&metric::for_faction("colony_count", fid), colony_count);
-        writer.emit(
-            &metric::for_faction("colonized_system_count", fid),
-            colonized_systems.len() as f64,
-        );
-
         // --- Stockpiles ---
         // Filter stockpiles by sovereignty: only systems owned by this empire.
         let mut total_minerals: f64 = 0.0;
@@ -391,7 +343,7 @@ pub fn emit_economic_metrics(
         let mut total_cap_minerals: f64 = 0.0;
         let mut total_cap_energy: f64 = 0.0;
         let mut total_cap_food: f64 = 0.0;
-        let mut total_authority_debt: f64 = 0.0;
+        let total_authority_debt: f64 = 0.0;
 
         for (_sys_entity, stockpile, capacity, sovereignty) in &stockpiles {
             let is_owned =
@@ -412,50 +364,6 @@ pub fn emit_economic_metrics(
             }
         }
 
-        writer.emit(
-            &metric::for_faction("stockpile_minerals", fid),
-            total_minerals,
-        );
-        writer.emit(&metric::for_faction("stockpile_energy", fid), total_energy);
-        writer.emit(&metric::for_faction("stockpile_food", fid), total_food);
-        writer.emit(
-            &metric::for_faction("stockpile_authority", fid),
-            total_authority,
-        );
-
-        let ratio_minerals = if total_cap_minerals > 0.0 {
-            (total_minerals / total_cap_minerals).min(1.0)
-        } else {
-            0.0
-        };
-        let ratio_energy = if total_cap_energy > 0.0 {
-            (total_energy / total_cap_energy).min(1.0)
-        } else {
-            0.0
-        };
-        let ratio_food = if total_cap_food > 0.0 {
-            (total_food / total_cap_food).min(1.0)
-        } else {
-            0.0
-        };
-        writer.emit(
-            &metric::for_faction("stockpile_ratio_minerals", fid),
-            ratio_minerals,
-        );
-        writer.emit(
-            &metric::for_faction("stockpile_ratio_energy", fid),
-            ratio_energy,
-        );
-        writer.emit(
-            &metric::for_faction("stockpile_ratio_food", fid),
-            ratio_food,
-        );
-
-        writer.emit(
-            &metric::for_faction("total_authority_debt", fid),
-            total_authority_debt,
-        );
-
         // Infrastructure metrics
         // #445 (HIGH fold-in): emit set-count and total-slots as two
         // distinct metrics. `can_build_ships` re-uses the set-count
@@ -470,34 +378,46 @@ pub fn emit_economic_metrics(
             .copied()
             .unwrap_or(0.0);
         let sys_port = port_counts.get(&empire_entity).copied().unwrap_or(0.0);
-        writer.emit(
-            &metric::for_faction("systems_with_shipyard", fid),
-            sys_shipyard_set,
-        );
-        writer.emit(
-            &metric::for_faction("total_shipyard_slots", fid),
-            sys_shipyard_slots,
-        );
-        writer.emit(&metric::for_faction("systems_with_port", fid), sys_port);
         let sys_core = core_systems_per_empire
             .get(&empire_entity)
             .map(|s| s.len() as f64)
             .unwrap_or(0.0);
-        writer.emit(&metric::for_faction("systems_with_core", fid), sys_core);
-        writer.emit(&metric::for_faction("max_building_slots", fid), max_slots);
-        writer.emit(&metric::for_faction("used_building_slots", fid), used_slots);
-        writer.emit(
-            &metric::for_faction("free_building_slots", fid),
-            max_slots - used_slots,
-        );
-        // `can_build_ships` carries the set-count (0 = no shipyard
-        // anywhere, ≥ 1 = at least one). Numerically identical to
-        // `systems_with_shipyard`. Consumers comparing `< 1.0` /
-        // `>= 1.0` work unchanged.
-        writer.emit(
-            &metric::for_faction("can_build_ships", fid),
-            sys_shipyard_set,
-        );
+        let snapshot = EmpireEconomicSnapshot {
+            production: EmpireProductionSnapshot {
+                minerals_rate: total_minerals_rate,
+                energy_rate: total_energy_rate,
+                food_rate: total_food_rate,
+                research_rate: total_research_rate,
+            },
+            population: EmpirePopulationSnapshot {
+                total: total_population,
+                growth_rate: total_growth_rate,
+                carrying_capacity: total_carrying_capacity,
+            },
+            food_consumption_rate: total_food_consumption,
+            colony_count,
+            colonized_system_count: colonized_systems.len() as f64,
+            stockpile: EmpireStockpileSnapshot {
+                minerals: total_minerals,
+                energy: total_energy,
+                food: total_food,
+                authority: total_authority,
+                mineral_capacity: total_cap_minerals,
+                energy_capacity: total_cap_energy,
+                food_capacity: total_cap_food,
+                authority_debt: total_authority_debt,
+            },
+            infrastructure: EmpireInfrastructureSnapshot {
+                systems_with_shipyard: sys_shipyard_set,
+                total_shipyard_slots: sys_shipyard_slots,
+                systems_with_port: sys_port,
+                systems_with_core: sys_core,
+                max_building_slots: max_slots,
+                used_building_slots: used_slots,
+            },
+        };
+
+        emit_economic_snapshot(&mut writer, fid, snapshot);
 
         // Technology metrics — currently global TechTree, emitted for each empire.
         // TODO: per-empire tech trees when multiple empires have independent research.

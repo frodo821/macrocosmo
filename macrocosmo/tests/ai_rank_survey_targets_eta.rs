@@ -163,9 +163,7 @@ fn greedy_per_ship_assigns_each_ship_to_its_nearest_target() {
             .copied()
             .filter(|(t, _)| !claimed.contains(t))
             .collect();
-        let ranked = rank_survey_targets_for_ship(
-            &remaining, &surveyed, pos, ftl_range, sublight,
-        );
+        let ranked = rank_survey_targets_for_ship(&remaining, &surveyed, pos, ftl_range, sublight);
         let (best, _) = ranked.first().copied().expect("at least one target");
         assignments.push((ship, best));
         claimed.insert(best);
@@ -372,15 +370,13 @@ fn rank_drops_unreachable_targets() {
         (unreachable, [10.0, 0.0, 0.0]),
     ];
     // Ship has no propulsion → every target unreachable → both dropped.
-    let ranked =
-        rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.0);
+    let ranked = rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.0);
     assert!(ranked.is_empty(), "no propulsion → no rankable targets");
 
     // Restore propulsion — both targets are reachable now (they're at
     // the same distance, so deterministic tie-break orders them by
     // Entity::index()).
-    let ranked =
-        rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.5);
+    let ranked = rank_survey_targets_for_ship(&candidates, &[], [0.0, 0.0, 0.0], 0.0, 0.5);
     assert_eq!(ranked.len(), 2);
     let _ = (reachable, unreachable);
 }
