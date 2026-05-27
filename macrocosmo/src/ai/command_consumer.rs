@@ -16,28 +16,26 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use macrocosmo_ai::CommandValue;
-
-use crate::ai::convert::{from_ai_system, to_ai_faction};
-use crate::ai::emit::AiBusDrainer;
-use crate::ai::schema::ids::command as cmd_ids;
-use crate::amount::Amt;
-use crate::colony::building_queue::{
-    BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings,
+use crate::ai::command_handlers::build::{
+    handle_build_deliverable, handle_build_ship, handle_build_structure, handle_fortify_system,
 };
+use crate::ai::command_handlers::military::handle_retreat;
+use crate::ai::command_handlers::research::handle_research_focus;
+use crate::ai::command_route::{CommandRoute, classify};
+use crate::ai::emit::AiBusDrainer;
+use crate::colony::building_queue::{BuildQueue, BuildingQueue, Buildings};
 use crate::colony::system_buildings::SlotAssignment;
 use crate::colony::{BuildingRegistry, Colony};
 use crate::components::Position;
 use crate::galaxy::{AtSystem, Hostile, Planet, Sovereignty, StarSystem};
-use crate::physics::distance_ly;
 use crate::player::{AboardShip, Empire, EmpireRuler, Faction};
 use crate::ship::command_events::{
-    ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
-    MoveRequested, NextCommandId, SurveyRequested,
+    ColonizeRequested, DeployDeliverableRequested, LoadDeliverableRequested, MoveRequested,
+    NextCommandId, SurveyRequested,
 };
 use crate::ship::{CommandQueue, Owner, Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
-use crate::technology::{ResearchQueue, TechId, TechTree};
+use crate::technology::{ResearchQueue, TechTree};
 use crate::time_system::GameClock;
 
 /// Queued ruler boarding requests produced by `drain_ai_commands` and
@@ -56,8 +54,8 @@ pub struct PendingRulerBoarding {
 /// limit.
 #[derive(SystemParam)]
 pub struct BuildResearchParams<'w, 's> {
-    design_registry: Option<Res<'w, ShipDesignRegistry>>,
-    building_registry: Option<Res<'w, BuildingRegistry>>,
+    pub(in crate::ai) design_registry: Option<Res<'w, ShipDesignRegistry>>,
+    pub(in crate::ai) building_registry: Option<Res<'w, BuildingRegistry>>,
     /// #532 F1: deliverable / structure registry borrow used by
     /// [`handle_build_deliverable`] to resolve cost / build_time /
     /// cargo_size / display_name for deliverable ids such as
@@ -69,7 +67,7 @@ pub struct BuildResearchParams<'w, 's> {
     /// deliverables through `design_registry`; tests masked the bug by
     /// injecting a fake `ShipDesignDefinition` with the deliverable id,
     /// so production Rule 3.5 frontier core deployment silently stalled.
-    deliverable_registry: Option<Res<'w, crate::deep_space::DeliverableRegistry>>,
+    pub(in crate::ai) deliverable_registry: Option<Res<'w, crate::deep_space::DeliverableRegistry>>,
     /// #470: Ship build orders live on the **Colony** entity (mirror of the
     /// player UI in `system_panel::mod.rs` — the player-facing flow always
     /// picks the first colony in the system as the host). Pre-#470 the AI
@@ -89,7 +87,7 @@ pub struct BuildResearchParams<'w, 's> {
     /// empire in conquered / split-ownership scenarios. The stricter
     /// filter here prevents an AI from pushing build orders into another
     /// faction's production queue.
-    build_queues: Query<
+    pub(in crate::ai) build_queues: Query<
         'w,
         's,
         (
@@ -99,7 +97,7 @@ pub struct BuildResearchParams<'w, 's> {
             &'static mut BuildQueue,
         ),
     >,
-    station_ships: Query<
+    pub(in crate::ai) station_ships: Query<
         'w,
         's,
         (
@@ -109,9 +107,10 @@ pub struct BuildResearchParams<'w, 's> {
             &'static SlotAssignment,
         ),
     >,
-    sys_mods_q: Query<'w, 's, &'static crate::galaxy::SystemModifiers>,
-    empire_tech: Query<'w, 's, (&'static mut TechTree, &'static mut ResearchQueue), With<Empire>>,
-    colonies: Query<
+    pub(in crate::ai) sys_mods_q: Query<'w, 's, &'static crate::galaxy::SystemModifiers>,
+    pub(in crate::ai) empire_tech:
+        Query<'w, 's, (&'static mut TechTree, &'static mut ResearchQueue), With<Empire>>,
+    pub(in crate::ai) colonies: Query<
         'w,
         's,
         (
@@ -121,11 +120,11 @@ pub struct BuildResearchParams<'w, 's> {
             &'static mut BuildingQueue,
         ),
     >,
-    planets: Query<'w, 's, &'static Planet>,
+    pub(in crate::ai) planets: Query<'w, 's, &'static Planet>,
     /// System-level building queues + slot state, used by the system-
     /// building branch of `handle_build_structure` to route shipyard /
     /// port / lab orders to the correct queue.
-    system_builds: Query<
+    pub(in crate::ai) system_builds: Query<
         'w,
         's,
         (
@@ -138,7 +137,8 @@ pub struct BuildResearchParams<'w, 's> {
     /// Tracks which systems host a Core-equipped ship. Required gate for
     /// system-building construction (#370): shipyard / port / lab are only
     /// buildable in systems with an Infrastructure Core.
-    core_at_system: Query<'w, 's, &'static crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
+    pub(in crate::ai) core_at_system:
+        Query<'w, 's, &'static crate::galaxy::AtSystem, With<crate::ship::CoreShip>>,
 }
 
 // #468 PR-3: `DeliverableParams` retired — every handler that used it
@@ -155,8 +155,6 @@ pub struct BuildResearchParams<'w, 's> {
 #[derive(SystemParam)]
 pub struct CommandStamp<'w> {
     move_writer: MessageWriter<'w, MoveRequested>,
-    survey_writer: Option<MessageWriter<'w, SurveyRequested>>,
-    colonize_writer: Option<MessageWriter<'w, ColonizeRequested>>,
     next_cmd_id: ResMut<'w, NextCommandId>,
     clock: Res<'w, GameClock>,
 }
@@ -187,134 +185,93 @@ pub fn drain_ai_commands(
     }
     let now = stamp.clock.elapsed;
 
-    // #468 PR-3 NICE-TO-FIX #4 fold-in: the 5+ ship-control kinds that
-    // migrated to the `PendingAiShipCommand` pipeline (across PR-1 / 2 /
-    // 3) used to each have their own `if kind == X { debug!(...) }` arm
-    // here. They all do the same thing — log "stale, expected
-    // drain_ai_ship_commands" and drop — so we coalesce them into one
-    // arm gated on this slice. Adding a new ship-control kind in PR-4+
-    // means appending to this slice rather than duplicating yet another
-    // 5-line `else if` branch.
-    let stale_ship_kinds: &[macrocosmo_ai::CommandKindId] = &[
-        cmd_ids::attack_target(),
-        cmd_ids::survey_system(),
-        cmd_ids::colonize_system(),
-        cmd_ids::reposition(),
-        cmd_ids::move_ruler(),
-        cmd_ids::blockade(),
-        cmd_ids::load_deliverable(),
-        cmd_ids::unload_deliverable(),
-        cmd_ids::colonize_planet(),
-    ];
-
     for cmd in commands {
         let kind_str = cmd.kind.as_str();
 
-        if stale_ship_kinds.iter().any(|k| cmd.kind == *k) {
-            // #468 PR-1/PR-2/PR-3: this kind was migrated to the
-            // per-ship `PendingAiShipCommand` pipeline (consumed by
-            // `drain_ai_ship_commands`). A command reaching this arm
-            // means an upstream call path bypassed the dispatcher —
-            // log + drop rather than silently re-dispatch.
-            debug!(
-                "drain_ai_commands: stale {} from faction {:?} hit legacy \
-                 dispatch; expected `drain_ai_ship_commands` to handle this",
-                kind_str, cmd.issuer
-            );
-        } else if kind_str == cmd_ids::retreat().as_str() {
-            handle_retreat(
-                &cmd.issuer,
-                &ships,
-                &hostiles,
-                &sovereignty,
-                &empires,
-                &positions,
-                &mut stamp.move_writer,
-                &mut stamp.next_cmd_id,
-                now,
-            );
-        } else if kind_str == cmd_ids::build_ship().as_str() {
-            handle_build_ship(
-                &cmd.issuer,
-                &cmd.params,
-                &sovereignty,
-                &empires,
-                &mut build_research,
-            );
-        } else if kind_str == cmd_ids::fortify_system().as_str() {
-            handle_fortify_system(
-                &cmd.issuer,
-                &cmd.params,
-                &sovereignty,
-                &empires,
-                &mut build_research,
-            );
-        } else if kind_str == cmd_ids::research_focus().as_str() {
-            handle_research_focus(&cmd.issuer, &cmd.params, &empires, &mut build_research);
-        } else if kind_str == cmd_ids::build_structure().as_str() {
-            handle_build_structure(
-                &cmd.issuer,
-                &cmd.params,
-                &sovereignty,
-                &empires,
-                &mut build_research,
-            );
-        } else if kind_str == cmd_ids::build_deliverable().as_str() {
-            handle_build_deliverable(
-                &cmd.issuer,
-                &cmd.params,
-                &sovereignty,
-                &empires,
-                &mut build_research,
-            );
-        } else if kind_str == cmd_ids::deploy_deliverable().as_str() {
-            // Macro command — decomposed by the Short layer (#447). The
-            // consumer-side arm exists so an undecomposed `deploy_deliverable`
-            // doesn't slip past the dispatcher silently; if we ever see one
-            // here it indicates the Short layer didn't pick it up.
-            debug!(
-                "deploy_deliverable from faction {:?} reached consumer undecomposed; \
-                 expected the Short layer to expand this macro into primitives",
-                cmd.issuer
-            );
-        } else {
-            debug!(
-                "AI command '{}' from faction {:?} not handled by drain_ai_commands",
-                kind_str, cmd.issuer
-            );
-        }
-    }
-}
-
-/// Find the empire entity for a given AI FactionId.
-fn find_empire_entity(
-    issuer: &macrocosmo_ai::FactionId,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-) -> Option<Entity> {
-    for (entity, _faction) in empires {
-        if to_ai_faction(entity) == *issuer {
-            return Some(entity);
-        }
-    }
-    None
-}
-
-/// Extract ship entity list from indexed command params (`ship_count`,
-/// `ship_0`, `ship_1`, ...).
-pub(crate) fn extract_ship_list(params: &macrocosmo_ai::CommandParams) -> Vec<Entity> {
-    let count = match params.get("ship_count") {
-        Some(CommandValue::I64(n)) => *n as usize,
-        _ => return vec![],
-    };
-    (0..count)
-        .filter_map(|i| {
-            let key = format!("ship_{i}");
-            match params.get(key.as_str()) {
-                Some(CommandValue::Entity(r)) => Some(crate::ai::convert::from_ai_entity(*r)),
-                _ => None,
+        match classify(&cmd.kind) {
+            CommandRoute::StaleShipControl => {
+                // #468 PR-1/PR-2/PR-3: this kind was migrated to the
+                // per-ship `PendingAiShipCommand` pipeline (consumed by
+                // `drain_ai_ship_commands`). A command reaching this arm
+                // means an upstream call path bypassed the dispatcher —
+                // log + drop rather than silently re-dispatch.
+                debug!(
+                    "drain_ai_commands: stale {} from faction {:?} hit legacy \
+                     dispatch; expected `drain_ai_ship_commands` to handle this",
+                    kind_str, cmd.issuer
+                );
             }
-        })
-        .collect()
+            CommandRoute::Retreat => {
+                handle_retreat(
+                    &cmd.issuer,
+                    &ships,
+                    &hostiles,
+                    &sovereignty,
+                    &empires,
+                    &positions,
+                    &mut stamp.move_writer,
+                    &mut stamp.next_cmd_id,
+                    now,
+                );
+            }
+            CommandRoute::BuildShip => {
+                handle_build_ship(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &sovereignty,
+                    &empires,
+                    &mut build_research,
+                );
+            }
+            CommandRoute::FortifySystem => {
+                handle_fortify_system(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &sovereignty,
+                    &empires,
+                    &mut build_research,
+                );
+            }
+            CommandRoute::ResearchFocus => {
+                handle_research_focus(&cmd.issuer, &cmd.params, &empires, &mut build_research);
+            }
+            CommandRoute::BuildStructure => {
+                handle_build_structure(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &sovereignty,
+                    &empires,
+                    &mut build_research,
+                );
+            }
+            CommandRoute::BuildDeliverable => {
+                handle_build_deliverable(
+                    &cmd.issuer,
+                    &cmd.params,
+                    &sovereignty,
+                    &empires,
+                    &mut build_research,
+                );
+            }
+            CommandRoute::DeployDeliverableMacro => {
+                // Macro command — decomposed by the Short layer (#447). The
+                // consumer-side arm exists so an undecomposed `deploy_deliverable`
+                // doesn't slip past the dispatcher silently; if we ever see one
+                // here it indicates the Short layer didn't pick it up.
+                debug!(
+                    "deploy_deliverable from faction {:?} reached consumer undecomposed; \
+                     expected the Short layer to expand this macro into primitives",
+                    cmd.issuer
+                );
+            }
+            CommandRoute::Unknown => {
+                debug!(
+                    "AI command '{}' from faction {:?} not handled by drain_ai_commands",
+                    kind_str, cmd.issuer
+                );
+            }
+        }
+    }
 }
 
 // #468 PR-3: `handle_attack_target` removed — the attack_target arm of
@@ -326,551 +283,6 @@ pub(crate) fn extract_ship_list(params: &macrocosmo_ai::CommandParams) -> Vec<En
 // of `drain_ai_commands` now logs and drops stale legacy emissions; the
 // canonical dispatch path is the per-ship `PendingAiShipCommand`
 // pipeline + `apply_colonize_to_ship`.
-
-/// #470 fold-in: pick the first colony hosted in `sys` whose
-/// `FactionOwner` matches `empire`. Returns the colony entity + a `Mut`
-/// handle to its `BuildQueue` so the caller can `push_order` or run a
-/// dedup scan before pushing.
-///
-/// Mirrors the player UI's host-colony pattern in
-/// `ui/system_panel/mod.rs:1390-1413` but with a stricter owner check:
-/// the AI must not push orders onto a colony whose owner diverges from
-/// the issuing empire (relevant in conquered systems where
-/// `Sovereignty.owner != colony.FactionOwner` — see
-/// `BuildResearchParams::build_queues` docstring for full rationale).
-///
-/// Used by both `queue_ship_at_shipyard` (ship orders) and
-/// `handle_build_deliverable` (deliverable orders); both flows share the
-/// same colony-level `BuildQueue` distinguished only by `BuildKind`.
-fn pick_host_colony<'a>(
-    sys: Entity,
-    empire: Entity,
-    build_queues: &'a mut Query<(
-        Entity,
-        &'static Colony,
-        &'static crate::faction::FactionOwner,
-        &'static mut BuildQueue,
-    )>,
-    planets: &Query<&Planet>,
-) -> Option<(Entity, Mut<'a, BuildQueue>)> {
-    for (colony_entity, colony, faction_owner, build_queue) in build_queues.iter_mut() {
-        if colony.system(planets) != Some(sys) {
-            continue;
-        }
-        if faction_owner.0 != empire {
-            continue;
-        }
-        return Some((colony_entity, build_queue));
-    }
-    None
-}
-
-/// Queue a ship build order at a system owned by the faction that has a
-/// shipyard. Returns true if the order was queued successfully.
-fn queue_ship_at_shipyard(
-    empire_entity: Entity,
-    design_id: &str,
-    target_system: Option<Entity>,
-    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    br: &mut BuildResearchParams,
-) -> bool {
-    let Some(ref design_registry) = br.design_registry else {
-        warn!("build_ship/fortify: ShipDesignRegistry not available");
-        return false;
-    };
-    let Some(design) = design_registry.get(design_id) else {
-        warn!("build_ship/fortify: unknown design '{}'", design_id);
-        return false;
-    };
-    if !design.is_direct_buildable {
-        warn!(
-            "build_ship/fortify: design '{}' is not direct-buildable (installation hull)",
-            design_id
-        );
-        return false;
-    }
-
-    // Find a system with a shipyard owned by this empire.
-    // Prefer the specified target_system if it qualifies.
-    let owned_systems: Vec<Entity> = sovereignty
-        .iter()
-        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
-        .map(|(e, _)| e)
-        .collect();
-
-    let shipyard_system = if let Some(target) = target_system {
-        // Verify target is owned and has a shipyard
-        if owned_systems.contains(&target) && has_shipyard_check(target, &br.sys_mods_q) {
-            Some(target)
-        } else {
-            // Fall back to any owned system with a shipyard
-            owned_systems
-                .iter()
-                .find(|&&sys| has_shipyard_check(sys, &br.sys_mods_q))
-                .copied()
-        }
-    } else {
-        owned_systems
-            .iter()
-            .find(|&&sys| has_shipyard_check(sys, &br.sys_mods_q))
-            .copied()
-    };
-
-    let Some(sys_entity) = shipyard_system else {
-        debug!(
-            "build_ship/fortify: no system with shipyard found for empire {:?}",
-            empire_entity
-        );
-        return false;
-    };
-
-    let build_time = design_registry.build_time(design_id);
-    let order = BuildOrder {
-        order_id: 0,
-        kind: BuildKind::default(),
-        design_id: design_id.to_string(),
-        display_name: design.name.clone(),
-        minerals_cost: design.build_cost_minerals,
-        minerals_invested: Amt::ZERO,
-        energy_cost: design.build_cost_energy,
-        energy_invested: Amt::ZERO,
-        build_time_total: build_time,
-        build_time_remaining: build_time,
-    };
-
-    // #470: `BuildQueue` lives on the Colony, not the StarSystem. The
-    // helper walks colonies and picks the first one whose host system
-    // matches the chosen shipyard system AND whose `FactionOwner`
-    // matches the issuing empire (mirrors the player UI but stricter on
-    // ownership — see `BuildResearchParams::build_queues`).
-    let host_colony =
-        pick_host_colony(sys_entity, empire_entity, &mut br.build_queues, &br.planets);
-
-    if let Some((colony_entity, mut build_queue)) = host_colony {
-        // #470 fold-in (HIGH B): dedup same-design `Ship` orders at this
-        // colony. Rule 6 in `mid_stance.rs` (`combat_count < 3 &&
-        // shipyard_build_parallel_slots > 0`) re-emits `build_ship` every Reason
-        // tick; without dedup the same design stacks up while the first
-        // ship is still in the 30-hexadie build window, turning the
-        // #470 fix from "AI doesn't build" into "AI floods one design".
-        // Mirrors the existing `BuildKind::Deliverable` dedup in
-        // `handle_build_deliverable`. `fortify_system` also benefits
-        // (it calls into this function and re-emits the same
-        // auto-picked combat design).
-        if build_queue
-            .queue
-            .iter()
-            .any(|o| matches!(o.kind, BuildKind::Ship) && o.design_id == design_id)
-        {
-            debug!(
-                "build_ship/fortify: '{}' already queued at colony {:?} (system {:?}), skipping duplicate emission",
-                design_id, colony_entity, sys_entity
-            );
-            return false;
-        }
-        build_queue.push_order(order);
-        info!(
-            "build_ship/fortify: queued '{}' at colony {:?} (system {:?}) for empire {:?}",
-            design_id, colony_entity, sys_entity, empire_entity
-        );
-        true
-    } else {
-        warn!(
-            "build_ship/fortify: shipyard system {:?} has no owned colony to host build order (empire {:?})",
-            sys_entity, empire_entity
-        );
-        false
-    }
-}
-
-/// Check if a system has a shipyard capability via `SystemModifiers`.
-fn has_shipyard_check(system: Entity, sys_mods_q: &Query<&crate::galaxy::SystemModifiers>) -> bool {
-    sys_mods_q
-        .get(system)
-        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
-        .unwrap_or(false)
-}
-
-/// Handle `build_ship`: queue construction of the specified ship design at
-/// a system with a shipyard owned by the faction.
-///
-/// Params:
-/// - `design_id` (Str): the ship design to build.
-/// - `target_system` (System, optional): preferred system to build at.
-fn handle_build_ship(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    br: &mut BuildResearchParams,
-) {
-    let design_id = match params.get("design_id") {
-        Some(CommandValue::Str(s)) => s.to_string(),
-        _ => {
-            warn!("build_ship command missing design_id param");
-            return;
-        }
-    };
-
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!("build_ship: no empire found for faction {:?}", issuer);
-            return;
-        }
-    };
-
-    let target_system = params.get("target_system").and_then(|v| match v {
-        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-        _ => None,
-    });
-
-    queue_ship_at_shipyard(empire_entity, &design_id, target_system, sovereignty, br);
-}
-
-/// Handle `fortify_system`: queue construction of a default combat ship
-/// design at a system with a shipyard. If no specific design is given,
-/// picks the first direct-buildable design from the registry that is not a
-/// survey or colony ship.
-///
-/// Params:
-/// - `target_system` (System, optional): the system to fortify.
-/// - `design_id` (Str, optional): specific design to build. Auto-picks if absent.
-fn handle_fortify_system(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    br: &mut BuildResearchParams,
-) {
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!("fortify_system: no empire found for faction {:?}", issuer);
-            return;
-        }
-    };
-
-    let target_system = params.get("target_system").and_then(|v| match v {
-        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-        _ => None,
-    });
-
-    // Determine which design to build
-    let design_id = match params.get("design_id") {
-        Some(CommandValue::Str(s)) => s.to_string(),
-        _ => {
-            // Auto-pick a combat design: direct-buildable, not survey, not colony
-            let Some(ref registry) = br.design_registry else {
-                warn!("fortify_system: ShipDesignRegistry not available");
-                return;
-            };
-            let combat_design = registry
-                .designs
-                .values()
-                .find(|d| d.is_direct_buildable && !d.can_survey && !d.can_colonize);
-            match combat_design {
-                Some(d) => d.id.clone(),
-                None => {
-                    // Fallback: any direct-buildable design
-                    match registry.designs.values().find(|d| d.is_direct_buildable) {
-                        Some(d) => d.id.clone(),
-                        None => {
-                            debug!("fortify_system: no buildable designs in registry");
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    };
-
-    queue_ship_at_shipyard(empire_entity, &design_id, target_system, sovereignty, br);
-}
-
-/// Handle `research_focus`: set the empire's active research target.
-///
-/// Params:
-/// - `tech_id` (Str, optional): the tech to research. If absent, auto-picks
-///   the first available tech whose prerequisites are met.
-fn handle_research_focus(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    br: &mut BuildResearchParams,
-) {
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!("research_focus: no empire found for faction {:?}", issuer);
-            return;
-        }
-    };
-
-    let Ok((tech_tree, mut research_queue)) = br.empire_tech.get_mut(empire_entity) else {
-        debug!(
-            "research_focus: empire {:?} has no TechTree/ResearchQueue",
-            empire_entity
-        );
-        return;
-    };
-
-    let tech_id = match params.get("tech_id") {
-        Some(CommandValue::Str(s)) => {
-            let tid = TechId(s.to_string());
-            if !tech_tree.can_research(&tid) {
-                debug!(
-                    "research_focus: tech '{}' is not researchable for empire {:?}",
-                    s, empire_entity
-                );
-                return;
-            }
-            tid
-        }
-        _ => {
-            // Auto-pick: find the first tech that can be researched
-            let available = tech_tree
-                .technologies
-                .keys()
-                .find(|tid| tech_tree.can_research(tid))
-                .cloned();
-            match available {
-                Some(tid) => tid,
-                None => {
-                    debug!(
-                        "research_focus: no available techs for empire {:?}",
-                        empire_entity
-                    );
-                    return;
-                }
-            }
-        }
-    };
-
-    research_queue.start_research(tech_id.clone());
-    info!(
-        "research_focus: empire {:?} now researching '{}'",
-        empire_entity, tech_id.0
-    );
-}
-
-/// Handle `build_structure`: queue a building at a colony owned by the faction.
-///
-/// Params:
-/// - `building_id` (Str): the building to construct.
-/// - `target_system` (System, optional): preferred system.
-/// - `colony_entity` (Entity, optional): specific colony to build at.
-fn handle_build_structure(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    br: &mut BuildResearchParams,
-) {
-    let building_id_str = match params.get("building_id") {
-        Some(CommandValue::Str(s)) => s.to_string(),
-        _ => {
-            warn!("build_structure command missing building_id param");
-            return;
-        }
-    };
-
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!("build_structure: no empire found for faction {:?}", issuer);
-            return;
-        }
-    };
-
-    let Some(ref building_registry) = br.building_registry else {
-        warn!("build_structure: BuildingRegistry not available");
-        return;
-    };
-
-    let Some(building_def) = building_registry.get(&building_id_str) else {
-        warn!("build_structure: unknown building '{}'", building_id_str);
-        return;
-    };
-
-    let minerals_cost = building_def.minerals_cost;
-    let energy_cost = building_def.energy_cost;
-    let build_time = building_def.build_time;
-    let is_system_building = building_def.is_system_building;
-
-    // Determine target system for ownership check
-    let target_system = params.get("target_system").and_then(|v| match v {
-        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-        _ => None,
-    });
-
-    // Collect owned systems
-    let owned_systems: std::collections::HashSet<Entity> = sovereignty
-        .iter()
-        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
-        .map(|(e, _)| e)
-        .collect();
-
-    // System-level buildings (shipyard, port, research lab, ...) route
-    // through `SystemBuildingQueue` on the StarSystem, not the per-colony
-    // `BuildingQueue`. We pick the first owned system that:
-    //   - hosts a Core ship (#370 gate);
-    //   - has a free system-building slot;
-    //   - does not already have a pending order for the same building id
-    //     (protects against the per-tick emit/retry loop while metrics
-    //     catch up — same-tick duplicates would otherwise stack).
-    if is_system_building {
-        let bid = crate::scripting::building_api::BuildingId::new(&building_id_str);
-        let core_systems: std::collections::HashSet<Entity> =
-            br.core_at_system.iter().map(|at| at.0).collect();
-        if let Some(ref target) = target_system {
-            if !owned_systems.contains(target) || !core_systems.contains(target) {
-                debug!(
-                    "build_structure (system): target {:?} not owned or lacks Core",
-                    target
-                );
-                return;
-            }
-        }
-        let mut queued = false;
-        for (sys_entity, sys_bldgs, mut sbq) in br.system_builds.iter_mut() {
-            if !owned_systems.contains(&sys_entity) {
-                continue;
-            }
-            if !core_systems.contains(&sys_entity) {
-                continue;
-            }
-            if let Some(ref target) = target_system {
-                if sys_entity != *target {
-                    continue;
-                }
-            }
-            if sbq
-                .queue
-                .iter()
-                .any(|o| o.building_id.as_str() == building_id_str)
-            {
-                debug!(
-                    "build_structure (system): '{}' already queued at {:?}, skipping",
-                    building_id_str, sys_entity
-                );
-                continue;
-            }
-            let sys_slots = crate::colony::system_buildings::slots_view(
-                sys_entity,
-                sys_bldgs.max_slots,
-                &br.station_ships,
-                building_registry,
-            );
-            let pending_slots: std::collections::HashSet<usize> =
-                sbq.queue.iter().map(|o| o.target_slot).collect();
-            let empty_slot = sys_slots
-                .iter()
-                .enumerate()
-                .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
-            let Some(slot_idx) = empty_slot else { continue };
-            sbq.push_build_order(crate::colony::building_queue::BuildingOrder {
-                order_id: 0,
-                building_id: bid.clone(),
-                target_slot: slot_idx,
-                minerals_remaining: minerals_cost,
-                energy_remaining: energy_cost,
-                build_time_remaining: build_time,
-            });
-            info!(
-                "build_structure (system): queued '{}' at system {:?} (slot {}) for empire {:?}",
-                building_id_str, sys_entity, slot_idx, empire_entity
-            );
-            queued = true;
-            break;
-        }
-        if !queued {
-            debug!(
-                "build_structure (system): no Core-equipped system with a free slot for '{}' (empire {:?})",
-                building_id_str, empire_entity
-            );
-        }
-        return;
-    }
-
-    // Find a colony with an empty building slot
-    let bid = crate::scripting::building_api::BuildingId::new(&building_id_str);
-    let mut built = false;
-    for (colony_entity, colony, buildings, mut building_queue) in br.colonies.iter_mut() {
-        // Check colony is in an owned system
-        let colony_system = colony.system(&br.planets);
-        let Some(sys) = colony_system else { continue };
-        if !owned_systems.contains(&sys) {
-            continue;
-        }
-        if let Some(ref target) = target_system {
-            if sys != *target {
-                continue;
-            }
-        }
-
-        // Hotfix-3: same-building dedup at the colony level.
-        // Mirrors the system-building branch above (line 736-746).
-        // The brp QA report observed a single colony with 165
-        // stacked `mine` orders — Rule 5b re-emits every Reason
-        // tick and pre-hotfix the planet-building branch had no
-        // dedup, so each re-emit found a free slot and pushed
-        // another order. The same-building-id-already-queued check
-        // collapses the runaway stack to one outstanding order at
-        // a time per (colony, building_id). A future "build two
-        // mines for parallel slots" workflow can opt out by
-        // emitting with an explicit `target_slot` param (not
-        // wired today).
-        if building_queue
-            .queue
-            .iter()
-            .any(|o| o.building_id.as_str() == building_id_str)
-        {
-            debug!(
-                "build_structure (planet): '{}' already queued at colony {:?} (system {:?}), skipping duplicate emission",
-                building_id_str, colony_entity, sys
-            );
-            continue;
-        }
-
-        // Find an empty slot, excluding slots already targeted by
-        // pending orders in this queue (defense in depth — without
-        // this two distinct building_id orders could race for the
-        // same slot index; the same-id dedup above already covers
-        // the common case but a future expansion may emit multiple
-        // building kinds per tick).
-        let pending_slots: std::collections::HashSet<usize> =
-            building_queue.queue.iter().map(|o| o.target_slot).collect();
-        let empty_slot = buildings
-            .slots
-            .iter()
-            .enumerate()
-            .position(|(i, s)| s.is_none() && !pending_slots.contains(&i));
-        let Some(slot_idx) = empty_slot else { continue };
-
-        building_queue.push_build_order(BuildingOrder {
-            order_id: 0,
-            building_id: bid.clone(),
-            target_slot: slot_idx,
-            minerals_remaining: minerals_cost,
-            energy_remaining: energy_cost,
-            build_time_remaining: build_time,
-        });
-        info!(
-            "build_structure: queued '{}' at colony {:?} (slot {}) for empire {:?}",
-            building_id_str, colony_entity, slot_idx, empire_entity
-        );
-        built = true;
-        break;
-    }
-
-    if !built {
-        debug!(
-            "build_structure: no colony with empty slot found for building '{}' (empire {:?})",
-            building_id_str, empire_entity
-        );
-    }
-}
 
 // #468 PR-2: `handle_reposition` and `handle_blockade` removed — both
 // kinds are now produced via the per-ship `PendingAiShipCommand`
@@ -892,277 +304,12 @@ fn handle_build_structure(
 // AI handlers reuse the same events so all three command sources converge
 // on a single set of authoritative system handlers.
 
-/// Handle `build_deliverable`: queue a deliverable for construction at a
-/// colony owned by the issuing faction.
-///
-/// Params:
-/// - `definition_id` (Str, required): the deliverable definition to build
-///   (e.g. `"infrastructure_core"`).
-/// - `target_system` (System, optional): preferred system to build at; if
-///   absent, picks the first owned colony with a free queue.
-fn handle_build_deliverable(
-    issuer: &macrocosmo_ai::FactionId,
-    params: &macrocosmo_ai::CommandParams,
-    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    br: &mut BuildResearchParams,
-) {
-    let definition_id = match params.get("definition_id") {
-        Some(CommandValue::Str(s)) => s.to_string(),
-        _ => {
-            warn!("build_deliverable command missing definition_id param");
-            return;
-        }
-    };
-
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => {
-            warn!(
-                "build_deliverable: no empire found for faction {:?}",
-                issuer
-            );
-            return;
-        }
-    };
-
-    let target_system = params.get("target_system").and_then(|v| match v {
-        CommandValue::System(sys_ref) => Some(from_ai_system(*sys_ref)),
-        _ => None,
-    });
-
-    // Owned-systems gate (mirrors handle_build_ship). #470: The deliverable
-    // build queue lives on the **Colony** entity (same `BuildQueue` ship
-    // orders use, distinguished by `BuildKind::Deliverable`). The previous
-    // docstring claimed the queue was on the StarSystem — that was wrong
-    // and caused every deliverable order to be silently dropped.
-    let owned_systems: Vec<Entity> = sovereignty
-        .iter()
-        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
-        .map(|(e, _)| e)
-        .collect();
-
-    let chosen_system = match target_system {
-        Some(t) if owned_systems.contains(&t) => Some(t),
-        Some(_) | None => owned_systems.first().copied(),
-    };
-
-    let Some(sys_entity) = chosen_system else {
-        debug!(
-            "build_deliverable: faction {:?} has no owned system for '{}'",
-            issuer, definition_id
-        );
-        return;
-    };
-
-    // #532 F1: resolve cost / build_time / cargo_size / display_name
-    // from the **DeliverableRegistry**, not the `ShipDesignRegistry`.
-    // Production `scripts/structures/cores.lua` declares
-    // `define_deliverable { id = "infrastructure_core", ... }`, and its
-    // companion `scripts/ships/core_hulls.lua` declares a separate
-    // `define_ship_design { id = "infrastructure_core_v1", ... }` for
-    // the immobile core ship that gets spawned on deploy. Pre-fold-in
-    // this handler used `design_registry.get(definition_id)`, which
-    // resolved against the wrong registry; tests masked the bug by
-    // injecting a fake `ShipDesignDefinition` keyed on the deliverable
-    // id. The queued `BuildOrder.design_id` stays as the deliverable id
-    // (e.g. `"infrastructure_core"`) — downstream
-    // `process_deliverable_commands` uses that to look up
-    // `spawns_as_ship` via the same `DeliverableRegistry`.
-    let Some(ref registry) = br.deliverable_registry else {
-        warn!("build_deliverable: DeliverableRegistry not available");
-        return;
-    };
-    let Some(def) = registry.get(&definition_id) else {
-        warn!(
-            "build_deliverable: unknown deliverable definition '{}'",
-            definition_id
-        );
-        return;
-    };
-    let Some(meta) = def.deliverable.as_ref() else {
-        warn!(
-            "build_deliverable: definition '{}' is not shipyard-buildable \
-             (no DeliverableMetadata — declared via `define_structure`?)",
-            definition_id
-        );
-        return;
-    };
-
-    let order = BuildOrder {
-        order_id: 0,
-        kind: BuildKind::Deliverable {
-            cargo_size: meta.cargo_size,
-        },
-        design_id: definition_id.clone(),
-        display_name: def.name.clone(),
-        minerals_cost: meta.cost.minerals,
-        minerals_invested: Amt::ZERO,
-        energy_cost: meta.cost.energy,
-        energy_invested: Amt::ZERO,
-        build_time_total: meta.build_time,
-        build_time_remaining: meta.build_time,
-    };
-
-    // #470: Walk colonies and pick the first one hosted in the chosen
-    // system AND owned by the issuing empire (shared helper with
-    // `queue_ship_at_shipyard`).
-    let host_colony =
-        pick_host_colony(sys_entity, empire_entity, &mut br.build_queues, &br.planets);
-
-    if let Some((colony_entity, mut bq)) = host_colony {
-        // Dedup: skip if the same deliverable is already queued at this
-        // colony. Mirrors the system-building dedup in handle_build_structure
-        // — without it, AI re-emits the same build_deliverable every tick
-        // until the metric flips, stacking duplicates in the queue.
-        if bq.queue.iter().any(|o| {
-            matches!(o.kind, BuildKind::Deliverable { .. }) && o.design_id == definition_id
-        }) {
-            debug!(
-                "build_deliverable: '{}' already queued at colony {:?} (system {:?}), skipping",
-                definition_id, colony_entity, sys_entity
-            );
-            return;
-        }
-        bq.push_order(order);
-        info!(
-            "build_deliverable: queued '{}' at colony {:?} (system {:?}) for empire {:?}",
-            definition_id, colony_entity, sys_entity, empire_entity
-        );
-    } else {
-        warn!(
-            "build_deliverable: chosen system {:?} has no owned colony to host '{}' (empire {:?})",
-            sys_entity, definition_id, empire_entity
-        );
-    }
-}
-
 // #468 PR-3: `handle_load_deliverable`, `handle_unload_deliverable`,
 // and `handle_colonize_planet` removed — all three migrated to the
 // per-ship `PendingAiShipCommand` pipeline. The `*Requested` events
 // they used to write now flow through `apply_load_deliverable_to_ship`,
 // `apply_unload_deliverable_to_ship`, and `apply_colonize_to_ship`
 // respectively.
-
-/// Handle `retreat`: find ships in systems with hostiles and send them
-/// back to the faction's home system (system with most colonies).
-fn handle_retreat(
-    issuer: &macrocosmo_ai::FactionId,
-    ships: &Query<(Entity, &Ship, &ShipState, &CommandQueue)>,
-    hostiles: &Query<&AtSystem, With<Hostile>>,
-    sovereignty: &Query<(Entity, &Sovereignty), With<StarSystem>>,
-    empires: &Query<(Entity, &Faction), With<Empire>>,
-    positions: &Query<&Position>,
-    move_writer: &mut MessageWriter<MoveRequested>,
-    next_cmd_id: &mut NextCommandId,
-    now: i64,
-) {
-    let empire_entity = match find_empire_entity(issuer, empires) {
-        Some(e) => e,
-        None => return,
-    };
-
-    // 1. Collect all systems owned by this empire.
-    let owned_systems: Vec<Entity> = sovereignty
-        .iter()
-        .filter(|(_, sov)| sov.owner == Some(Owner::Empire(empire_entity)))
-        .map(|(e, _)| e)
-        .collect();
-
-    if owned_systems.is_empty() {
-        debug!("retreat: faction {:?} has no sovereign systems", issuer);
-        return;
-    }
-
-    // 2. Build set of systems with hostile presence.
-    let hostile_set: std::collections::HashSet<Entity> = hostiles.iter().map(|at| at.0).collect();
-
-    // 3. Safe rally candidates = owned systems without hostiles.
-    let safe_systems: Vec<Entity> = owned_systems
-        .iter()
-        .filter(|s| !hostile_set.contains(s))
-        .copied()
-        .collect();
-
-    // 4. Fall back to any owned system if none are safe.
-    let rally_candidates = if safe_systems.is_empty() {
-        &owned_systems
-    } else {
-        &safe_systems
-    };
-
-    let mut retreated = 0;
-    for (ship_entity, ship, state, queue) in ships.iter() {
-        if ship.owner != Owner::Empire(empire_entity) {
-            continue;
-        }
-        if ship.is_immobile() {
-            continue;
-        }
-        // Skip ships already in transit (moving, FTL, etc.).
-        let ShipState::InSystem { system } = state else {
-            continue;
-        };
-        // Only retreat ships in hostile systems with empty command queues.
-        if !hostile_set.contains(system) || !queue.commands.is_empty() {
-            continue;
-        }
-        // If the ship is already at a safe rally candidate, no need to move.
-        if !safe_systems.is_empty() && safe_systems.contains(system) {
-            continue;
-        }
-
-        // Build per-ship candidates excluding the ship's current system.
-        let filtered: Vec<Entity> = rally_candidates
-            .iter()
-            .filter(|s| **s != *system)
-            .copied()
-            .collect();
-        if filtered.is_empty() {
-            continue; // Only system in the empire; nowhere to go.
-        }
-
-        // Pick nearest rally point by distance.
-        let target = pick_nearest_system(*system, &filtered, positions);
-        move_writer.write(MoveRequested {
-            command_id: next_cmd_id.allocate(),
-            ship: ship_entity,
-            target,
-            issued_at: now,
-        });
-        retreated += 1;
-    }
-
-    if retreated > 0 {
-        info!(
-            "retreat: {} ships from faction {:?} retreating to rally points",
-            retreated, issuer
-        );
-    }
-}
-
-/// Pick the system from `candidates` nearest to `origin`. Falls back to the
-/// first candidate if positions are unavailable.
-fn pick_nearest_system(
-    origin: Entity,
-    candidates: &[Entity],
-    positions: &Query<&Position>,
-) -> Entity {
-    let origin_pos = positions.get(origin).ok();
-    let mut best = candidates[0];
-    let mut best_dist = f64::MAX;
-    for &candidate in candidates {
-        let dist = match (origin_pos, positions.get(candidate).ok()) {
-            (Some(a), Some(b)) => distance_ly(a, b),
-            _ => f64::MAX,
-        };
-        if dist < best_dist {
-            best_dist = dist;
-            best = candidate;
-        }
-    }
-    best
-}
 
 // #468 PR-3: `handle_move_ruler` removed — `move_ruler` migrated to
 // the per-ship `PendingAiShipCommand` pipeline. The dispatcher
@@ -2026,11 +1173,16 @@ fn apply_unload_deliverable_to_ship(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::convert::to_ai_faction;
     use crate::ai::plugin::AiBusResource;
     use crate::ai::schema;
+    use crate::ai::schema::ids::command as cmd_ids;
+    use crate::amount::Amt;
+    use crate::colony::BuildKind;
     use crate::components::Position;
+    use crate::technology::TechId;
     use crate::time_system::{GameClock, GameSpeed};
-    use macrocosmo_ai::{Command, WarningMode};
+    use macrocosmo_ai::{Command, CommandValue, WarningMode};
 
     #[derive(Resource, Reflect)]
     #[reflect(Resource)]
@@ -2270,7 +1422,7 @@ mod tests {
 
     /// Helper: create a BuildingRegistry with a test mine building.
     fn test_building_registry() -> BuildingRegistry {
-        use crate::scripting::building_api::{BuildingDefinition, CapabilityParams};
+        use crate::scripting::building_api::BuildingDefinition;
         use std::collections::HashMap;
         let mut registry = BuildingRegistry::default();
         registry.insert(BuildingDefinition {
@@ -2302,7 +1454,7 @@ mod tests {
 
     #[test]
     fn build_ship_queues_order_at_shipyard_system() {
-        use crate::scripting::building_api::{BuildingDefinition, BuildingId, CapabilityParams};
+        use crate::scripting::building_api::BuildingDefinition;
         use std::collections::HashMap;
 
         let mut app = test_app();
@@ -2775,7 +1927,7 @@ mod tests {
 
     #[test]
     fn fortify_system_auto_picks_combat_design() {
-        use crate::scripting::building_api::{BuildingDefinition, CapabilityParams};
+        use crate::scripting::building_api::BuildingDefinition;
         use std::collections::HashMap;
 
         let mut app = test_app();
