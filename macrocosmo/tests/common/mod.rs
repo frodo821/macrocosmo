@@ -17,11 +17,9 @@ pub mod ai_commitment;
 
 use bevy::input::mouse::AccumulatedMouseScroll;
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::communication::{self, CommandLog};
 use macrocosmo::components::Position;
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::event_system::{EventBus, EventSystem};
 use macrocosmo::events::{EventLog, GameEvent};
 use macrocosmo::faction::FactionOwner;
@@ -30,6 +28,7 @@ use macrocosmo::galaxy::{
 };
 use macrocosmo::knowledge::*;
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::*;
@@ -37,6 +36,7 @@ use macrocosmo::species;
 use macrocosmo::technology::{self, TechKnowledge};
 use macrocosmo::time_system::{GameClock, GameSpeed};
 use macrocosmo::visualization;
+use macrocosmo_core::amount::Amt;
 
 /// Create a BuildingRegistry populated with the standard 6 building definitions for tests.
 ///
@@ -1095,12 +1095,15 @@ pub fn full_test_app() -> App {
         Update,
         (
             macrocosmo::time_system::advance_game_time,
-            macrocosmo::time_system::handle_speed_controls,
+            macrocosmo::interactions::time_controls::handle_speed_controls,
         ),
     );
 
     // --- Player system (from PlayerPlugin, excluding Startup spawn_player) ---
-    app.add_systems(Update, macrocosmo::player::log_player_info);
+    app.add_systems(
+        Update,
+        macrocosmo::interactions::player_controls::log_player_info,
+    );
     app.add_systems(Update, macrocosmo::player::update_ruler_location);
 
     // --- Visualization systems (excluding Gizmos-dependent ones) ---

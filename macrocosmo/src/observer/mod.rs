@@ -32,7 +32,7 @@ pub mod cli;
 mod exit;
 
 pub use cli::CliArgs;
-pub use exit::{check_all_empires_eliminated, check_time_horizon, esc_to_exit};
+pub use exit::{check_all_empires_eliminated, check_time_horizon};
 
 use bevy::prelude::*;
 
@@ -226,16 +226,23 @@ pub fn not_in_observer_mode(o: Res<ObserverMode>) -> bool {
     !o.is_empire_view()
 }
 
-/// Bevy plugin that registers observer resources, exit systems, and
-/// wiring that must run regardless of whether observer mode is enabled
-/// (run-conditions short-circuit inside each system).
-pub struct ObserverPlugin;
+/// Registers observer-mode resources shared by simulation and interactions.
+pub struct ObserverStatePlugin;
 
-impl Plugin for ObserverPlugin {
+impl Plugin for ObserverStatePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ObserverMode>()
             .init_resource::<ObserverView>()
-            .init_resource::<RngSeed>()
+            .init_resource::<RngSeed>();
+    }
+}
+
+/// Registers observer systems that are part of authoritative simulation.
+pub struct ObserverSimulationPlugin;
+
+impl Plugin for ObserverSimulationPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(ObserverStatePlugin)
             // #439 Phase 3: gameplay config (initial speed) is a
             // new-game construction step.
             .add_systems(
@@ -244,23 +251,17 @@ impl Plugin for ObserverPlugin {
             )
             .add_systems(
                 Update,
-                (
-                    check_time_horizon,
-                    check_all_empires_eliminated,
-                    esc_to_exit,
-                    sync_observer_view_to_governor,
-                )
-                    .run_if(in_observer_mode),
-            )
-            // #490: Omniscient toggle (default F9). Runs in every
-            // observer-spawn-architecture mode so a dev can flip into
-            // god view from either normal play or `--no-player`. The
-            // `run_if(in_state(InGame))` keeps the toggle inert during
-            // main-menu / loading, matching other UI-action systems.
-            .add_systems(
-                Update,
-                toggle_omniscient_mode.run_if(in_state(crate::game_state::GameState::InGame)),
+                (check_time_horizon, check_all_empires_eliminated).run_if(in_observer_mode),
             );
+    }
+}
+
+/// Bevy plugin that registers observer simulation state and policies.
+pub struct ObserverPlugin;
+
+impl Plugin for ObserverPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_plugins(ObserverSimulationPlugin);
     }
 }
 
@@ -283,71 +284,6 @@ pub fn apply_initial_speed(mode: Res<ObserverMode>, mut speed: ResMut<GameSpeed>
 /// toggle), so this collapses to `is_empire_view() && read_only`.
 pub fn in_observer_read_only(o: Res<ObserverMode>) -> bool {
     o.is_empire_view() && o.read_only
-}
-
-/// One-way mirror from `ObserverView.viewing` (Faction entity) to
-/// `AiDebugUi::GovernorState::faction` (`u32` from `to_ai_faction`). This
-/// makes the F10 Governor tab follow the top-bar selector.
-///
-/// The `AiDebugUi` resource is optional so this system can run in
-/// headless test apps that don't register `UiPlugin`.
-pub fn sync_observer_view_to_governor(
-    view: Res<ObserverView>,
-    ui: Option<ResMut<crate::ui::ai_debug::AiDebugUi>>,
-) {
-    let Some(mut ui) = ui else {
-        return;
-    };
-    if let Some(faction_entity) = view.viewing {
-        let id = crate::ai::convert::to_ai_faction(faction_entity);
-        ui.governor.faction = id.0;
-    }
-}
-
-/// #490: Toggle [`ObserverModeKind::Omniscient`] on/off.
-///
-/// * If currently `Omniscient` → restore `previous_kind` (or `Disabled`
-///   if unset).
-/// * Otherwise → save current kind into `previous_kind` and switch to
-///   `Omniscient`.
-///
-/// Bound to `ui.toggle_omniscient` (default `F9`) via the keybinding
-/// registry. Falls back to a hardcoded `F9` check when the registry is
-/// not present (headless tests with no `KeybindingPlugin`).
-pub fn toggle_omniscient_mode(
-    keys: Option<Res<ButtonInput<KeyCode>>>,
-    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
-    mut mode: ResMut<ObserverMode>,
-) {
-    // `ButtonInput<KeyCode>` is missing in headless test apps that only
-    // load `MinimalPlugins`; the wrapper lets the system be a no-op in
-    // that case instead of panicking on missing resource.
-    let Some(keys) = keys else {
-        return;
-    };
-    let pressed = match keybindings.as_deref() {
-        Some(kb) => kb.is_just_pressed(crate::input::actions::UI_TOGGLE_OMNISCIENT, &keys),
-        None => keys.just_pressed(KeyCode::F9),
-    };
-    if !pressed {
-        return;
-    }
-    if mode.is_omniscient() {
-        let restore = mode
-            .previous_kind
-            .take()
-            .unwrap_or(NonOmniscientKind::Disabled);
-        mode.kind = restore.to_observer_kind();
-        info!("Omniscient mode OFF (restored {:?})", mode.kind);
-    } else {
-        // The newtype refuses `Omniscient` (= `None`). We only reach
-        // this branch when the current kind is `Disabled` or
-        // `EmpireView`, so the `expect` is a contract-by-construction
-        // pin rather than a panic risk in practice.
-        mode.previous_kind = NonOmniscientKind::from_observer_kind(mode.kind);
-        mode.kind = ObserverModeKind::Omniscient;
-        info!("Omniscient mode ON (god view)");
-    }
 }
 
 #[cfg(test)]

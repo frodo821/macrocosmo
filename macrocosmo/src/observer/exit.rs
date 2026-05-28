@@ -5,10 +5,10 @@
 //! * `check_all_empires_eliminated` — auto-exit once no `Empire` entities
 //!   remain. Gated on `clock.elapsed > 0` to avoid firing on the first
 //!   frame before NPC empires spawn.
-//! * `esc_to_exit` — immediate exit on Escape key press.
+//! * interaction-layer exit controls live with the observer controls UI/input systems.
 //!
-//! All three are registered by [`crate::observer::ObserverPlugin`] with
-//! `.run_if(in_observer_mode)`.
+//! The simulation policies are registered by [`crate::observer::ObserverPlugin`]
+//! with `.run_if(in_observer_mode)`.
 
 use bevy::prelude::*;
 
@@ -46,27 +46,6 @@ pub fn check_all_empires_eliminated(
     }
     if empires.iter().next().is_none() {
         info!("Observer mode: all empires eliminated, exiting");
-        exit.write(AppExit::Success);
-    }
-}
-
-/// Immediate exit on the configured "observer.exit" keybind (default
-/// Escape). The key-input resource is optional so this system is inert
-/// in headless test apps that don't register `InputPlugin`. The
-/// keybinding registry is also optional so observer-mode tests that don't
-/// install `KeybindingPlugin` still see the legacy Escape behaviour.
-pub fn esc_to_exit(
-    keys: Option<Res<ButtonInput<KeyCode>>>,
-    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let Some(keys) = keys else { return };
-    let pressed = match keybindings.as_deref() {
-        Some(kb) => kb.is_just_pressed(crate::input::actions::OBSERVER_EXIT, &keys),
-        None => keys.just_pressed(KeyCode::Escape),
-    };
-    if pressed {
-        info!("Observer mode: exit keybind pressed, exiting");
         exit.write(AppExit::Success);
     }
 }

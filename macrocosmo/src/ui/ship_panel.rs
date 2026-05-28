@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ConstructionParams, FoodConsumption,
     MaintenanceCost, Production, ResourceCapacity, ResourceStockpile, SlotAssignment,
@@ -24,6 +23,7 @@ use crate::ui::ship_view::{
 };
 use crate::ui::{draw_modifier_breakdown, modified_value_label_with_tooltip};
 use crate::visualization::{SelectedShip, SelectedShips};
+use macrocosmo_core::amount::Amt;
 
 /// Action returned from draw_ship_panel when the player clicks "Scrap Ship".
 /// Processed in draw_all_ui where Commands is available for despawning.
@@ -958,10 +958,10 @@ pub fn draw_ship_panel(
     // Cargo load/unload actions to apply after UI drawing
     #[derive(Default)]
     struct CargoAction {
-        load_minerals: crate::amount::Amt,
-        load_energy: crate::amount::Amt,
-        unload_minerals: crate::amount::Amt,
-        unload_energy: crate::amount::Amt,
+        load_minerals: macrocosmo_core::amount::Amt,
+        load_energy: macrocosmo_core::amount::Amt,
+        unload_minerals: macrocosmo_core::amount::Amt,
+        unload_energy: macrocosmo_core::amount::Amt,
     }
     let mut cargo_action = CargoAction::default();
     // Entity of the system at the dock (for cargo transfers via system stockpile)
@@ -1242,10 +1242,12 @@ pub fn draw_ship_panel(
                             if system_entity_at_dock.is_some() {
                                 ui.horizontal(|ui| {
                                     if ui.button("Load M +100").clicked() {
-                                        cargo_action.load_minerals = crate::amount::Amt::units(100);
+                                        cargo_action.load_minerals =
+                                            macrocosmo_core::amount::Amt::units(100);
                                     }
                                     if ui.button("Load E +100").clicked() {
-                                        cargo_action.load_energy = crate::amount::Amt::units(100);
+                                        cargo_action.load_energy =
+                                            macrocosmo_core::amount::Amt::units(100);
                                     }
                                 });
                                 ui.horizontal(|ui| {
@@ -1598,8 +1600,8 @@ pub fn draw_ship_panel(
 #[cfg(test)]
 mod tests_229 {
     use super::*;
-    use crate::amount::Amt;
     use crate::ship::QueuedCommand;
+    use macrocosmo_core::amount::Amt;
 
     fn placeholder_entity() -> Entity {
         // Entity::PLACEHOLDER is stable across frames and fine for string

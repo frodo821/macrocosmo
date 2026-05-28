@@ -1,3 +1,5 @@
+local cond = require("macrocosmo.condition")
+
 local colony_hub_t1 = define_building {
     id = "colony_hub_t1",
     name = "Colony Hub",
@@ -50,7 +52,7 @@ local colony_hub_t3 = define_building {
         { target = "colony.farmer_slot", base_add = 3 },
         { target = "colony.power_worker_slot", base_add = 3 },
     },
-    prerequisites = has_tech(forward_ref("industrial_automated_mining")),
+    prerequisites = cond.has_tech(forward_ref("industrial_automated_mining")),
     upgrade_to = {
         { target = forward_ref("planetary_capital_t1"), cost = { minerals = 600, energy = 400 }, build_time = 30 },
     },

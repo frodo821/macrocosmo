@@ -1,13 +1,14 @@
 use bevy::prelude::*;
+use std::collections::HashMap;
 
-use crate::amount::{Amt, SignedAmt};
 use crate::components::Position;
 use crate::galaxy::Planet;
 use crate::modifier::Modifier;
-use crate::scripting::building_api::{BuildingId, BuildingRegistry};
+use crate::scripting::building_api::{BuildingDefinition, BuildingId, BuildingRegistry};
 use crate::ship::{Owner, Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::{
     BuildingOrder, CancelledOrderKind, Colony, DemolitionOrder, LastProductionTick,
@@ -43,33 +44,92 @@ pub struct SlotAssignment(pub usize);
 // Reverse mapping: ship design_id -> BuildingId
 // ---------------------------------------------------------------------------
 
+/// Reverse lookup for system-building station ship designs.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct SystemBuildingIndex {
+    design_to_building: HashMap<String, BuildingId>,
+}
+
+impl SystemBuildingIndex {
+    pub fn from_registry(registry: &BuildingRegistry) -> Self {
+        let mut index = Self::default();
+        index.rebuild(registry);
+        index
+    }
+
+    pub fn rebuild(&mut self, registry: &BuildingRegistry) {
+        self.design_to_building = registry
+            .buildings
+            .values()
+            .filter_map(|def| {
+                def.ship_design_id
+                    .as_ref()
+                    .map(|did| (did.clone(), BuildingId::new(&def.id)))
+            })
+            .collect();
+    }
+
+    pub fn design_to_building(&self) -> &HashMap<String, BuildingId> {
+        &self.design_to_building
+    }
+
+    pub fn building_for_design(&self, design_id: &str) -> Option<&BuildingId> {
+        self.design_to_building.get(design_id)
+    }
+
+    pub fn building_for_ship(&self, ship: &Ship) -> Option<&BuildingId> {
+        self.building_for_design(&ship.design_id)
+    }
+
+    pub fn definition_for_design<'a>(
+        &self,
+        design_id: &str,
+        registry: &'a BuildingRegistry,
+    ) -> Option<&'a BuildingDefinition> {
+        let bid = self.building_for_design(design_id)?;
+        registry.get(bid.as_str())
+    }
+
+    pub fn definition_for_ship<'a>(
+        &self,
+        ship: &Ship,
+        registry: &'a BuildingRegistry,
+    ) -> Option<&'a BuildingDefinition> {
+        self.definition_for_design(&ship.design_id, registry)
+    }
+
+    pub fn ship_has_capability(
+        &self,
+        ship: &Ship,
+        registry: &BuildingRegistry,
+        capability: &str,
+    ) -> bool {
+        self.definition_for_ship(ship, registry)
+            .is_some_and(|def| def.capabilities.contains_key(capability))
+    }
+}
+
 /// Build a reverse index from ship `design_id` to `BuildingId` using the
 /// `BuildingRegistry`. Entries that have a `ship_design_id` field are included.
-pub fn build_reverse_design_map(
-    registry: &BuildingRegistry,
-) -> std::collections::HashMap<String, BuildingId> {
-    registry
-        .buildings
-        .values()
-        .filter_map(|def| {
-            def.ship_design_id
-                .as_ref()
-                .map(|did| (did.clone(), BuildingId::new(&def.id)))
-        })
-        .collect()
+pub fn build_reverse_design_map(registry: &BuildingRegistry) -> HashMap<String, BuildingId> {
+    SystemBuildingIndex::from_registry(registry)
+        .design_to_building()
+        .clone()
 }
 
 /// Resolve a station ship's `Ship.design_id` to a `BuildingId` via the registry.
 pub fn ship_to_building_id(ship: &Ship, registry: &BuildingRegistry) -> Option<BuildingId> {
-    registry
-        .buildings
-        .values()
-        .find(|def| {
-            def.ship_design_id
-                .as_deref()
-                .is_some_and(|did| did == ship.design_id)
-        })
-        .map(|def| BuildingId::new(&def.id))
+    SystemBuildingIndex::from_registry(registry)
+        .building_for_ship(ship)
+        .cloned()
+}
+
+/// Rebuild the cached system-building station design index after registry changes.
+pub fn rebuild_system_building_index(
+    registry: Res<BuildingRegistry>,
+    mut index: ResMut<SystemBuildingIndex>,
+) {
+    index.rebuild(&registry);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,7 +170,7 @@ pub fn system_has_building(
     ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     registry: &BuildingRegistry,
 ) -> bool {
-    let reverse = build_reverse_design_map(registry);
+    let index = SystemBuildingIndex::from_registry(registry);
     for (_entity, ship, state, _slot) in ships.iter() {
         let in_system = match state {
             ShipState::InSystem { system: s } => *s == system,
@@ -120,7 +180,7 @@ pub fn system_has_building(
         if !in_system {
             continue;
         }
-        if let Some(bid) = reverse.get(&ship.design_id) {
+        if let Some(bid) = index.building_for_ship(ship) {
             if bid.0 == building_id {
                 return true;
             }
@@ -136,7 +196,7 @@ pub fn system_has_capability(
     ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     registry: &BuildingRegistry,
 ) -> bool {
-    let reverse = build_reverse_design_map(registry);
+    let index = SystemBuildingIndex::from_registry(registry);
     for (_entity, ship, state, _slot) in ships.iter() {
         let in_system = match state {
             ShipState::InSystem { system: s } => *s == system,
@@ -146,12 +206,8 @@ pub fn system_has_capability(
         if !in_system {
             continue;
         }
-        if let Some(bid) = reverse.get(&ship.design_id) {
-            if let Some(def) = registry.get(bid.as_str()) {
-                if def.capabilities.contains_key(capability) {
-                    return true;
-                }
-            }
+        if index.ship_has_capability(ship, registry, capability) {
+            return true;
         }
     }
     false
@@ -165,7 +221,7 @@ pub fn system_capability_param(
     ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     registry: &BuildingRegistry,
 ) -> Option<f64> {
-    let reverse = build_reverse_design_map(registry);
+    let index = SystemBuildingIndex::from_registry(registry);
     for (_entity, ship, state, _slot) in ships.iter() {
         let in_system = match state {
             ShipState::InSystem { system: s } => *s == system,
@@ -175,11 +231,9 @@ pub fn system_capability_param(
         if !in_system {
             continue;
         }
-        if let Some(bid) = reverse.get(&ship.design_id) {
-            if let Some(def) = registry.get(bid.as_str()) {
-                if let Some(cap) = def.capabilities.get(capability) {
-                    return cap.get(param);
-                }
+        if let Some(def) = index.definition_for_ship(ship, registry) {
+            if let Some(cap) = def.capabilities.get(capability) {
+                return cap.get(param);
             }
         }
     }
@@ -249,7 +303,7 @@ pub fn building_id_in_slot(
     ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     registry: &BuildingRegistry,
 ) -> Option<BuildingId> {
-    let reverse = build_reverse_design_map(registry);
+    let index = SystemBuildingIndex::from_registry(registry);
     for (_entity, ship, state, slot_assign) in ships.iter() {
         if slot_assign.0 != slot {
             continue;
@@ -260,7 +314,7 @@ pub fn building_id_in_slot(
             _ => false,
         };
         if in_system {
-            return reverse.get(&ship.design_id).cloned();
+            return index.building_for_ship(ship).cloned();
         }
     }
     None
@@ -272,7 +326,7 @@ pub fn occupied_slots(
     ships: &Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     registry: &BuildingRegistry,
 ) -> Vec<(usize, BuildingId)> {
-    let reverse = build_reverse_design_map(registry);
+    let index = SystemBuildingIndex::from_registry(registry);
     let mut result = Vec::new();
     for (_entity, ship, state, slot) in ships.iter() {
         let in_system = match state {
@@ -283,7 +337,7 @@ pub fn occupied_slots(
         if !in_system {
             continue;
         }
-        if let Some(bid) = reverse.get(&ship.design_id) {
+        if let Some(bid) = index.building_for_ship(ship) {
             result.push((slot.0, bid.clone()));
         }
     }
@@ -435,12 +489,19 @@ impl SystemBuildingQueue {
 /// Now reads station ships with SlotAssignment instead of SystemBuildings slots.
 pub fn sync_system_building_maintenance(
     registry: Res<BuildingRegistry>,
+    system_building_index: Option<Res<SystemBuildingIndex>>,
     system_buildings_q: Query<Entity, With<SystemBuildings>>,
     station_ships: Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
     mut colonies: Query<(&Colony, &mut MaintenanceCost)>,
     planets: Query<&Planet>,
 ) {
-    let reverse = build_reverse_design_map(&registry);
+    let fallback_index;
+    let system_building_index = if let Some(index) = system_building_index.as_deref() {
+        index
+    } else {
+        fallback_index = SystemBuildingIndex::from_registry(&registry);
+        &fallback_index
+    };
     let system_entities: Vec<Entity> = system_buildings_q.iter().collect();
 
     for sys_entity in &system_entities {
@@ -459,11 +520,7 @@ pub fn sync_system_building_maintenance(
             // Push maintenance modifiers for each station ship
             for &(_ship_entity, ship, slot_idx) in &stations {
                 let maint_id = format!("sys_building_maint_{}", slot_idx);
-                if let Some(bid) = reverse.get(&ship.design_id) {
-                    let Some(def) = registry.get(bid.as_str()) else {
-                        maint.energy_per_hexadies.pop_modifier(&maint_id);
-                        continue;
-                    };
+                if let Some(def) = system_building_index.definition_for_ship(ship, &registry) {
                     let cost = def.maintenance;
                     if cost != Amt::ZERO {
                         maint.energy_per_hexadies.push_modifier(Modifier {
@@ -513,10 +570,17 @@ pub fn sync_system_building_maintenance(
 /// with modifier-driven reads.
 pub fn sync_system_capability_modifiers(
     registry: Res<BuildingRegistry>,
+    system_building_index: Option<Res<SystemBuildingIndex>>,
     mut systems: Query<(Entity, &mut crate::galaxy::SystemModifiers)>,
     station_ships: Query<(Entity, &Ship, &ShipState, &SlotAssignment)>,
 ) {
-    let reverse = build_reverse_design_map(&registry);
+    let fallback_index;
+    let system_building_index = if let Some(index) = system_building_index.as_deref() {
+        index
+    } else {
+        fallback_index = SystemBuildingIndex::from_registry(&registry);
+        &fallback_index
+    };
 
     for (sys_entity, mut sys_mods) in &mut systems {
         // Clear previous building-sourced modifiers (prefix "syscap:")
@@ -535,10 +599,7 @@ pub fn sync_system_capability_modifiers(
             if !in_system {
                 continue;
             }
-            let Some(bid) = reverse.get(&ship.design_id) else {
-                continue;
-            };
-            let Some(def) = registry.get(bid.as_str()) else {
+            let Some(def) = system_building_index.definition_for_ship(ship, &registry) else {
                 continue;
             };
             for pm in &def.modifiers {
@@ -1014,5 +1075,38 @@ mod tests {
     fn system_buildings_default_max_slots() {
         let sb = SystemBuildings::default();
         assert_eq!(sb.max_slots, DEFAULT_SYSTEM_BUILDING_SLOTS);
+    }
+
+    #[test]
+    fn system_building_index_maps_station_designs_to_buildings() {
+        let registry = test_building_registry();
+        let index = SystemBuildingIndex::from_registry(&registry);
+
+        assert_eq!(
+            index
+                .building_for_design("station_shipyard_v1")
+                .map(BuildingId::as_str),
+            Some("shipyard")
+        );
+        assert_eq!(
+            index
+                .definition_for_design("station_port_v1", &registry)
+                .map(|def| def.name.as_str()),
+            Some("Port")
+        );
+        assert!(index.building_for_design("corvette_v1").is_none());
+    }
+
+    #[test]
+    fn system_building_index_rebuilds_after_registry_change() {
+        let mut registry = test_building_registry();
+        let mut index = SystemBuildingIndex::from_registry(&registry);
+        assert!(index.building_for_design("station_port_v1").is_some());
+
+        registry.buildings.remove("port");
+        index.rebuild(&registry);
+
+        assert!(index.building_for_design("station_port_v1").is_none());
+        assert!(index.building_for_design("station_shipyard_v1").is_some());
     }
 }

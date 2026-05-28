@@ -1,3 +1,5 @@
+local cond = require("macrocosmo.condition")
+
 local power_plant = define_building {
     id = "power_plant",
     name = "Combustion Power Plant",
@@ -27,7 +29,7 @@ local advanced_power_plant = define_building {
         { target = "colony.power_worker_slot", base_add = 10 },
     },
     is_system_building = false,
-    prerequisites = has_tech(forward_ref("industrial_fusion_power")),
+    prerequisites = cond.has_tech(forward_ref("industrial_fusion_power")),
 }
 
 return {

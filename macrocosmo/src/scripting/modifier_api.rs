@@ -1,5 +1,5 @@
-use crate::amount::SignedAmt;
 use crate::modifier::{ModifiedValue, Modifier, ParsedModifier};
+use macrocosmo_core::amount::SignedAmt;
 
 /// Parse a `modifiers = { { target = "...", base_add = N, ... }, ... }` array
 /// into a `Vec<ParsedModifier>`.
@@ -129,7 +129,7 @@ pub fn modified_value_to_lua(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
+    use macrocosmo_core::amount::Amt;
 
     #[test]
     fn test_parse_modifier_table() {

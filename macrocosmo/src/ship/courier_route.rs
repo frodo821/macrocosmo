@@ -20,7 +20,6 @@
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::ResourceStockpile;
 use crate::communication::{AppliedCommandIds, PendingCommand, RemoteCommand};
 use crate::components::Position;
@@ -29,6 +28,7 @@ use crate::knowledge::{KnowledgeStore, SystemKnowledge};
 use crate::physics;
 use crate::ship::command_events::CommandId;
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::{Cargo, CommandQueue, Owner, QueuedCommand, Ship, ShipState};
 

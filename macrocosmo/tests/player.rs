@@ -1,12 +1,12 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
 use macrocosmo::galaxy::{AtSystem, Hostile, HostileHitpoints, HostileStats};
 use macrocosmo::player::{AboardShip, Player, Ruler, StationedAt};
 use macrocosmo::ship::*;
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, spawn_test_system, test_app, test_app_with_event_log};
 

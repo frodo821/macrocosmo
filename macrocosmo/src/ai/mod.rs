@@ -40,13 +40,17 @@
 pub mod assignments;
 pub mod combat_projection;
 pub mod command_consumer;
+pub(crate) mod command_handlers;
 pub mod command_outbox;
+pub(crate) mod command_params;
+pub(crate) mod command_route;
 pub mod convert;
 #[cfg(feature = "ai-log")]
 pub mod debug_log;
 pub mod decomposition_rules;
 pub mod emit;
 pub mod emitters;
+pub(crate) mod metrics;
 pub mod mid_adapter;
 pub mod mid_agent;
 pub mod mid_stance;

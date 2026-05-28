@@ -1,6 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
+use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
+use crate::scripting::ScriptEngine;
 use crate::scripting::log_buffer::{LogBuffer, LogSource};
 
 /// Persistent state for the in-game Lua console overlay.
@@ -26,6 +28,7 @@ pub fn draw_console(
     ctx: &egui::Context,
     state: &mut ConsoleState,
     log_buffer: &LogBuffer,
+    engine: &ScriptEngine,
 ) -> Option<String> {
     if !state.visible {
         return None;
@@ -117,40 +120,104 @@ pub fn draw_console(
                 });
 
             egui::CentralPanel::default().show_inside(ui, |ui| {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .stick_to_bottom(true)
-                    .show(ui, |ui| {
-                        for entry in &log_buffer.entries {
-                            let (color, prefix) = match &entry.source {
-                                LogSource::Console => {
-                                    (egui::Color32::from_rgb(180, 180, 255), "> ")
-                                }
-                                LogSource::ConsoleResult => {
-                                    (egui::Color32::from_rgb(200, 255, 200), "= ")
-                                }
-                                LogSource::Error => (egui::Color32::from_rgb(255, 100, 100), "! "),
-                                LogSource::Event(_) => (egui::Color32::from_rgb(255, 220, 80), ""),
-                                LogSource::Lifecycle(_) => {
-                                    (egui::Color32::from_rgb(180, 220, 255), "")
-                                }
-                                LogSource::Define => (egui::Color32::from_rgb(160, 160, 160), ""),
-                                LogSource::Print => (egui::Color32::from_rgb(220, 220, 220), ""),
-                            };
-                            let source_tag = match &entry.source {
-                                LogSource::Event(name) => format!("[evt:{}] ", name),
-                                LogSource::Lifecycle(name) => format!("[lc:{}] ", name),
-                                _ => String::new(),
-                            };
-                            let text = format!("{}{}{}", source_tag, prefix, entry.text);
-                            ui.label(egui::RichText::new(&text).color(color).monospace());
-                        }
-                    });
+                if draw_console_log_lua(ui, log_buffer, engine).is_err() {
+                    draw_console_log_legacy(ui, log_buffer);
+                }
             });
         });
 
     state.visible = open;
     submitted
+}
+
+fn draw_console_log_lua(
+    ui: &mut egui::Ui,
+    log_buffer: &LogBuffer,
+    engine: &ScriptEngine,
+) -> mlua::Result<()> {
+    let lua = engine.lua();
+    let registry = parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.lua_console") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.lua_console' is not registered".into(),
+        ));
+    };
+
+    let view = console_view_table(lua, log_buffer)?;
+    let node = fragment.inflate(lua, view)?;
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            let mut renderer = UiDslRenderer::default();
+            let _ = renderer.render(ui, &node);
+        });
+    Ok(())
+}
+
+fn console_view_table(lua: &mlua::Lua, log_buffer: &LogBuffer) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    let entries = lua.create_table()?;
+    for (index, entry) in log_buffer.entries.iter().enumerate() {
+        let row = lua.create_table()?;
+        row.set("source", log_source_name(&entry.source))?;
+        row.set("timestamp", entry.timestamp)?;
+        row.set("text", format_console_line(entry))?;
+        entries.set(index + 1, row)?;
+    }
+    view.set("entries", entries)?;
+    Ok(view)
+}
+
+fn draw_console_log_legacy(ui: &mut egui::Ui, log_buffer: &LogBuffer) {
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .stick_to_bottom(true)
+        .show(ui, |ui| {
+            for entry in &log_buffer.entries {
+                let color = match &entry.source {
+                    LogSource::Console => egui::Color32::from_rgb(180, 180, 255),
+                    LogSource::ConsoleResult => egui::Color32::from_rgb(200, 255, 200),
+                    LogSource::Error => egui::Color32::from_rgb(255, 100, 100),
+                    LogSource::Event(_) => egui::Color32::from_rgb(255, 220, 80),
+                    LogSource::Lifecycle(_) => egui::Color32::from_rgb(180, 220, 255),
+                    LogSource::Define => egui::Color32::from_rgb(160, 160, 160),
+                    LogSource::Print => egui::Color32::from_rgb(220, 220, 220),
+                };
+                ui.label(
+                    egui::RichText::new(format_console_line(entry))
+                        .color(color)
+                        .monospace(),
+                );
+            }
+        });
+}
+
+fn format_console_line(entry: &crate::scripting::log_buffer::LogEntry) -> String {
+    let prefix = match &entry.source {
+        LogSource::Console => "> ",
+        LogSource::ConsoleResult => "= ",
+        LogSource::Error => "! ",
+        LogSource::Event(_) | LogSource::Lifecycle(_) | LogSource::Define | LogSource::Print => "",
+    };
+    let source_tag = match &entry.source {
+        LogSource::Event(name) => format!("[evt:{}] ", name),
+        LogSource::Lifecycle(name) => format!("[lc:{}] ", name),
+        _ => String::new(),
+    };
+    format!("{}{}{}", source_tag, prefix, entry.text)
+}
+
+fn log_source_name(source: &LogSource) -> &'static str {
+    match source {
+        LogSource::Console => "console",
+        LogSource::ConsoleResult => "result",
+        LogSource::Error => "error",
+        LogSource::Event(_) => "event",
+        LogSource::Lifecycle(_) => "lifecycle",
+        LogSource::Define => "define",
+        LogSource::Print => "print",
+    }
 }
 
 /// Format a Lua value for display in the console output.

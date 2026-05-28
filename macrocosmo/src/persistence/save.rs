@@ -34,7 +34,6 @@ use crate::colony::{
 };
 use crate::communication::{CommandLog, PendingCommand};
 use crate::components::{MovementState, Position};
-use crate::condition::ScopedFlags;
 use crate::deep_space::{
     ConstructionPlatform, DeepSpaceStructure, FTLCommRelay, LifetimeCost, Scrapyard,
     StructureHitpoints,
@@ -49,6 +48,7 @@ use crate::galaxy::{
     HostileStats, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::{DestroyedShipRegistry, KnowledgeStore, PendingFactQueue};
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::notifications::NotificationQueue;
 use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, StationedAt};
 use crate::region::{EmpireLongTermState, Region, RegionMembership, RegionRegistry};

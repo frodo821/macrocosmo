@@ -17,7 +17,6 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::DeliverableStockpile;
 use macrocosmo::components::Position;
 use macrocosmo::deep_space::{
@@ -28,6 +27,7 @@ use macrocosmo::ship::{
     Cargo, CargoItem, CommandQueue, Owner, QueuedCommand, ShipModifiers, ShipState,
     deliverable_ops::dismantle_structure,
 };
+use macrocosmo_core::amount::Amt;
 
 mod common;
 

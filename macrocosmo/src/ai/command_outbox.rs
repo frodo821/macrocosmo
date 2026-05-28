@@ -84,7 +84,8 @@ use bevy::prelude::*;
 
 use macrocosmo_ai::Command;
 
-use crate::ai::convert::{from_ai_entity, from_ai_system, to_ai_faction};
+use crate::ai::command_params::{TARGET_SYSTEM, optional_system, ship_list, target_system};
+use crate::ai::convert::{from_ai_entity, to_ai_faction};
 use crate::ai::schema::ids::command as cmd_ids;
 use crate::components::Position;
 use crate::empire::CommsParams;
@@ -283,12 +284,7 @@ pub fn destination_pos_from_target_system(
     cmd: &Command,
     star_positions: &Query<&Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
 ) -> Option<[f64; 3]> {
-    use macrocosmo_ai::CommandValue;
-    let sys_ref = match cmd.params.get("target_system") {
-        Some(CommandValue::System(s)) => *s,
-        _ => return None,
-    };
-    let entity = from_ai_system(sys_ref);
+    let entity = optional_system(&cmd.params, TARGET_SYSTEM)?;
     star_positions.get(entity).ok().map(|p| p.as_array())
 }
 
@@ -360,7 +356,7 @@ pub fn build_pending_command(
 ///
 /// Convention used by the AI Short layer / consumer: ship-bearing commands
 /// pass their ship list as `ship_count` + `ship_0`, `ship_1`, ... (see
-/// `command_consumer::extract_ship_list`). For the dispatch-time
+/// `command_params::ship_list`). For the dispatch-time
 /// projection we only need the *first* ship — multi-ship commands write
 /// one projection per ship in a follow-up; the data model already keys on
 /// entity so this scales naturally.
@@ -378,11 +374,7 @@ pub fn extract_primary_ship(cmd: &Command) -> Option<Entity> {
 /// #475: Extract the `target_system` Entity from an AI command's params,
 /// if present. Returns `None` for spatial-less commands.
 pub fn extract_target_system(cmd: &Command) -> Option<Entity> {
-    use macrocosmo_ai::CommandValue;
-    match cmd.params.get("target_system")? {
-        CommandValue::System(s) => Some(from_ai_system(*s)),
-        _ => None,
-    }
+    target_system(&cmd.params)
 }
 
 /// #468 PR-3: Extract the `target_planet` Entity from a `colonize_planet`
@@ -444,7 +436,7 @@ fn select_move_ruler_transport(
     empire_entity: Entity,
     params: &mut DispatchParams,
 ) -> Option<Entity> {
-    use crate::ship::{CommandQueue, Owner, ShipState};
+    use crate::ship::{Owner, ShipState};
     let ruler_entity = params.empire_rulers.get(empire_entity).ok()?.0;
     let (stationed, aboard) = params.rulers.get(ruler_entity).ok()?;
     if aboard.is_some() {
@@ -1048,7 +1040,7 @@ pub fn dispatch_ai_pending_commands(
 ///   `ship_<i>` params in the command (today: `move_ruler`, which is
 ///   emitted with just `target_system` and the dispatcher selects the
 ///   transport ship from the Ruler's current system). `None` falls back
-///   to `extract_ship_list`.
+///   to `command_params::ship_list`.
 ///
 /// For each ship that survives the resolution above:
 ///   * read the ship's `Position` (= dispatcher's *real* idea of where
@@ -1074,7 +1066,7 @@ fn dispatch_ship_command_per_ship<F>(
 ) where
     F: Fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
 {
-    use crate::ai::command_consumer::{PendingAiShipCommand, extract_ship_list};
+    use crate::ai::command_consumer::PendingAiShipCommand;
     use crate::physics::light_delay_ruler_to_ship;
 
     let kind_str = cmd.kind.as_str();
@@ -1100,7 +1092,7 @@ fn dispatch_ship_command_per_ship<F>(
     // current system) so the caller passes the resolved ship here.
     let ship_list: Vec<Entity> = match ship_entity_override {
         Some(e) => vec![e],
-        None => extract_ship_list(&cmd.params),
+        None => ship_list(&cmd.params),
     };
     if ship_list.is_empty() {
         debug!(

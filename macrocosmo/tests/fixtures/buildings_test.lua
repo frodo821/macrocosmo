@@ -2,6 +2,8 @@
 -- Defines a minimal set of buildings with known values so Rust-side tests
 -- are independent of production scripts/buildings/basic.lua.
 
+local cond = require("macrocosmo.condition")
+
 define_building {
     id = "test_mine",
     name = "Test Mine",
@@ -68,7 +70,7 @@ define_building {
     cost = { minerals = 250, energy = 80 },
     build_time = 10,
     maintenance = 0.8,
-    prerequisites = has_tech("industrial_automated_mining"),
+    prerequisites = cond.has_tech("industrial_automated_mining"),
     modifiers = {
         { target = "colony.miner_slot", base_add = 6 },
     },

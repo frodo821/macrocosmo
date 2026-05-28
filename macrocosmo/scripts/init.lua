@@ -67,5 +67,10 @@ require("knowledge.sample")
 -- can sit alongside without cluttering the root init ordering.
 require("notifications.default_bridge")
 
+-- Lua UI DSL shadow definitions. A read-only preview fragment is rendered in
+-- the ESC "Lua UI" tab; the rest mirror Rust UI surfaces while migration
+-- proceeds panel by panel.
+require("ui")
+
 -- Lifecycle hooks (must be last — registers callbacks for game start/load)
 require("lifecycle")

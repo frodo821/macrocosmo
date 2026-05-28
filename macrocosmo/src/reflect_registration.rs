@@ -104,8 +104,8 @@ pub fn register_all_types(app: &mut App) {
     // crate::components
     app.register_type::<crate::components::MovementState>();
     app.register_type::<crate::components::Position>();
-    // crate::condition
-    app.register_type::<crate::condition::ScopedFlags>();
+    // macrocosmo_core::condition
+    app.register_type::<crate::modifier::ScopedModifications>();
     // crate::deep_space
     app.register_type::<crate::deep_space::ConstructionPlatform>();
     app.register_type::<crate::deep_space::DeepSpaceStructure>();

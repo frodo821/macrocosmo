@@ -75,10 +75,8 @@ pub struct Notification {
     pub id: u64,
     pub title: String,
     pub description: String,
-    /// Free-form icon identifier. Stored verbatim from Lua; the pill UI
-    /// uses it as a single-glyph hint when it happens to be one codepoint,
-    /// otherwise falls back to a priority-based placeholder until the icon
-    /// registry (#143) lands.
+    /// Free-form icon identifier. Stored verbatim from Lua; presentation
+    /// layers decide how to render it.
     pub icon: Option<String>,
     pub priority: NotificationPriority,
     /// Optional star system the banner can jump to when clicked.
@@ -182,25 +180,6 @@ impl Default for Notification {
             priority: NotificationPriority::Medium,
             target_system: None,
             remaining_hexadies: None,
-        }
-    }
-}
-
-impl Notification {
-    /// Single-character glyph used inside the small pill UI. Placeholder
-    /// until the icon registry (#143) lands — until then we accept a
-    /// single-codepoint `icon` string verbatim, else fall back to a
-    /// priority-based default. Always returns a renderable str.
-    pub fn pill_glyph(&self) -> &str {
-        if let Some(ref icon) = self.icon {
-            if icon.chars().count() == 1 {
-                return icon.as_str();
-            }
-        }
-        match self.priority {
-            NotificationPriority::High => "!",
-            NotificationPriority::Medium => "i",
-            NotificationPriority::Low => "·",
         }
     }
 }
@@ -721,38 +700,6 @@ mod tests {
     fn legacy_whitelist_covers_player_respawn_and_resource_alert() {
         assert!(is_legacy_whitelisted(&GameEventKind::PlayerRespawn));
         assert!(is_legacy_whitelisted(&GameEventKind::ResourceAlert));
-    }
-
-    #[test]
-    fn pill_glyph_uses_single_codepoint_icon_when_set() {
-        let n = Notification {
-            icon: Some("⚠".to_string()),
-            priority: NotificationPriority::High,
-            ..Default::default()
-        };
-        assert_eq!(n.pill_glyph(), "⚠");
-    }
-
-    #[test]
-    fn pill_glyph_falls_back_for_multi_char_icon() {
-        let n = Notification {
-            icon: Some("warning".to_string()),
-            priority: NotificationPriority::Medium,
-            ..Default::default()
-        };
-        // multi-char icon string is treated as a tag, not a glyph
-        assert_eq!(n.pill_glyph(), "i");
-    }
-
-    #[test]
-    fn pill_glyph_priority_defaults() {
-        let mut n = Notification::default();
-        n.priority = NotificationPriority::High;
-        assert_eq!(n.pill_glyph(), "!");
-        n.priority = NotificationPriority::Medium;
-        assert_eq!(n.pill_glyph(), "i");
-        n.priority = NotificationPriority::Low;
-        assert_eq!(n.pill_glyph(), "·");
     }
 
     #[test]

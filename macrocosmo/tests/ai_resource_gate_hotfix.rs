@@ -47,7 +47,6 @@ use macrocosmo::ai::AiPlayerMode;
 use macrocosmo::ai::npc_decision::ShortAgentTickInputs;
 use macrocosmo::ai::plugin::AiBusResource;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::building_queue::{
     BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue,
 };
@@ -57,6 +56,7 @@ use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo_ai::{Command, CommandValue};
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, spawn_mock_core_ship, spawn_test_colony, spawn_test_ruler, spawn_test_system,
@@ -628,9 +628,9 @@ fn install_patrol_corvette(app: &mut App) {
 /// minimal. `spawn_test_system` already attaches a default
 /// `SystemModifiers` component.
 fn attach_shipyard_to_system(world: &mut World, system: Entity) {
-    use macrocosmo::amount::SignedAmt;
     use macrocosmo::galaxy::SystemModifiers;
     use macrocosmo::modifier::Modifier;
+    use macrocosmo_core::amount::SignedAmt;
     let mut sys_mods = world
         .get_mut::<SystemModifiers>(system)
         .expect("spawn_test_system attaches SystemModifiers by default");

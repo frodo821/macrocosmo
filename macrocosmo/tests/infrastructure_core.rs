@@ -8,7 +8,6 @@ mod common;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use common::{advance_time, empire_entity, full_test_app, spawn_test_system};
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::deep_space::StructureRegistry;
 use macrocosmo::faction::FactionOwner;
@@ -19,6 +18,7 @@ use macrocosmo::ship::command_events::{CommandId, CoreDeployRequested};
 use macrocosmo::ship::core_deliverable::handle_core_deploy_requested;
 use macrocosmo::ship::{CoreShip, Owner};
 use macrocosmo::ship_design::ShipDesignRegistry;
+use macrocosmo_core::amount::Amt;
 
 #[test]
 fn lua_loads_infrastructure_core_deliverable_and_design() {

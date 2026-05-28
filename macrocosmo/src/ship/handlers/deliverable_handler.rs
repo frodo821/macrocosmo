@@ -13,7 +13,6 @@
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::DeliverableStockpile;
 use crate::components::Position;
 use crate::deep_space::{
@@ -28,6 +27,7 @@ use crate::ship::command_events::{
 use crate::ship::deliverable_ops::DEPLOY_POSITION_EPSILON;
 use crate::ship::{Cargo, CommandQueue, QueuedCommand, Ship, ShipModifiers, ShipState};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 // ---------------------------------------------------------------------------
 // LoadDeliverable

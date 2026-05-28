@@ -1,7 +1,8 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
+use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
-use crate::amount::Amt;
+use crate::scripting::ScriptEngine;
 use crate::ship_design::{
     DesignSlotAssignment, HullRegistry, ModuleRegistry, ShipDesignDefinition, ShipDesignRegistry,
 };
@@ -9,6 +10,7 @@ use crate::technology::{
     ResearchPool, ResearchQueue, TechBranchRegistry, TechEffectsPreview, TechId, TechTree,
     TechUnlockIndex, UnlockKind,
 };
+use macrocosmo_core::amount::Amt;
 
 use super::ResearchPanelOpen;
 
@@ -373,8 +375,8 @@ pub fn draw_ship_designer(
                             revision: 0,
                             // #396: derived from hull build cost at registry time
                             is_direct_buildable: hull.build_cost_minerals
-                                > crate::amount::Amt::ZERO
-                                || hull.build_cost_energy > crate::amount::Amt::ZERO,
+                                > macrocosmo_core::amount::Amt::ZERO
+                                || hull.build_cost_energy > macrocosmo_core::amount::Amt::ZERO,
                         });
                     }
 
@@ -465,11 +467,54 @@ pub fn draw_overlays(
     unlock_index: &TechUnlockIndex,
     capital_stockpile: Option<(&Amt, &Amt)>,
     _clock_elapsed: i64,
+    engine: Option<&ScriptEngine>,
 ) -> ResearchAction {
     if !research_open.0 {
         return ResearchAction::None;
     }
 
+    if let Some(engine) = engine
+        && let Ok(action) = draw_research_lua(
+            ctx,
+            research_open,
+            tech_tree,
+            research_queue,
+            research_pool,
+            branch_registry,
+            effects_preview,
+            unlock_index,
+            capital_stockpile,
+            engine,
+        )
+    {
+        return action;
+    }
+
+    draw_research_legacy(
+        ctx,
+        research_open,
+        tech_tree,
+        research_queue,
+        research_pool,
+        branch_registry,
+        effects_preview,
+        unlock_index,
+        capital_stockpile,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_research_legacy(
+    ctx: &egui::Context,
+    research_open: &mut ResearchPanelOpen,
+    tech_tree: &TechTree,
+    research_queue: &ResearchQueue,
+    research_pool: &ResearchPool,
+    branch_registry: &TechBranchRegistry,
+    effects_preview: &TechEffectsPreview,
+    unlock_index: &TechUnlockIndex,
+    capital_stockpile: Option<(&Amt, &Amt)>,
+) -> ResearchAction {
     let mut action = ResearchAction::None;
 
     egui::Window::new("Research")
@@ -891,4 +936,259 @@ pub fn draw_overlays(
         });
 
     action
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_research_lua(
+    ctx: &egui::Context,
+    research_open: &mut ResearchPanelOpen,
+    tech_tree: &TechTree,
+    research_queue: &ResearchQueue,
+    research_pool: &ResearchPool,
+    branch_registry: &TechBranchRegistry,
+    effects_preview: &TechEffectsPreview,
+    unlock_index: &TechUnlockIndex,
+    capital_stockpile: Option<(&Amt, &Amt)>,
+    engine: &ScriptEngine,
+) -> mlua::Result<ResearchAction> {
+    let lua = engine.lua();
+    let registry = parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.research") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.research' is not registered".into(),
+        ));
+    };
+
+    let selected_branch_id = egui::Id::new("research_selected_branch");
+    let selected_branch_index: usize = ctx
+        .memory(|m| m.data.get_temp(selected_branch_id))
+        .unwrap_or(0);
+
+    let view = research_view_table(
+        lua,
+        tech_tree,
+        research_queue,
+        research_pool,
+        branch_registry,
+        effects_preview,
+        unlock_index,
+        capital_stockpile,
+        selected_branch_index,
+    )?;
+    let node = fragment.inflate(lua, view)?;
+    let mut clicked_commands = Vec::new();
+
+    egui::Window::new("Research")
+        .open(&mut research_open.0)
+        .resizable(true)
+        .default_size([520.0, 500.0])
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    let mut renderer = UiDslRenderer::default();
+                    clicked_commands = renderer.render(ui, &node).clicked_commands;
+                });
+        });
+
+    let mut action = ResearchAction::None;
+    for command in clicked_commands {
+        if let Some(raw_index) = command.strip_prefix("research.tab:") {
+            if let Ok(index) = raw_index.parse::<usize>() {
+                ctx.memory_mut(|m| m.data.insert_temp(selected_branch_id, index));
+            }
+            continue;
+        }
+        if let Some(parsed) = parse_research_command(&command) {
+            action = parsed;
+            break;
+        }
+    }
+
+    Ok(action)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn research_view_table(
+    lua: &mlua::Lua,
+    tech_tree: &TechTree,
+    research_queue: &ResearchQueue,
+    research_pool: &ResearchPool,
+    branch_registry: &TechBranchRegistry,
+    effects_preview: &TechEffectsPreview,
+    unlock_index: &TechUnlockIndex,
+    capital_stockpile: Option<(&Amt, &Amt)>,
+    selected_branch_index: usize,
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    view.set(
+        "research_pool",
+        format!("{:.1} RP/hd", research_pool.points),
+    )?;
+
+    if let Some(current_id) = &research_queue.current
+        && let Some(tech) = tech_tree.get(current_id)
+    {
+        let current = lua.create_table()?;
+        current.set("name", tech.name.clone())?;
+        let cost = tech.cost.research.to_f64();
+        let progress = if cost > 0.0 {
+            (research_queue.accumulated / cost).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        current.set("progress", progress)?;
+        current.set(
+            "progress_label",
+            format!(
+                "{:.0}/{} RP",
+                research_queue.accumulated,
+                tech.cost.research.display_compact()
+            ),
+        )?;
+        current.set("blocked", research_queue.blocked)?;
+        view.set("current", current)?;
+    }
+
+    let branches = lua.create_table()?;
+    let branch_count = branch_registry.iter_ordered().count();
+    let selected_branch_index = if selected_branch_index >= branch_count {
+        0
+    } else {
+        selected_branch_index
+    };
+
+    for (branch_index, branch) in branch_registry.iter_ordered().enumerate() {
+        let branch_row = lua.create_table()?;
+        branch_row.set("name", branch.name.clone())?;
+        branch_row.set("selected", branch_index == selected_branch_index)?;
+        branch_row.set("command", format!("research.tab:{}", branch_index))?;
+        let tech_rows = lua.create_table()?;
+        for (tech_index, tech) in tech_tree
+            .techs_in_branch(&branch.id)
+            .into_iter()
+            .enumerate()
+        {
+            let is_researched = tech_tree.is_researched(&tech.id);
+            let is_current = research_queue.current.as_ref() == Some(&tech.id);
+            let is_available = tech_tree.can_research(&tech.id);
+            let row = lua.create_table()?;
+            row.set("name", tech.name.clone())?;
+            row.set("description", tech.description.clone())?;
+            row.set("dangerous", tech.dangerous)?;
+            row.set(
+                "status",
+                research_status_label(is_researched, is_current, is_available),
+            )?;
+            row.set("cost", research_cost_label(tech))?;
+
+            let effects = lua.create_table()?;
+            for (effect_index, effect) in effects_preview.for_tech(&tech.id).iter().enumerate() {
+                effects.set(effect_index + 1, effect.display_text())?;
+            }
+            row.set("effects", effects)?;
+
+            let unlocks = lua.create_table()?;
+            for (unlock_index, unlock) in unlock_index.for_tech(&tech.id.0).iter().enumerate() {
+                unlocks.set(
+                    unlock_index + 1,
+                    format!("{}: {}", unlock_kind_label(unlock.kind), unlock.name),
+                )?;
+            }
+            row.set("unlocks", unlocks)?;
+
+            let missing = lua.create_table()?;
+            for (missing_index, prerequisite) in tech
+                .prerequisites
+                .iter()
+                .filter(|pre| !tech_tree.is_researched(pre))
+                .filter_map(|pre| tech_tree.get(pre).map(|tech| tech.name.clone()))
+                .enumerate()
+            {
+                missing.set(missing_index + 1, prerequisite)?;
+            }
+            row.set("missing_requirements", missing)?;
+
+            if is_current {
+                row.set("note", "Researching")?;
+            } else if is_available && research_queue.current.is_none() {
+                row.set("command", format!("research.start:{}", tech.id.0))?;
+                row.set(
+                    "action_label",
+                    if tech.dangerous {
+                        "Start Research [!]"
+                    } else {
+                        "Start Research"
+                    },
+                )?;
+                row.set("disabled", !can_afford_research(tech, capital_stockpile))?;
+            } else if is_available {
+                row.set("note", "Available (finish current research first)")?;
+            }
+
+            tech_rows.set(tech_index + 1, row)?;
+        }
+        branch_row.set("techs", tech_rows)?;
+        branches.set(branch_index + 1, branch_row)?;
+    }
+    view.set("branches", branches)?;
+
+    Ok(view)
+}
+
+fn parse_research_command(command: &str) -> Option<ResearchAction> {
+    if command == "research.cancel" {
+        return Some(ResearchAction::CancelResearch);
+    }
+    command
+        .strip_prefix("research.start:")
+        .map(|id| ResearchAction::StartResearch(TechId(id.to_string())))
+}
+
+fn research_status_label(
+    is_researched: bool,
+    is_current: bool,
+    is_available: bool,
+) -> &'static str {
+    if is_researched {
+        "[Done]"
+    } else if is_current {
+        "[Researching]"
+    } else if is_available {
+        "[Available]"
+    } else {
+        "[Locked]"
+    }
+}
+
+fn research_cost_label(tech: &crate::technology::Technology) -> String {
+    let mut cost_parts = vec![format!("{} RP", tech.cost.research.display_compact())];
+    if tech.cost.minerals > Amt::ZERO {
+        cost_parts.push(format!("M:{}", tech.cost.minerals.display_compact()));
+    }
+    if tech.cost.energy > Amt::ZERO {
+        cost_parts.push(format!("E:{}", tech.cost.energy.display_compact()));
+    }
+    cost_parts.join(" | ")
+}
+
+fn unlock_kind_label(kind: UnlockKind) -> &'static str {
+    match kind {
+        UnlockKind::Module => "Module",
+        UnlockKind::Building => "Building",
+        UnlockKind::Structure => "Structure",
+        UnlockKind::Tech => "Tech",
+        UnlockKind::Hull => "Hull",
+        UnlockKind::ShipDesign => "Ship Design",
+    }
+}
+
+fn can_afford_research(
+    tech: &crate::technology::Technology,
+    capital_stockpile: Option<(&Amt, &Amt)>,
+) -> bool {
+    match capital_stockpile {
+        Some((minerals, energy)) => tech.cost.minerals <= *minerals && tech.cost.energy <= *energy,
+        None => tech.cost.minerals == Amt::ZERO && tech.cost.energy == Amt::ZERO,
+    }
 }

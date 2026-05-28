@@ -15,10 +15,10 @@ const SCALE: u64 = 1000;
     PartialOrd,
     Ord,
     Hash,
-    bevy::reflect::Reflect,
     serde::Serialize,
     serde::Deserialize,
 )]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 pub struct Amt(pub u64);
 
 impl Amt {
@@ -203,10 +203,10 @@ const SIGNED_SCALE: i64 = 1000;
     PartialOrd,
     Ord,
     Hash,
-    bevy::reflect::Reflect,
     serde::Serialize,
     serde::Deserialize,
 )]
+#[cfg_attr(feature = "reflect", derive(bevy_reflect::Reflect))]
 pub struct SignedAmt(pub i64);
 
 impl SignedAmt {

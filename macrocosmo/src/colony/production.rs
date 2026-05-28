@@ -1,15 +1,15 @@
 use bevy::prelude::*;
 
-use crate::amount::{Amt, SignedAmt};
 use crate::galaxy::{Planet, StarSystem};
 use crate::modifier::{ModifiedValue, Modifier, ParsedModifier};
 use crate::scripting::building_api::BuildingRegistry;
 use crate::species::{ColonyJobs, JobRegistry, SpeciesRegistry};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::{
     AUTHORITY_DEFICIT_PENALTY, Buildings, Colony, LastProductionTick, ResourceCapacity,
-    ResourceStockpile,
+    ResourceStockpile, SystemBuildingIndex,
 };
 
 /// #29: Production focus weights for colony output
@@ -240,6 +240,7 @@ fn clear_building_mods(mv: &mut ModifiedValue) {
 /// - `colony.<X>_per_hexadies` → `Production.<X>_per_hexadies`
 pub fn sync_building_modifiers(
     registry: Res<BuildingRegistry>,
+    system_building_index: Option<Res<SystemBuildingIndex>>,
     job_registry: Res<JobRegistry>,
     planets: Query<&Planet>,
     system_buildings: Query<(Entity, &super::SystemBuildings)>,
@@ -257,6 +258,14 @@ pub fn sync_building_modifiers(
         Option<&mut ColonyJobs>,
     )>,
 ) {
+    let fallback_index;
+    let system_building_index = if let Some(index) = system_building_index.as_deref() {
+        index
+    } else {
+        fallback_index = SystemBuildingIndex::from_registry(&registry);
+        &fallback_index
+    };
+
     // Build system → max_slots map for slot-based systems.
     let sys_entities: std::collections::HashMap<Entity, usize> = system_buildings
         .iter()
@@ -315,7 +324,6 @@ pub fn sync_building_modifiers(
         //    SystemBuildings.slots.
         if let Some(sys_entity) = colony.system(&planets) {
             if sys_entities.contains_key(&sys_entity) {
-                let reverse = super::system_buildings::build_reverse_design_map(&registry);
                 for (ship_entity, ship, state, _slot) in &station_ships {
                     let in_system = match state {
                         crate::ship::ShipState::InSystem { system: s } => *s == sys_entity,
@@ -325,10 +333,7 @@ pub fn sync_building_modifiers(
                     if !in_system {
                         continue;
                     }
-                    if let Some(bid) = reverse.get(&ship.design_id) {
-                        let Some(def) = registry.get(bid.as_str()) else {
-                            continue;
-                        };
+                    if let Some(def) = system_building_index.definition_for_ship(ship, &registry) {
                         // #438: Include ship entity index for unique modifier IDs.
                         let source = format!("{}[{:?}]", def.id, ship_entity);
                         for pm in &def.modifiers {

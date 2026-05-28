@@ -3,15 +3,15 @@ use std::collections::HashMap;
 use bevy::prelude::*;
 use mlua::Lua;
 
-use crate::amount::SignedAmt;
-use crate::condition::ScopedFlags;
-use crate::effect::DescriptiveEffect;
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::modifier::{Modifier, ParsedModifier};
 use crate::player::Empire;
 use crate::scripting::ScriptEngine;
 use crate::scripting::effect_scope::{EffectScope, collect_effects};
 use crate::technology::tree::TechId;
 use crate::technology::{EmpireModifiers, GameBalance, GameFlags, GlobalParams};
+use macrocosmo_core::amount::SignedAmt;
+use macrocosmo_core::effect::DescriptiveEffect;
 
 use super::research::RecentlyResearched;
 
@@ -366,6 +366,12 @@ fn apply_effect(
         DescriptiveEffect::FireEvent { event_id, .. } => {
             // Fire events are handled by the event system; queue them
             info!("Tech effect requests event fire: {event_id} (not yet wired to EventSystem)");
+        }
+        DescriptiveEffect::PresentUiFragment { request } => {
+            debug!(
+                "Tech effect requests UI fragment presentation: {:?}",
+                request
+            );
         }
         DescriptiveEffect::Hidden { inner, .. } => {
             apply_effect(
@@ -950,7 +956,7 @@ mod tests {
             id: TechId("automated_mining".into()),
             name: "Automated Mining".into(),
             branch: "industrial".into(),
-            cost: TechCost::research_only(crate::amount::Amt::units(100)),
+            cost: TechCost::research_only(macrocosmo_core::amount::Amt::units(100)),
             prerequisites: vec![],
             description: String::new(),
             dangerous: false,
@@ -986,7 +992,7 @@ mod tests {
             id: TechId("plain".into()),
             name: "Plain".into(),
             branch: "physics".into(),
-            cost: TechCost::research_only(crate::amount::Amt::units(50)),
+            cost: TechCost::research_only(macrocosmo_core::amount::Amt::units(50)),
             prerequisites: vec![],
             description: String::new(),
             dangerous: false,
@@ -1017,7 +1023,7 @@ mod tests {
             id: TechId("speedy".into()),
             name: "Speedy".into(),
             branch: "physics".into(),
-            cost: TechCost::research_only(crate::amount::Amt::units(75)),
+            cost: TechCost::research_only(macrocosmo_core::amount::Amt::units(75)),
             prerequisites: vec![],
             description: String::new(),
             dangerous: false,

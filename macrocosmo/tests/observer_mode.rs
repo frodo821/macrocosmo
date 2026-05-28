@@ -10,10 +10,10 @@
 
 use bevy::prelude::*;
 
+use macrocosmo::interactions::observer_controls::{ObserverControlsPlugin, esc_to_exit};
 use macrocosmo::observer::{
     ObserverMode, ObserverModeKind, ObserverPlugin, ObserverView, RngSeed,
-    check_all_empires_eliminated, check_time_horizon, esc_to_exit, in_observer_mode,
-    not_in_observer_mode,
+    check_all_empires_eliminated, check_time_horizon, in_observer_mode, not_in_observer_mode,
 };
 use macrocosmo::player::{Empire, Faction, Player};
 use macrocosmo::time_system::GameClock;
@@ -28,6 +28,7 @@ fn observer_app(mode: ObserverMode) -> App {
     app.insert_resource(mode);
     app.insert_resource(RngSeed::default());
     app.add_plugins(ObserverPlugin);
+    app.add_plugins(ObserverControlsPlugin);
     app
 }
 

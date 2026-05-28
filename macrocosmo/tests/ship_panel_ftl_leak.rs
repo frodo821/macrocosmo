@@ -701,7 +701,10 @@ fn ship_panel_is_refitting_uses_projection() {
     );
     let progress = info.progress.expect("Refitting must produce progress");
     assert_eq!(progress.0, 4, "elapsed = clock(4) - dispatched_at(0)");
-    assert_eq!(progress.1, 8, "total = expected_arrival(8) - dispatched_at(0)");
+    assert_eq!(
+        progress.1, 8,
+        "total = expected_arrival(8) - dispatched_at(0)"
+    );
     assert!(
         (progress.2 - 0.5).abs() < 1e-6,
         "fraction = elapsed / total = 0.5"

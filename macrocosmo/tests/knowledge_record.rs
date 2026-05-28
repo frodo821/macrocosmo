@@ -65,7 +65,7 @@ fn make_world_with_kind(kind_id: &str, schema_fields: Vec<(&str, PayloadFieldTyp
             z: 0.0,
         },
         macrocosmo::technology::GameFlags::default(),
-        macrocosmo::condition::ScopedFlags::default(),
+        macrocosmo::modifier::ScopedModifications::default(),
         macrocosmo::technology::EmpireModifiers::default(),
     ));
 

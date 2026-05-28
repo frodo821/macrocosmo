@@ -16,7 +16,6 @@
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::communication::{
     BuildingKind, BuildingScope, ColonyCommand, PendingColonyDispatch, PendingColonyDispatches,
     RemoteCommand,
@@ -29,6 +28,7 @@ use macrocosmo::ui::{
     gate_diplomacy_action, gate_research_action, gate_ship_designer_action,
     gate_system_panel_writes,
 };
+use macrocosmo_core::amount::Amt;
 
 // ---------------------------------------------------------------------------
 // System panel chokepoint — covers build/demolish/upgrade dispatch, ship

@@ -1,3 +1,5 @@
+local cond = require("macrocosmo.condition")
+
 local mine = define_building {
     id = "mine",
     name = "Mineshaft",
@@ -27,7 +29,7 @@ local advanced_mine = define_building {
         { target = "colony.miner_slot", base_add = 10 },
     },
     is_system_building = false,
-    prerequisites = has_tech(forward_ref("industrial_automated_mining")),
+    prerequisites = cond.has_tech(forward_ref("industrial_automated_mining")),
 }
 
 return {

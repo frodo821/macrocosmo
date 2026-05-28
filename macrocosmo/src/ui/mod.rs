@@ -3,6 +3,7 @@ pub mod bottom_bar;
 pub mod console;
 pub mod context_menu;
 pub mod diplomacy_panel;
+pub mod dsl;
 pub mod outline;
 pub mod overlays;
 pub mod params;
@@ -15,7 +16,6 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
-use crate::amount::{Amt, SignedAmt};
 use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
 use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
@@ -25,12 +25,12 @@ use crate::colony::{
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
-use crate::condition::ScopedFlags;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
 use crate::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
 use crate::modifier::ModifiedValue;
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::observer::{ObserverMode, ObserverView};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
@@ -47,6 +47,7 @@ use crate::visualization::{
     ContextMenu, DeployMode, DeployPending, EguiWantsPointer, OutlineExpandedSystems,
     SelectedPlanet, SelectedShip, SelectedSystem,
 };
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use params::{
     MainPanelDeliverableRes, MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries,
@@ -153,52 +154,24 @@ pub fn draw_modifier_breakdown(
     format_fn: &dyn Fn(Amt) -> String,
     current_time: Option<i64>,
 ) {
-    let final_val = value.final_value();
-    let modifiers = value.modifiers();
+    let display =
+        macrocosmo_core::display::modified_value_display(label, value, format_fn, current_time);
 
     ui.set_min_width(220.0);
-    ui.label(egui::RichText::new(format!("{}: {}", label, format_fn(final_val))).strong());
+    ui.label(egui::RichText::new(format!("{}: {}", display.label, display.final_value)).strong());
     ui.separator();
-    ui.label(format!("Base: {}", format_fn(value.base())));
+    ui.label(format!("Base: {}", display.base));
 
-    for m in modifiers {
-        let mut parts = Vec::new();
-        if m.base_add.raw() != 0 {
-            parts.push(format!("{} (base add)", m.base_add.display()));
-        }
-        if m.multiplier.raw() != 0 {
-            let mult_with_one = SignedAmt::units(1).add(m.multiplier);
-            let abs_raw = mult_with_one.raw().unsigned_abs();
-            let w = abs_raw / 1000;
-            let f = abs_raw % 1000;
-            let sign = if mult_with_one.raw() < 0 { "-" } else { "" };
-            let mult_str = if f == 0 {
-                format!("x{}{}", sign, w)
-            } else if f % 100 == 0 {
-                format!("x{}{}.{}", sign, w, f / 100)
-            } else if f % 10 == 0 {
-                format!("x{}{}.{:02}", sign, w, f / 10)
-            } else {
-                format!("x{}{}.{:03}", sign, w, f)
-            };
-            parts.push(format!("{} (mult)", mult_str));
-        }
-        if m.add.raw() != 0 {
-            parts.push(format!("{} (add)", m.add.display()));
-        }
-        let effect = parts.join(", ");
-
-        let mut line = format!("[{}]  {}", m.label, effect);
-        if let Some(now) = current_time {
-            if let Some(remaining) = m.remaining_duration(now) {
-                line.push_str(&format!("  ({} hd left)", remaining));
-            }
+    for modifier in display.modifiers {
+        let mut line = format!("[{}]  {}", modifier.label, modifier.parts.join(", "));
+        if let Some(remaining) = modifier.remaining_duration {
+            line.push_str(&format!("  ({} hd left)", remaining));
         }
         ui.label(line);
     }
 
     ui.separator();
-    ui.label(format!("Final: {}", format_fn(final_val)));
+    ui.label(format!("Final: {}", display.final_value));
 }
 
 /// #391: Render a label showing a `ModifiedValue`'s final value, with a hover
@@ -941,6 +914,7 @@ fn draw_top_bar_system(
     mut observer_view: ResMut<crate::observer::ObserverView>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
     mut ui_registry: Option<ResMut<UiElementRegistry>>,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
 ) {
     crate::prof_span!("draw_top_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -989,6 +963,7 @@ fn draw_top_bar_system(
         &mut designer_state,
         observer_state,
         ui_registry.as_mut().map(|r| &mut **r),
+        engine.as_deref(),
     );
 
     if selected != observer_view.viewing {
@@ -1018,6 +993,7 @@ fn draw_notifications_system(
     mut contexts: EguiContexts,
     mut queue: ResMut<NotificationQueue>,
     mut selected_system: ResMut<SelectedSystem>,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -1025,6 +1001,12 @@ fn draw_notifications_system(
 
     let items: Vec<crate::notifications::Notification> = queue.items.clone();
     if items.is_empty() {
+        return;
+    }
+
+    if let Some(engine) = engine.as_deref()
+        && draw_notifications_lua(ctx, engine, &items, &mut queue, &mut selected_system).is_ok()
+    {
         return;
     }
 
@@ -1051,6 +1033,81 @@ fn draw_notifications_system(
     }
 }
 
+fn draw_notifications_lua(
+    ctx: &egui::Context,
+    engine: &crate::scripting::ScriptEngine,
+    items: &[crate::notifications::Notification],
+    queue: &mut NotificationQueue,
+    selected_system: &mut SelectedSystem,
+) -> mlua::Result<()> {
+    let lua = engine.lua();
+    let registry = macrocosmo_ui_dsl::lua::parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.notification_pills") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.notification_pills' is not registered".into(),
+        ));
+    };
+
+    let view = notification_pills_view_table(lua, items)?;
+    let node = fragment.inflate(lua, view)?;
+    let mut clicked_commands = Vec::new();
+    egui::Area::new(egui::Id::new("notification_pills"))
+        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-8.0, 48.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let mut renderer = macrocosmo_ui_dsl::UiDslRenderer::default();
+            clicked_commands = renderer.render(ui, &node).clicked_commands;
+        });
+
+    for command in clicked_commands {
+        if let Some(raw_id) = command.strip_prefix("notification.dismiss:") {
+            if let Ok(id) = raw_id.parse::<u64>() {
+                queue.dismiss(id);
+            }
+        } else if let Some(raw_id) = command.strip_prefix("notification.jump:")
+            && let Ok(id) = raw_id.parse::<u64>()
+            && let Some(notification) = items.iter().find(|item| item.id == id)
+        {
+            if let Some(target) = notification.target_system {
+                selected_system.0 = Some(target);
+            }
+            queue.dismiss(id);
+        }
+    }
+
+    Ok(())
+}
+
+fn notification_pills_view_table(
+    lua: &mlua::Lua,
+    items: &[crate::notifications::Notification],
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    let notifications = lua.create_table()?;
+    for (index, notification) in items.iter().enumerate() {
+        let row = lua.create_table()?;
+        row.set("id", notification.id)?;
+        row.set("title", notification.title.clone())?;
+        row.set("description", notification.description.clone())?;
+        row.set("glyph", notification_pill_glyph(notification))?;
+        row.set(
+            "priority",
+            match notification.priority {
+                NotificationPriority::High => "high",
+                NotificationPriority::Medium => "medium",
+                NotificationPriority::Low => "low",
+            },
+        )?;
+        row.set("has_target", notification.target_system.is_some())?;
+        if let Some(remaining) = notification.remaining_hexadies {
+            row.set("remaining_hexadies", remaining)?;
+        }
+        notifications.set(index + 1, row)?;
+    }
+    view.set("notifications", notifications)?;
+    Ok(view)
+}
+
 fn notification_pill_colors(priority: NotificationPriority) -> (egui::Color32, egui::Color32) {
     match priority {
         NotificationPriority::High => (
@@ -1068,6 +1125,19 @@ fn notification_pill_colors(priority: NotificationPriority) -> (egui::Color32, e
     }
 }
 
+fn notification_pill_glyph(n: &crate::notifications::Notification) -> &str {
+    if let Some(ref icon) = n.icon {
+        if icon.chars().count() == 1 {
+            return icon.as_str();
+        }
+    }
+    match n.priority {
+        NotificationPriority::High => "!",
+        NotificationPriority::Medium => "i",
+        NotificationPriority::Low => ".",
+    }
+}
+
 fn draw_notification_pill(
     ui: &mut egui::Ui,
     n: &crate::notifications::Notification,
@@ -1077,9 +1147,10 @@ fn draw_notification_pill(
     let (border, fill) = notification_pill_colors(n.priority);
 
     let size = egui::vec2(PILL_DIAMETER, PILL_DIAMETER);
-    // `click_and_drag` so egui surfaces both primary (`clicked`) and
-    // secondary (`secondary_clicked`) press events on the pill itself.
-    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+    // `Sense::click()` is enough — egui surfaces both `clicked()` (primary)
+    // and `secondary_clicked()` (right) on any widget that opts into click
+    // sense.
+    let (rect, pill_response) = ui.allocate_exact_size(size, egui::Sense::click());
 
     let radius = PILL_DIAMETER * 0.5;
     let hovered = pill_response.hovered();
@@ -1093,17 +1164,20 @@ fn draw_notification_pill(
     painter.text(
         rect.center(),
         egui::Align2::CENTER_CENTER,
-        n.pill_glyph(),
+        notification_pill_glyph(n),
         egui::FontId::proportional(11.0),
         egui::Color32::WHITE,
     );
 
     // Tooltip-only hover: pure information, no interactive widgets.
+    // `on_hover_ui` consumes the response and returns a new one — chain it so
+    // the tooltip closure is properly registered, then use the returned
+    // response for click detection.
     let has_target = n.target_system.is_some();
     let title = n.title.clone();
     let description = n.description.clone();
     let remaining = n.remaining_hexadies;
-    pill_response.clone().on_hover_ui(|ui| {
+    let response = pill_response.on_hover_ui(|ui| {
         ui.set_max_width(360.0);
         ui.label(
             egui::RichText::new(&title)
@@ -1129,9 +1203,9 @@ fn draw_notification_pill(
         ui.label(egui::RichText::new(hint).small().weak());
     });
 
-    if pill_response.clicked() {
+    if response.clicked() {
         to_dismiss.push(n.id);
-    } else if pill_response.secondary_clicked() {
+    } else if response.secondary_clicked() {
         if let Some(target) = n.target_system {
             *jump_target = Some(target);
             to_dismiss.push(n.id);
@@ -1154,6 +1228,7 @@ fn draw_outline_and_tooltips_system(
     mut selected_system: ResMut<SelectedSystem>,
     mut selected_ship: ResMut<SelectedShip>,
     mut selected_ships: ResMut<crate::visualization::SelectedShips>,
+    mut context_menu: ResMut<ContextMenu>,
     mut egui_wants_pointer: ResMut<EguiWantsPointer>,
     mut outline_expanded: ResMut<OutlineExpandedSystems>,
     galaxy_view: Res<crate::visualization::GalaxyView>,
@@ -1161,6 +1236,7 @@ fn draw_outline_and_tooltips_system(
     knowledge_q: Query<&KnowledgeStore, With<crate::player::Empire>>,
     outline_q: params::OutlineQueries,
     obs: ObserverUiState,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
 ) {
     crate::prof_span!("draw_outline_and_tooltips");
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -1186,31 +1262,53 @@ fn draw_outline_and_tooltips_system(
 
     egui_wants_pointer.0 = ctx.wants_pointer_input();
 
-    outline::draw_outline(
-        ctx,
-        &outline_q.stars,
-        &outline_q.colonies,
-        &outline_q.ships_query,
-        &mut selected_system,
-        &mut selected_ship,
-        &mut selected_ships,
-        &outline_q.planets,
-        &mut outline_expanded,
-        &design_registry,
-        &outline_q.fleets,
-        &outline_q.faction_owners,
-        empire_entity,
-        // #490 fold-in: outline's `is_observer` toggles the "show every
-        // empire's colonies/ships" branch — true for both observer-mode
-        // kinds (`EmpireView` and `Omniscient`), false for normal play.
-        obs.observer_mode.is_any_observer(),
-        home_system_entity,
-        // #487 / #499: Pass the viewing empire's KnowledgeStore so the
-        // outline tree's ship-state queries flow through the projection
-        // table. Observer mode resolves to the observed empire's store
-        // (= light-coherent empire-view), not realtime ground truth.
-        knowledge,
-    );
+    let outline_rendered = engine.as_deref().is_some_and(|engine| {
+        draw_outline_lua(
+            ctx,
+            engine,
+            &outline_q,
+            &mut selected_system,
+            &mut selected_ship,
+            &mut selected_ships,
+            &mut context_menu,
+            &outline_q.planets,
+            &outline_q.faction_owners,
+            empire_entity,
+            obs.observer_mode.is_any_observer(),
+            home_system_entity,
+            knowledge,
+        )
+        .is_ok()
+    });
+
+    if !outline_rendered {
+        outline::draw_outline(
+            ctx,
+            &outline_q.stars,
+            &outline_q.colonies,
+            &outline_q.ships_query,
+            &mut selected_system,
+            &mut selected_ship,
+            &mut selected_ships,
+            &mut context_menu,
+            &outline_q.planets,
+            &mut outline_expanded,
+            &design_registry,
+            &outline_q.fleets,
+            &outline_q.faction_owners,
+            empire_entity,
+            // #490 fold-in: outline's `is_observer` toggles the "show every
+            // empire's colonies/ships" branch — true for both observer-mode
+            // kinds (`EmpireView` and `Omniscient`), false for normal play.
+            obs.observer_mode.is_any_observer(),
+            home_system_entity,
+            // #487 / #499: Pass the viewing empire's KnowledgeStore so the
+            // outline tree's ship-state queries flow through the projection
+            // table. Observer mode resolves to the observed empire's store
+            // (= light-coherent empire-view), not realtime ground truth.
+            knowledge,
+        );
+    }
 
     draw_map_tooltips(
         ctx,
@@ -1230,6 +1328,182 @@ fn draw_outline_and_tooltips_system(
         // flows through `ShipView` (own=projection, foreign=snapshot).
         empire_entity,
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_outline_lua(
+    ctx: &egui::Context,
+    engine: &crate::scripting::ScriptEngine,
+    outline_q: &params::OutlineQueries,
+    selected_system: &mut SelectedSystem,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut crate::visualization::SelectedShips,
+    context_menu: &mut ContextMenu,
+    planets: &Query<&Planet>,
+    faction_owners: &Query<&crate::faction::FactionOwner>,
+    viewed_empire: Option<Entity>,
+    is_observer: bool,
+    home_system_entity: Option<Entity>,
+    viewing_knowledge: Option<&KnowledgeStore>,
+) -> mlua::Result<()> {
+    let lua = engine.lua();
+    let registry = macrocosmo_ui_dsl::lua::parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.outline") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.outline' is not registered".into(),
+        ));
+    };
+
+    let view = outline_view_table(
+        lua,
+        outline_q,
+        selected_system,
+        selected_ship,
+        planets,
+        faction_owners,
+        viewed_empire,
+        is_observer,
+        home_system_entity,
+        viewing_knowledge,
+    )?;
+    let node = fragment.inflate(lua, view)?;
+    let mut clicked_commands = Vec::new();
+    egui::SidePanel::left("outline_panel")
+        .min_width(180.0)
+        .max_width(220.0)
+        .show(ctx, |ui| {
+            let mut renderer = macrocosmo_ui_dsl::UiDslRenderer::default();
+            clicked_commands = renderer.render(ui, &node).clicked_commands;
+        });
+
+    for command in clicked_commands {
+        if let Some(raw_bits) = command.strip_prefix("outline.select_system:") {
+            if let Ok(bits) = raw_bits.parse::<u64>() {
+                crate::visualization::apply_entity_selection(
+                    crate::visualization::CycleKind::StarSystem,
+                    Entity::from_bits(bits),
+                    selected_system,
+                    selected_ship,
+                    selected_ships,
+                    false,
+                );
+            }
+        } else if let Some(raw_bits) = command.strip_prefix("outline.command_system:") {
+            if let Ok(bits) = raw_bits.parse::<u64>() {
+                open_context_menu_for_system(ctx, context_menu, Entity::from_bits(bits), false);
+            }
+        } else if let Some(raw_bits) = command.strip_prefix("outline.command_system_default:") {
+            if let Ok(bits) = raw_bits.parse::<u64>() {
+                open_context_menu_for_system(ctx, context_menu, Entity::from_bits(bits), true);
+            }
+        } else if let Some(raw_bits) = command.strip_prefix("outline.select_ship:")
+            && let Ok(bits) = raw_bits.parse::<u64>()
+        {
+            let entity = Entity::from_bits(bits);
+            crate::visualization::apply_entity_selection(
+                crate::visualization::CycleKind::Ship,
+                entity,
+                selected_system,
+                selected_ship,
+                selected_ships,
+                false,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn open_context_menu_for_system(
+    ctx: &egui::Context,
+    context_menu: &mut ContextMenu,
+    target_system: Entity,
+    execute_default: bool,
+) {
+    let position = ctx
+        .pointer_latest_pos()
+        .unwrap_or_else(|| egui::pos2(24.0, 24.0));
+    crate::visualization::open_context_menu_at(
+        context_menu,
+        target_system,
+        [position.x, position.y],
+        execute_default,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn outline_view_table(
+    lua: &mlua::Lua,
+    outline_q: &params::OutlineQueries,
+    selected_system: &SelectedSystem,
+    selected_ship: &SelectedShip,
+    planets: &Query<&Planet>,
+    faction_owners: &Query<&crate::faction::FactionOwner>,
+    viewed_empire: Option<Entity>,
+    is_observer: bool,
+    home_system_entity: Option<Entity>,
+    viewing_knowledge: Option<&KnowledgeStore>,
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    view.set("selected_ship_active", selected_ship.0.is_some())?;
+    let is_own_colony = |colony_entity: Entity| -> bool {
+        if is_observer || viewed_empire.is_none() {
+            return true;
+        }
+        let ve = viewed_empire.unwrap();
+        faction_owners
+            .get(colony_entity)
+            .map(|fo| fo.0 == ve)
+            .unwrap_or(false)
+    };
+
+    let mut systems_vec: Vec<(Entity, String, bool)> = Vec::new();
+    for (colony_entity, colony, _, _, _, _, _, _) in outline_q.colonies.iter() {
+        if !is_own_colony(colony_entity) {
+            continue;
+        }
+        if let Some(sys) = colony.system(planets)
+            && let Ok((entity, star, _, _)) = outline_q.stars.get(sys)
+            && !systems_vec
+                .iter()
+                .any(|(existing, _, _)| *existing == entity)
+        {
+            systems_vec.push((
+                entity,
+                star.name.clone(),
+                Some(entity) == home_system_entity,
+            ));
+        }
+    }
+    systems_vec.sort_by(|a, b| b.2.cmp(&a.2).then_with(|| a.1.cmp(&b.1)));
+
+    let systems = lua.create_table()?;
+    for (index, (entity, name, is_capital)) in systems_vec.iter().enumerate() {
+        let row = lua.create_table()?;
+        row.set("id", entity.to_bits())?;
+        row.set("name", name.clone())?;
+        row.set("is_capital", *is_capital)?;
+        row.set("selected", selected_system.0 == Some(*entity))?;
+        systems.set(index + 1, row)?;
+    }
+    view.set("systems", systems)?;
+
+    let transit_entries = outline::compute_in_transit_entries(
+        &outline_q.ships_query,
+        viewing_knowledge,
+        viewed_empire,
+    );
+    let in_transit = lua.create_table()?;
+    for (index, entry) in transit_entries.iter().enumerate() {
+        let row = lua.create_table()?;
+        row.set("id", entry.entity.to_bits())?;
+        row.set("name", entry.name.clone())?;
+        row.set("status", entry.status)?;
+        in_transit.set(index + 1, row)?;
+    }
+    view.set("in_transit", in_transit)?;
+
+    Ok(view)
 }
 
 // ---------------------------------------------------------------------------
@@ -1340,7 +1614,7 @@ fn draw_main_panels_system(
     let (empire_flags_union, empire_buildings) =
         match deliverables_res.empire_flags.get(empire_entity) {
             Ok((game_flags, scoped_flags)) => {
-                let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+                let mut union: std::collections::HashSet<String> = scoped_flags.flag_set();
                 union.extend(game_flags.flags.iter().cloned());
                 (union, std::collections::HashSet::<String>::new())
             }
@@ -2004,6 +2278,7 @@ fn draw_main_panels_system(
         // outline-tree fix #487 / #491 PR #2.
         context_menu_knowledge,
         Some(empire_entity),
+        registries.script_engine.as_deref(),
     );
     // #389: Handle dock action from context menu
     if let Some((ship_entity, harbour_entity)) = ctx_menu_actions.dock_at {
@@ -2148,7 +2423,6 @@ fn draw_overlays_system(
     hull_registry: Res<HullRegistry>,
     module_registry: Res<ModuleRegistry>,
     mut design_registry: ResMut<ShipDesignRegistry>,
-    stars: Query<(Entity, &StarSystem, &Position, Option<&SystemAttributes>)>,
     mut system_stockpiles: Query<
         (&mut ResourceStockpile, Option<&ResourceCapacity>),
         With<StarSystem>,
@@ -2162,6 +2436,7 @@ fn draw_overlays_system(
     unlock_index: Res<crate::technology::TechUnlockIndex>,
     obs: ObserverUiState,
     home_systems: Query<&HomeSystem>,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
 ) {
     crate::prof_span!("draw_overlays");
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -2189,6 +2464,7 @@ fn draw_overlays_system(
         &unlock_index,
         capital_refs,
         clock.elapsed,
+        engine.as_deref(),
     );
 
     // #440: observer read_only — drop research/designer write actions
@@ -2314,6 +2590,7 @@ fn draw_diplomacy_overlay_system(
     known_factions_q: Query<&crate::faction::KnownFactions>,
     factions_q: Query<(Entity, &crate::player::Faction), With<crate::player::Empire>>,
     obs: ObserverUiState,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
 ) {
     crate::prof_span!("draw_diplomacy_overlay");
     let Ok(ctx) = contexts.ctx_mut() else {
@@ -2353,6 +2630,7 @@ fn draw_diplomacy_overlay_system(
         &faction_registry,
         &factions,
         &clock,
+        engine.as_deref(),
     );
 
     // #440: observer read_only — drop diplomatic write actions so the
@@ -2448,12 +2726,16 @@ fn draw_diplomacy_overlay_system(
 // System 6: draw_bottom_bar_system
 // ---------------------------------------------------------------------------
 
-fn draw_bottom_bar_system(mut contexts: EguiContexts, event_log: Res<EventLog>) {
+fn draw_bottom_bar_system(
+    mut contexts: EguiContexts,
+    event_log: Res<EventLog>,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
+) {
     crate::prof_span!("draw_bottom_bar");
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
     };
-    bottom_bar::draw_bottom_bar(ctx, &event_log);
+    bottom_bar::draw_bottom_bar(ctx, &event_log, engine.as_deref());
 }
 
 // ---------------------------------------------------------------------------
@@ -2472,7 +2754,7 @@ fn draw_console_system(
         return;
     };
 
-    if let Some(input) = console::draw_console(ctx, &mut console_state, &log_buffer) {
+    if let Some(input) = console::draw_console(ctx, &mut console_state, &log_buffer, &engine) {
         // Echo the input
         log_buffer.push(
             input.clone(),
@@ -2865,7 +3147,10 @@ pub fn apply_design_refit(
     // any colony — inconsistent with construction rules.
     let has_shipyard = sys_mods_q
         .get(system_entity)
-        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
+        .map(|m| {
+            m.shipyard_build_parallel_slots.value().final_value()
+                > macrocosmo_core::amount::Amt::ZERO
+        })
         .unwrap_or(false);
     if !has_shipyard {
         return;
@@ -2911,10 +3196,11 @@ pub fn apply_design_refit(
 fn draw_choice_dialog_system(
     mut contexts: EguiContexts,
     ui_state: Res<UiState>,
-    mut pending: ResMut<PendingChoice>,
+    pending: Res<PendingChoice>,
     mut selection: ResMut<PendingChoiceSelection>,
     empire_q: Query<(&TechTree, &GameFlags, &ScopedFlags), With<crate::player::Empire>>,
     obs: ObserverUiState,
+    engine: Option<Res<crate::scripting::ScriptEngine>>,
 ) {
     let Ok(ctx) = contexts.ctx_mut() else {
         return;
@@ -2931,21 +3217,23 @@ fn draw_choice_dialog_system(
         return;
     };
 
-    // Evaluate availability against current empire state + capital stockpile.
-    let capital_stockpile = ui_state.capital_stockpile;
-    if let Some(active) = pending.current.as_mut() {
-        crate::choice::evaluate_choice_availability(
-            active,
-            tech_tree,
-            game_flags,
-            scoped_flags,
-            capital_stockpile,
-        );
-    }
-
     let Some(active) = pending.current.as_ref() else {
         return;
     };
+    let availability = crate::choice::evaluate_choice_availability(
+        active,
+        tech_tree,
+        game_flags,
+        scoped_flags,
+        ui_state.capital_stockpile,
+    );
+
+    if let Some(engine) = engine
+        && let Ok(Some(idx)) = draw_choice_dialog_lua(ctx, active, &availability, &engine)
+    {
+        selection.pick = Some(idx);
+        return;
+    }
 
     let mut pick_index: Option<usize> = None;
     egui::Window::new(egui::RichText::new(&active.title).size(18.0).strong())
@@ -2964,7 +3252,8 @@ fn draw_choice_dialog_system(
             ui.add_space(4.0);
 
             for (i, opt) in active.options.iter().enumerate() {
-                let unavailable = opt.condition_unmet || opt.cost_unmet;
+                let option_availability = availability.get(i).cloned().unwrap_or_default();
+                let unavailable = !option_availability.available();
                 ui.add_enabled_ui(!unavailable, |ui| {
                     let label_text = if opt.cost.is_zero() {
                         opt.label.clone()
@@ -2994,8 +3283,9 @@ fn draw_choice_dialog_system(
                     if let Some(desc) = &opt.description {
                         response = response.on_hover_text(desc);
                     }
-                    if unavailable && !opt.unmet_reason.is_empty() {
-                        response = response.on_disabled_hover_text(&opt.unmet_reason);
+                    if unavailable && !option_availability.unmet_reason.is_empty() {
+                        response =
+                            response.on_disabled_hover_text(&option_availability.unmet_reason);
                     }
                     if response.clicked() {
                         // 1-based index to match `lua_option_index`.
@@ -3009,4 +3299,85 @@ fn draw_choice_dialog_system(
     if let Some(idx) = pick_index {
         selection.pick = Some(idx);
     }
+}
+
+fn draw_choice_dialog_lua(
+    ctx: &egui::Context,
+    active: &crate::choice::ActiveChoice,
+    availability: &[crate::choice::ChoiceOptionAvailability],
+    engine: &crate::scripting::ScriptEngine,
+) -> mlua::Result<Option<usize>> {
+    let lua = engine.lua();
+    let registry = macrocosmo_ui_dsl::lua::parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.choice_dialog") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.choice_dialog' is not registered".into(),
+        ));
+    };
+
+    let view = choice_dialog_view_table(lua, active, availability)?;
+    let node = fragment.inflate(lua, view)?;
+    let mut clicked_commands = Vec::new();
+
+    egui::Window::new(egui::RichText::new(&active.title).size(18.0).strong())
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .default_width(460.0)
+        .show(ctx, |ui| {
+            ui.set_min_width(420.0);
+            ui.set_max_width(520.0);
+            let mut renderer = macrocosmo_ui_dsl::UiDslRenderer::default();
+            clicked_commands = renderer.render(ui, &node).clicked_commands;
+        });
+
+    Ok(clicked_commands.into_iter().find_map(|command| {
+        command
+            .strip_prefix("choice.select:")?
+            .parse::<usize>()
+            .ok()
+    }))
+}
+
+fn choice_dialog_view_table(
+    lua: &mlua::Lua,
+    active: &crate::choice::ActiveChoice,
+    availability: &[crate::choice::ChoiceOptionAvailability],
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    view.set("title", active.title.clone())?;
+    view.set("description", active.description.clone())?;
+
+    let options = lua.create_table()?;
+    for (index, option) in active.options.iter().enumerate() {
+        let option_availability = availability.get(index).cloned().unwrap_or_default();
+        let row = lua.create_table()?;
+        let label = if option.cost.is_zero() {
+            option.label.clone()
+        } else {
+            let mut parts = Vec::new();
+            if option.cost.minerals > Amt::ZERO {
+                parts.push(format!("{} M", option.cost.minerals));
+            }
+            if option.cost.energy > Amt::ZERO {
+                parts.push(format!("{} E", option.cost.energy));
+            }
+            if parts.is_empty() {
+                option.label.clone()
+            } else {
+                format!("{}  ({})", option.label, parts.join(", "))
+            }
+        };
+        row.set("label", label)?;
+        row.set(
+            "description",
+            option.description.clone().unwrap_or_default(),
+        )?;
+        row.set("disabled", !option_availability.available())?;
+        row.set("unmet_reason", option_availability.unmet_reason)?;
+        row.set("command", format!("choice.select:{}", index + 1))?;
+        options.set(index + 1, row)?;
+    }
+    view.set("options", options)?;
+    Ok(view)
 }

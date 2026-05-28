@@ -1,5 +1,5 @@
 [workspace]
-members = ["macrocosmo", "macrocosmo-ai"]
+members = ["macrocosmo", "macrocosmo-ai", "macrocosmo-core", "macrocosmo-ui-dsl"]
 resolver = "2"
 
 [workspace.package]

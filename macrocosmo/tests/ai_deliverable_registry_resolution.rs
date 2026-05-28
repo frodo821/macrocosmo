@@ -37,7 +37,6 @@ use bevy::prelude::*;
 
 use macrocosmo::ai::plugin::AiBusResource;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::building_queue::{BuildKind, BuildQueue};
 use macrocosmo::colony::{Colony, ResourceStockpile};
 use macrocosmo::components::Position;
@@ -47,6 +46,7 @@ use macrocosmo::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemModi
 use macrocosmo::player::{Empire, Faction};
 use macrocosmo::ship::Owner;
 use macrocosmo_ai::{Command, CommandValue};
+use macrocosmo_core::amount::Amt;
 
 use common::{spawn_mock_core_ship, spawn_test_ruler, test_app};
 
@@ -126,7 +126,7 @@ fn build_npc_with_owned_colony(
             macrocosmo::knowledge::KnowledgeStore::default(),
             macrocosmo::knowledge::SystemVisibilityMap::default(),
             macrocosmo::empire::CommsParams::default(),
-            macrocosmo::condition::ScopedFlags::default(),
+            macrocosmo::modifier::ScopedModifications::default(),
             macrocosmo::technology::TechTree::default(),
             macrocosmo::technology::ResearchQueue::default(),
         ))

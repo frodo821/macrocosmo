@@ -7,6 +7,7 @@
 
 -- Note: ftl_communications and ftl_interdiction_tech are forward references
 -- to techs not yet defined. Using forward_ref() to express this intent.
+local cond = require("macrocosmo.condition")
 
 local sensor_buoy = define_deliverable {
     id = "sensor_buoy",
@@ -39,7 +40,7 @@ local ftl_comm_relay = define_deliverable {
         ftl_comm_relay = { range = 5.0 },
     },
     energy_drain = 500, -- millis (0.5 units per hexady)
-    prerequisites = has_tech(forward_ref("ftl_communications")),
+    prerequisites = cond.has_tech(forward_ref("ftl_communications")),
 }
 
 local interdictor = define_deliverable {
@@ -55,7 +56,7 @@ local interdictor = define_deliverable {
         ftl_interdiction = { range = 5.0 },
     },
     energy_drain = 1000, -- millis (1.0 units per hexady)
-    prerequisites = has_tech(forward_ref("ftl_interdiction_tech")),
+    prerequisites = cond.has_tech(forward_ref("ftl_interdiction_tech")),
 }
 
 return {

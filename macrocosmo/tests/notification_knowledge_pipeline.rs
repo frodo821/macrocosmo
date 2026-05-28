@@ -46,7 +46,6 @@ mod common;
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::SignedAmt;
 use macrocosmo::empire::CommsParams;
 use macrocosmo::events::{GameEvent, GameEventKind};
 use macrocosmo::knowledge::{
@@ -60,6 +59,7 @@ use macrocosmo::notifications::{
 };
 use macrocosmo::player::PlayerEmpire;
 use macrocosmo::time_system::GameClock;
+use macrocosmo_core::amount::SignedAmt;
 
 // Small helpers so tests focus on behaviour, not boilerplate.
 
@@ -362,7 +362,7 @@ fn test_empire_comm_relay_range_extends_coverage() {
         name: "Test Relay".into(),
         description: String::new(),
         max_hp: 100.0,
-        energy_drain: macrocosmo::amount::Amt::ZERO,
+        energy_drain: macrocosmo_core::amount::Amt::ZERO,
         capabilities: caps,
         prerequisites: None,
         deliverable: None,

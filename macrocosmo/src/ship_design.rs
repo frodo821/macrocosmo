@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
-use crate::condition::Condition;
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::Condition;
 
 /// Module size tier — constrains which hull slots accept which modules.
 /// A module fits in a slot when `module.size <= slot.max_size`.
@@ -1593,7 +1593,7 @@ mod tests {
 
     #[test]
     fn ship_design_effective_prereqs_single_unwrapped_not_wrapped_in_all() {
-        use crate::condition::ConditionAtom;
+        use macrocosmo_core::condition::ConditionAtom;
         let (mut hulls, modules) = validation_fixture();
         // Attach a prerequisite to the corvette hull.
         let mut corvette = hulls.get("corvette").unwrap().clone();
@@ -1617,7 +1617,7 @@ mod tests {
 
     #[test]
     fn ship_design_effective_prereqs_derived_from_hull_and_modules() {
-        use crate::condition::ConditionAtom;
+        use macrocosmo_core::condition::ConditionAtom;
         let (mut hulls, mut modules) = validation_fixture();
         // Hull requires tech T1.
         let mut corvette = hulls.get("corvette").unwrap().clone();

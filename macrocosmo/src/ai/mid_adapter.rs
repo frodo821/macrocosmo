@@ -20,7 +20,7 @@ use macrocosmo_ai::{Command, FactionId, Proposal};
 
 use super::npc_decision::NpcContext;
 use crate::ai::convert::to_ai_faction;
-use crate::amount::Amt;
+use macrocosmo_core::amount::Amt;
 
 /// What the Mid layer can read about the game world. Bevy-agnostic
 /// in spirit — the trait stays decoupled from `Query` / `Resource`

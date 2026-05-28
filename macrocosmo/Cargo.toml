@@ -3,6 +3,12 @@ name = "macrocosmo"
 version.workspace = true
 edition.workspace = true
 
+[lints.rust]
+# The game crate has many integration-test fixtures and Bevy system params that
+# are intentionally only used in some targets. Keep higher-signal warnings on,
+# but suppress the noisy unused lint group at the package boundary.
+unused = "allow"
+
 [dependencies]
 # Bevy default features を落として、本 project で実際に使う subset だけ有効化する。
 # 未使用 (grep confirmed): animation / bevy_audio / bevy_gltf / bevy_pbr / bevy_gilrs /
@@ -38,6 +44,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
 ] }
 bevy_egui = "0.39.1"
 mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
+macrocosmo-core = { path = "../macrocosmo-core", features = ["reflect"] }
+macrocosmo-ui-dsl = { path = "../macrocosmo-ui-dsl" }
 rand = "0.9"
 rand_xoshiro = { version = "0.7", features = ["serde"] }
 serde_json = "1"
