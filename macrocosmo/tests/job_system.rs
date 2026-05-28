@@ -6,11 +6,11 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::modifier::{ModifiedValue, Modifier, ParsedModifier};
 use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingId};
 use macrocosmo::species::*;
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, find_planet, spawn_test_system, test_app};
 
@@ -927,9 +927,9 @@ fn _ensure_modifier_constructible() -> Modifier {
     Modifier {
         id: "x".into(),
         label: "x".into(),
-        base_add: macrocosmo::amount::SignedAmt::ZERO,
-        multiplier: macrocosmo::amount::SignedAmt::ZERO,
-        add: macrocosmo::amount::SignedAmt::ZERO,
+        base_add: macrocosmo_core::amount::SignedAmt::ZERO,
+        multiplier: macrocosmo_core::amount::SignedAmt::ZERO,
+        add: macrocosmo_core::amount::SignedAmt::ZERO,
         expires_at: None,
         on_expire_event: None,
     }

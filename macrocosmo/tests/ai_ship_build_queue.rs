@@ -34,7 +34,6 @@ use bevy::prelude::*;
 
 use macrocosmo::ai::plugin::AiBusResource;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::building_queue::{BuildKind, BuildQueue};
 use macrocosmo::colony::{Colony, ResourceStockpile};
 use macrocosmo::components::Position;
@@ -43,6 +42,7 @@ use macrocosmo::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemModi
 use macrocosmo::player::{Empire, Faction};
 use macrocosmo::ship::Owner;
 use macrocosmo_ai::{Command, CommandValue};
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, spawn_mock_core_ship, spawn_test_ruler, test_app};
 
@@ -90,7 +90,7 @@ fn build_npc_with_shipyard_colony(app: &mut App) -> (Entity, Entity, Entity, Ent
             macrocosmo::knowledge::KnowledgeStore::default(),
             macrocosmo::knowledge::SystemVisibilityMap::default(),
             macrocosmo::empire::CommsParams::default(),
-            macrocosmo::condition::ScopedFlags::default(),
+            macrocosmo::modifier::ScopedModifications::default(),
             macrocosmo::technology::TechTree::default(),
             macrocosmo::technology::ResearchQueue::default(),
         ))
@@ -104,9 +104,9 @@ fn build_npc_with_shipyard_colony(app: &mut App) -> (Entity, Entity, Entity, Ent
         .push_modifier(macrocosmo::modifier::Modifier {
             id: "fixture_shipyard".into(),
             label: "Fixture Shipyard".into(),
-            base_add: macrocosmo::amount::SignedAmt::units(1),
-            multiplier: macrocosmo::amount::SignedAmt::ZERO,
-            add: macrocosmo::amount::SignedAmt::ZERO,
+            base_add: macrocosmo_core::amount::SignedAmt::units(1),
+            multiplier: macrocosmo_core::amount::SignedAmt::ZERO,
+            add: macrocosmo_core::amount::SignedAmt::ZERO,
             expires_at: None,
             on_expire_event: None,
         });
@@ -463,7 +463,7 @@ fn build_ship_warns_when_shipyard_system_has_no_owned_colony() {
             macrocosmo::knowledge::KnowledgeStore::default(),
             macrocosmo::knowledge::SystemVisibilityMap::default(),
             macrocosmo::empire::CommsParams::default(),
-            macrocosmo::condition::ScopedFlags::default(),
+            macrocosmo::modifier::ScopedModifications::default(),
             macrocosmo::technology::TechTree::default(),
             macrocosmo::technology::ResearchQueue::default(),
         ))
@@ -489,9 +489,9 @@ fn build_ship_warns_when_shipyard_system_has_no_owned_colony() {
         .push_modifier(macrocosmo::modifier::Modifier {
             id: "conquered_shipyard".into(),
             label: "Conquered Shipyard".into(),
-            base_add: macrocosmo::amount::SignedAmt::units(1),
-            multiplier: macrocosmo::amount::SignedAmt::ZERO,
-            add: macrocosmo::amount::SignedAmt::ZERO,
+            base_add: macrocosmo_core::amount::SignedAmt::units(1),
+            multiplier: macrocosmo_core::amount::SignedAmt::ZERO,
+            add: macrocosmo_core::amount::SignedAmt::ZERO,
             expires_at: None,
             on_expire_event: None,
         });

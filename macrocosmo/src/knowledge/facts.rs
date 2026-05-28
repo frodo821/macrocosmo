@@ -1330,8 +1330,8 @@ pub fn record_world_event_fact(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::SignedAmt;
     use crate::modifier::Modifier;
+    use macrocosmo_core::amount::SignedAmt;
 
     fn empty_comms() -> CommsParams {
         CommsParams::default()

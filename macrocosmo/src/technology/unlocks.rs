@@ -8,12 +8,12 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::condition::{AtomKind, Condition};
 use crate::deep_space::StructureRegistry;
 use crate::scripting::building_api::BuildingRegistry;
 use crate::ship_design::{
     HullRegistry, ModuleRegistry, ShipDesignRegistry, ship_design_effective_prerequisites,
 };
+use macrocosmo_core::condition::{AtomKind, Condition};
 
 use super::tree::{TechId, TechTree};
 
@@ -237,8 +237,6 @@ pub fn build_tech_unlock_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
-    use crate::condition::ConditionAtom;
     use crate::deep_space::{ResourceCost, StructureDefinition};
     use crate::scripting::building_api::{
         BuildingDefinition, CapabilityParams as BCapabilityParams,
@@ -248,6 +246,8 @@ mod tests {
         ShipDesignDefinition, ShipDesignRegistry,
     };
     use crate::technology::tree::{TechCost, Technology};
+    use macrocosmo_core::amount::Amt;
+    use macrocosmo_core::condition::ConditionAtom;
     use std::collections::HashMap;
 
     fn make_module(id: &str, name: &str, prereq: Option<Condition>) -> ModuleDefinition {

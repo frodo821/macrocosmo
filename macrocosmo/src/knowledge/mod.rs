@@ -38,7 +38,6 @@ pub use facts::{
     sweep_notified_event_ids,
 };
 
-use crate::amount::Amt;
 use crate::colony::ResourceStockpile;
 use crate::components::Position;
 use crate::galaxy::StarSystem;
@@ -46,6 +45,7 @@ use crate::physics;
 use crate::player::{AboardShip, Empire, EmpireRuler, EmpireViewerSystem, Ruler, StationedAt};
 use crate::ship::{Owner, Ship, ShipState};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 #[allow(unused_imports)]
 pub use perceived::{FactionId, PerceivedInfo, perceived_fleet, perceived_system};

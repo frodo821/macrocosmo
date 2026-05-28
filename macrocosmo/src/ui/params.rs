@@ -230,7 +230,7 @@ pub struct MainPanelDeliverableRes<'w, 's> {
         's,
         (
             &'static crate::technology::GameFlags,
-            &'static crate::condition::ScopedFlags,
+            &'static crate::modifier::ScopedModifications,
         ),
         With<crate::player::Empire>,
     >,

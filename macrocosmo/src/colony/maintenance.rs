@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 
-use crate::amount::{Amt, SignedAmt};
 use crate::galaxy::{Planet, StarSystem};
 use crate::modifier::{ModifiedValue, Modifier};
 use crate::scripting::building_api::BuildingRegistry;
 use crate::ship::{Ship, ShipState};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::{Buildings, Colony, LastProductionTick, ResourceStockpile};
 

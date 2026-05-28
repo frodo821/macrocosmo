@@ -5,13 +5,13 @@ mod common;
 
 use bevy::prelude::*;
 use common::{advance_time, empire_entity, spawn_test_system_with_planet, test_app};
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
     ColonizationOrder, ColonizationQueue, ResourceCapacity, ResourceStockpile,
 };
 use macrocosmo::components::Position;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::ship::{Ship, ShipState};
+use macrocosmo_core::amount::Amt;
 
 /// Count how many ships with a given design_id exist InSystem at a given system.
 fn count_station_ships(world: &mut World, design_id: &str, system: Entity) -> usize {

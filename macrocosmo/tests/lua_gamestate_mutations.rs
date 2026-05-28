@@ -7,19 +7,19 @@
 //! a realistic event handler installed on `_event_handlers`.
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{Colony, Production, ResourceStockpile};
 use macrocosmo::components::Position;
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::event_system::{EventSystem, FiredEvent};
 use macrocosmo::galaxy::{StarSystem, SystemModifiers};
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::gamestate_scope::{GamestateMode, dispatch_with_gamestate};
 use macrocosmo::scripting::lifecycle::dispatch_event_handlers;
 use macrocosmo::technology::{EmpireModifiers, GameFlags, TechTree};
 use macrocosmo::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 fn make_mutation_world() -> World {
     let mut world = World::new();

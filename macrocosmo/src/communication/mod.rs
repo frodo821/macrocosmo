@@ -235,8 +235,8 @@ pub enum RemoteCommand {
         def_id: String,
         display_name: String,
         cargo_size: u32,
-        minerals_cost: crate::amount::Amt,
-        energy_cost: crate::amount::Amt,
+        minerals_cost: macrocosmo_core::amount::Amt,
+        energy_cost: macrocosmo_core::amount::Amt,
         build_time: i64,
     },
     /// #275: Cancel a planet- or system-level building order (construction,
@@ -548,7 +548,7 @@ pub fn process_pending_commands(
             // is rejected here instead of silently being enqueued.
             &crate::technology::TechTree,
             &crate::technology::GameFlags,
-            &crate::condition::ScopedFlags,
+            &crate::modifier::ScopedModifications,
         ),
         With<crate::player::PlayerEmpire>,
     >,
@@ -578,7 +578,7 @@ pub fn process_pending_commands(
     let mut empire_flags_union: std::collections::HashSet<String> = scoped_flags.flag_set();
     empire_flags_union.extend(game_flags.flags.iter().cloned());
     let empire_buildings: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let prereq_ctx = crate::condition::EvalContext::flat(
+    let prereq_ctx = macrocosmo_core::condition::EvalContext::flat(
         &researched_techs,
         &active_modifiers,
         &empire_buildings,

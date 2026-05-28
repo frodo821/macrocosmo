@@ -3,18 +3,18 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::choice::{
     PendingChoice, PendingChoiceSelection, apply_pending_choice_selection, drain_pending_choices,
     evaluate_choice_availability,
 };
 use macrocosmo::colony::ResourceStockpile;
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::galaxy::StarSystem;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::PlayerEmpire;
 use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::technology::{GameFlags, GlobalParams, TechTree};
 use macrocosmo::time_system::GameSpeed;
+use macrocosmo_core::amount::Amt;
 
 /// Helper: minimal App with just the resources the drain + apply systems need.
 /// Does NOT use `test_app` because we want a tight, choice-focused fixture.

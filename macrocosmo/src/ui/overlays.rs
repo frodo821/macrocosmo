@@ -2,7 +2,6 @@ use bevy::prelude::*;
 use bevy_egui::egui;
 use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
-use crate::amount::Amt;
 use crate::scripting::ScriptEngine;
 use crate::ship_design::{
     DesignSlotAssignment, HullRegistry, ModuleRegistry, ShipDesignDefinition, ShipDesignRegistry,
@@ -11,6 +10,7 @@ use crate::technology::{
     ResearchPool, ResearchQueue, TechBranchRegistry, TechEffectsPreview, TechId, TechTree,
     TechUnlockIndex, UnlockKind,
 };
+use macrocosmo_core::amount::Amt;
 
 use super::ResearchPanelOpen;
 
@@ -375,8 +375,8 @@ pub fn draw_ship_designer(
                             revision: 0,
                             // #396: derived from hull build cost at registry time
                             is_direct_buildable: hull.build_cost_minerals
-                                > crate::amount::Amt::ZERO
-                                || hull.build_cost_energy > crate::amount::Amt::ZERO,
+                                > macrocosmo_core::amount::Amt::ZERO
+                                || hull.build_cost_energy > macrocosmo_core::amount::Amt::ZERO,
                         });
                     }
 

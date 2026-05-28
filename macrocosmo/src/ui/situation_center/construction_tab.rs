@@ -20,10 +20,10 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::{BuildQueue, BuildingQueue, Colony, ResourceStockpile};
 use crate::galaxy::{Planet, StarSystem};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::tab::{OngoingTab, TabBadge, TabMeta};
 use super::types::{Event, EventKind, EventSource, Severity};
@@ -428,10 +428,10 @@ fn is_bottlenecked(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
     use crate::colony::{BuildOrder, ResourceStockpile};
     use crate::components::Position;
     use crate::galaxy::{Planet, StarSystem};
+    use macrocosmo_core::amount::Amt;
 
     fn push_test_order(
         world: &mut World,

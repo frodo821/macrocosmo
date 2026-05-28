@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use std::collections::HashMap;
 
-use crate::amount::{Amt, SignedAmt};
 use crate::components::Position;
 use crate::galaxy::Planet;
 use crate::modifier::Modifier;
@@ -9,6 +8,7 @@ use crate::scripting::building_api::{BuildingDefinition, BuildingId, BuildingReg
 use crate::ship::{Owner, Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::{
     BuildingOrder, CancelledOrderKind, Colony, DemolitionOrder, LastProductionTick,

@@ -5,12 +5,12 @@ mod types;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::game_state::GameState;
 use crate::modifier::ScopedModifiers;
 use crate::scripting::galaxy_api::{PlanetTypeRegistry, StarTypeRegistry};
 use crate::scripting::map_api::{MapTypeRegistry, PredefinedSystemRegistry};
 use crate::ship::Owner;
+use macrocosmo_core::amount::Amt;
 
 // Re-exports for backward compatibility
 pub use biome::{
@@ -167,7 +167,8 @@ pub fn system_inner_orbit_position(system: Entity, world: &bevy::ecs::world::Wor
     [pos.x + INNER_ORBIT_OFFSET_LY, pos.y, pos.z]
 }
 /// Food consumed per population per hexadies (as Amt: 0.100).
-pub const FOOD_PER_POP_PER_HEXADIES: crate::amount::Amt = crate::amount::Amt::new(0, 100);
+pub const FOOD_PER_POP_PER_HEXADIES: macrocosmo_core::amount::Amt =
+    macrocosmo_core::amount::Amt::new(0, 100);
 
 /// Map a numeric habitability value to a human-readable label.
 pub fn habitability_label(value: f64) -> &'static str {

@@ -4,13 +4,13 @@ use std::fmt;
 use bevy::prelude::*;
 use mlua::prelude::*;
 
-use crate::amount::Amt;
 use crate::event_system::EventContext;
 use crate::faction::{FactionOwner, system_owner};
 use crate::galaxy::{AtSystem, Planet, Sovereignty, StarSystem};
 use crate::modifier::ModifiedValue;
 use crate::ship::Owner;
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::{Colony, LastProductionTick, ResourceCapacity, ResourceStockpile};
 

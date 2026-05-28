@@ -6,9 +6,9 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingId, BuildingRegistry};
+use macrocosmo_core::amount::Amt;
 
 use common::create_test_building_registry;
 

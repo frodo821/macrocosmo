@@ -1,7 +1,6 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
@@ -10,6 +9,7 @@ use macrocosmo::physics::{light_delay_hexadies, sublight_travel_hexadies};
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology::TechKnowledge;
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, empire_entity, find_planet, full_test_app, spawn_test_colony, spawn_test_system,
@@ -2909,9 +2909,9 @@ fn spawn_secondary_empire_457(
 ) -> Entity {
     use macrocosmo::colony::{AuthorityParams, ConstructionParams};
     use macrocosmo::communication::CommandLog;
-    use macrocosmo::condition::ScopedFlags;
     use macrocosmo::empire::CommsParams;
     use macrocosmo::knowledge::SystemVisibilityMap;
+    use macrocosmo::modifier::ScopedModifications as ScopedFlags;
     use macrocosmo::player::{Empire, EmpireViewerSystem, Faction};
     use macrocosmo::technology::{
         EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,

@@ -17,15 +17,16 @@ use std::collections::HashSet;
 use bevy::prelude::*;
 use mlua::prelude::*;
 
-use crate::amount::Amt;
-use crate::condition::{Condition, EvalContext, ScopeData, ScopedFlags};
-use crate::effect::DescriptiveEffect;
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::player::PlayerEmpire;
 use crate::scripting::ScriptEngine;
 use crate::scripting::condition_parser::parse_condition;
 use crate::scripting::effect_scope::{EffectScope, collect_effects};
 use crate::technology::{GameFlags, GlobalParams, TechTree};
 use crate::time_system::GameSpeed;
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::{Condition, EvalContext, ScopeData};
+use macrocosmo_core::effect::DescriptiveEffect;
 
 /// Upfront resource cost required to pick an option. When the player selects
 /// an option with a cost, the amounts are subtracted from the player's

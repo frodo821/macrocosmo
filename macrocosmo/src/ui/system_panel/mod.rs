@@ -4,14 +4,12 @@ mod planet_window;
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::amount::Amt;
 use crate::colony::{
     BuildOrder, BuildQueue, BuildingQueue, Buildings, ColonizationQueue, Colony,
     ConstructionParams, DeliverableStockpile, FoodConsumption, MaintenanceCost, Production,
     ResourceCapacity, ResourceStockpile, SlotAssignment, SystemBuildingQueue, SystemBuildings,
 };
 use crate::components::Position;
-use crate::condition::{EvalContext, ScopeData};
 use crate::deep_space::{ConstructionPlatform, DeepSpaceStructure, Scrapyard, StructureRegistry};
 use crate::galaxy::{Planet, StarSystem, SystemAttributes, habitability_label, is_colonizable};
 use crate::knowledge::KnowledgeStore;
@@ -21,6 +19,8 @@ use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::time_system::{GameClock, HEXADIES_PER_YEAR};
 use crate::visualization::{SelectedPlanet, SelectedShip, SelectedSystem};
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::{EvalContext, ScopeData};
 
 use super::ship_panel::{ships_docked_at, stations_docked_at};
 use planet_window::draw_planet_window;
@@ -1379,7 +1379,8 @@ fn draw_right_panel(
         let has_shipyard = sys_mods_q
             .get(sel_entity)
             .map(|m| {
-                m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO
+                m.shipyard_build_parallel_slots.value().final_value()
+                    > macrocosmo_core::amount::Amt::ZERO
             })
             .unwrap_or(false);
 
@@ -2130,7 +2131,10 @@ pub fn ship_build_host_colony(
 ) -> Option<Entity> {
     let has_shipyard = sys_mods_q
         .get(system_entity)
-        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
+        .map(|m| {
+            m.shipyard_build_parallel_slots.value().final_value()
+                > macrocosmo_core::amount::Amt::ZERO
+        })
         .unwrap_or(false);
     if !has_shipyard {
         return None;
@@ -2174,10 +2178,10 @@ fn observation_freshness_color(age: i64) -> egui::Color32 {
 #[cfg(test)]
 mod tests_229 {
     use super::*;
-    use crate::condition::{Condition, ConditionAtom};
     use crate::deep_space::{
         DeliverableDefinition, DeliverableMetadata, ResourceCost, StructureRegistry,
     };
+    use macrocosmo_core::condition::{Condition, ConditionAtom};
     use std::collections::HashSet;
 
     fn def(

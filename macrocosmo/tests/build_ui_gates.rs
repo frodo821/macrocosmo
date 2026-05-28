@@ -21,14 +21,15 @@ use std::collections::{HashMap, HashSet};
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
     self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, PendingCommand, RemoteCommand,
 };
-use macrocosmo::condition::{Condition, ConditionAtom, EvalContext, ScopedFlags};
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingId, BuildingRegistry};
 use macrocosmo::technology::{GameFlags, TechTree};
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::{Condition, ConditionAtom, EvalContext};
 
 use common::{
     advance_time, empire_entity, spawn_test_colony, spawn_test_system_with_planet, test_app,

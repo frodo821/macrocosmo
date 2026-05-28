@@ -5,9 +5,9 @@
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::modifier::Modifier;
 use crate::ship_design::HullRegistry;
+use macrocosmo_core::amount::Amt;
 
 use super::modifiers::push_ship_modifier;
 use super::{

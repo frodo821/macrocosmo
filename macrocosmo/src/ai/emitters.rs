@@ -232,7 +232,7 @@ pub fn emit_economic_metrics(
             continue;
         };
         let slots = sm.shipyard_build_parallel_slots.value().final_value();
-        if slots > crate::amount::Amt::ZERO {
+        if slots > macrocosmo_core::amount::Amt::ZERO {
             // Set-count: this system has shipyard capacity, regardless
             // of how many slots.
             *shipyard_set_counts.entry(owner).or_default() += 1.0;
@@ -522,11 +522,11 @@ mod tests {
     use crate::ai::convert::to_ai_faction;
     use crate::ai::plugin::AiBusResource;
     use crate::ai::schema;
-    use crate::amount::Amt;
     use crate::modifier::ScopedModifiers;
     use crate::player::Faction;
     use crate::time_system::{GameClock, GameSpeed};
     use macrocosmo_ai::WarningMode;
+    use macrocosmo_core::amount::Amt;
 
     /// Spawn an empire entity and declare its per-faction metric slots.
     /// Returns the empire entity.

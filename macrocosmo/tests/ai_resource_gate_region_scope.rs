@@ -35,7 +35,6 @@ use bevy::prelude::*;
 use macrocosmo::ai::AiPlayerMode;
 use macrocosmo::ai::npc_decision::ShortAgentTickInputs;
 use macrocosmo::ai::{MidAgent, core::MidTermState};
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::ResourceStockpile;
 use macrocosmo::colony::building_queue::{BuildKind, BuildOrder, BuildQueue};
 use macrocosmo::faction::FactionOwner;
@@ -46,6 +45,7 @@ use macrocosmo::knowledge::{
 };
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::region::{Region, RegionMembership, RegionRegistry, spawn_initial_region};
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, spawn_test_colony, spawn_test_ruler, spawn_test_system, test_app};
 

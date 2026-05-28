@@ -5,12 +5,12 @@ use crate::ai::command_handlers::find_empire_entity;
 use crate::ai::command_params::{
     BUILDING_ID, DEFINITION_ID, DESIGN_ID, required_str, target_system,
 };
-use crate::amount::Amt;
 use crate::colony::Colony;
 use crate::colony::building_queue::{BuildKind, BuildOrder, BuildQueue, BuildingOrder};
 use crate::galaxy::{Planet, Sovereignty, StarSystem};
 use crate::player::{Empire, Faction};
 use crate::ship::Owner;
+use macrocosmo_core::amount::Amt;
 
 /// Handle `build_ship`: queue construction of the specified ship design at
 /// a system with a shipyard owned by the faction.

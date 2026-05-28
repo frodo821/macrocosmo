@@ -4,11 +4,11 @@ use bevy::prelude::*;
 
 use crate::colony::{AuthorityParams, ConstructionParams};
 use crate::communication::CommandLog;
-use crate::condition::ScopedFlags;
 use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
 use crate::game_state::GameState;
 use crate::knowledge::{KnowledgeStore, PendingFactQueue, SystemVisibilityMap};
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::ship::ShipState;
 use crate::technology::{
     EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,

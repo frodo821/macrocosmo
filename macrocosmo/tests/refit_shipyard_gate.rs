@@ -12,7 +12,6 @@ mod common;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{StarSystem, SystemModifiers};
 use macrocosmo::modifier::Modifier;
@@ -24,6 +23,7 @@ use macrocosmo::ship_design::{
     DesignSlotAssignment, HullDefinition, HullRegistry, HullSlot, ModuleDefinition, ModuleRegistry,
     ModuleSize, ShipDesignDefinition, ShipDesignRegistry,
 };
+use macrocosmo_core::amount::Amt;
 
 use common::test_app;
 
@@ -151,9 +151,11 @@ fn install_system_modifiers(world: &mut World, sys: Entity, shipyard_parallel_sl
         mods.shipyard_build_parallel_slots.push_modifier(Modifier {
             id: "test_shipyard".into(),
             label: "test shipyard".into(),
-            base_add: macrocosmo::amount::SignedAmt::from_amt(Amt::units(shipyard_parallel_slots)),
-            multiplier: macrocosmo::amount::SignedAmt::ZERO,
-            add: macrocosmo::amount::SignedAmt::ZERO,
+            base_add: macrocosmo_core::amount::SignedAmt::from_amt(Amt::units(
+                shipyard_parallel_slots,
+            )),
+            multiplier: macrocosmo_core::amount::SignedAmt::ZERO,
+            add: macrocosmo_core::amount::SignedAmt::ZERO,
             expires_at: None,
             on_expire_event: None,
         });

@@ -1,9 +1,9 @@
-use crate::amount::Amt;
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::ship_design::{
     DesignSlotAssignment, HullDefinition, HullSlot, ModuleDefinition, ModuleModifier, ModuleSize,
     ModuleUpgradePath, ShipDesignDefinition, SlotTypeDefinition, WeaponStats,
 };
+use macrocosmo_core::amount::Amt;
 
 /// Parse slot type definitions from the Lua `_slot_type_definitions` global table.
 pub fn parse_slot_types(lua: &mlua::Lua) -> Result<Vec<SlotTypeDefinition>, mlua::Error> {
@@ -483,7 +483,7 @@ mod tests {
 
     #[test]
     fn test_hull_parses_prerequisites() {
-        use crate::condition::{Condition, ConditionAtom};
+        use macrocosmo_core::condition::{Condition, ConditionAtom};
 
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
@@ -719,7 +719,7 @@ mod tests {
 
     #[test]
     fn test_module_parses_prerequisites() {
-        use crate::condition::{Condition, ConditionAtom};
+        use macrocosmo_core::condition::{Condition, ConditionAtom};
 
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();

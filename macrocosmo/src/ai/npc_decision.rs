@@ -469,10 +469,10 @@ pub struct RegionShortInputs {
     /// `SystemBuildingQueue` buildings). Consumed by Rule 5b's
     /// resource gate (`ShortGameAdapter::can_afford_building`).
     /// Saturating subtract: clamps to zero when pending > stockpile.
-    pub current_minerals: crate::amount::Amt,
+    pub current_minerals: macrocosmo_core::amount::Amt,
     /// Hotfix-3 + #529 A migration: pending-adjusted sum of
     /// `ResourceStockpile.energy`. See [`Self::current_minerals`].
-    pub current_energy: crate::amount::Amt,
+    pub current_energy: macrocosmo_core::amount::Amt,
 }
 
 /// Rank candidate unsurveyed systems by "accessibility" — a raw-distance
@@ -1415,8 +1415,8 @@ pub fn npc_decision_tick(
         // the per-region sum intact — each Mid sees only its own
         // region's stockpile, which is the correct soft gate for
         // per-region build decisions.
-        let mut current_minerals = crate::amount::Amt::ZERO;
-        let mut current_energy = crate::amount::Amt::ZERO;
+        let mut current_minerals = macrocosmo_core::amount::Amt::ZERO;
+        let mut current_energy = macrocosmo_core::amount::Amt::ZERO;
         for &sys in member_systems_slice {
             if let Ok(stockpile) = resource_gate.stockpiles.get(sys) {
                 current_minerals = current_minerals.add(stockpile.minerals);
@@ -1451,8 +1451,8 @@ pub fn npc_decision_tick(
         // simultaneously" because production tick spreads orders
         // over their build_time; the gate's job is "AI should stop
         // adding work to a queue whose tail will starve".
-        let mut pending_minerals = crate::amount::Amt::ZERO;
-        let mut pending_energy = crate::amount::Amt::ZERO;
+        let mut pending_minerals = macrocosmo_core::amount::Amt::ZERO;
+        let mut pending_energy = macrocosmo_core::amount::Amt::ZERO;
         for (queue, bldg_queue, colony, owner) in &resource_gate.build_queues {
             if owner.0 != entity {
                 continue;

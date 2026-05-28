@@ -488,10 +488,10 @@ pub(crate) mod views {
     use super::*;
     use crate::colony::{Colony, ResourceStockpile};
     use crate::components::Position;
-    use crate::condition::ScopedFlags;
     use crate::galaxy::{
         Biome, DEFAULT_BIOME_ID, Planet, Sovereignty, StarSystem, SystemModifiers,
     };
+    use crate::modifier::ScopedModifications as ScopedFlags;
     use crate::player::{Empire, PlayerEmpire};
     use crate::ship::fleet::{Fleet, FleetMembers};
     use crate::ship::{Owner, Ship};
@@ -671,11 +671,11 @@ pub(crate) mod views {
         let rtbl = lua.create_table()?;
         if is_player {
             let (mut minerals, mut energy, mut research, mut food, mut authority) = (
-                crate::amount::Amt::ZERO,
-                crate::amount::Amt::ZERO,
-                crate::amount::Amt::ZERO,
-                crate::amount::Amt::ZERO,
-                crate::amount::Amt::ZERO,
+                macrocosmo_core::amount::Amt::ZERO,
+                macrocosmo_core::amount::Amt::ZERO,
+                macrocosmo_core::amount::Amt::ZERO,
+                macrocosmo_core::amount::Amt::ZERO,
+                macrocosmo_core::amount::Amt::ZERO,
             );
             let mut q = world.query::<&ResourceStockpile>();
             for sp in q.iter(world) {
@@ -1163,10 +1163,10 @@ pub(crate) mod views {
 // weaken that contract.
 pub mod apply {
     use super::*;
-    use crate::amount::SignedAmt;
-    use crate::condition::ScopedFlags;
     use crate::modifier::Modifier;
+    use crate::modifier::ScopedModifications as ScopedFlags;
     use crate::technology::GameFlags;
+    use macrocosmo_core::amount::SignedAmt;
 
     /// Parsed form of the Lua `opts` table for `push_*_modifier`.
     /// No `mlua::Value` is retained past parse.
@@ -1468,7 +1468,6 @@ pub mod apply {
     //   the call site instead of silently dropping the command.
     // ==================================================================
 
-    use crate::amount::Amt;
     use crate::ship::ReportMode;
     use crate::ship::command_events::{
         ColonizeRequested, CommandId, DeployDeliverableRequested, LoadDeliverableRequested,
@@ -1477,6 +1476,7 @@ pub mod apply {
     };
     use crate::time_system::GameClock;
     use bevy::ecs::message::Messages;
+    use macrocosmo_core::amount::Amt;
 
     /// Parsed, Lua-free command request. Every variant carries everything
     /// the corresponding Bevy `CommandRequested` message needs — the
@@ -2215,7 +2215,7 @@ mod tests {
             PlayerEmpire,
             tree,
             flags,
-            crate::condition::ScopedFlags::default(),
+            crate::modifier::ScopedModifications::default(),
             crate::technology::EmpireModifiers::default(),
         ));
         world

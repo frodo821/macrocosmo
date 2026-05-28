@@ -12,12 +12,11 @@
 //! of `gs.systems[id]`; `gs:list_systems()` instead of `gs.system_ids`).
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{Buildings, Colony, Production, ResourceStockpile};
 use macrocosmo::components::Position;
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::galaxy::{Biome, Planet, Sovereignty, StarSystem, SystemModifiers};
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::building_api::BuildingId;
@@ -26,6 +25,7 @@ use macrocosmo::ship::fleet::{Fleet, FleetMembers};
 use macrocosmo::ship::{EquippedModule, Owner, Ship, ShipHitpoints, ShipState};
 use macrocosmo::technology::{EmpireModifiers, GameFlags, TechId, TechTree};
 use macrocosmo::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 /// Build a small but representative world touching every view type:
 /// - one player empire with a tech + flag

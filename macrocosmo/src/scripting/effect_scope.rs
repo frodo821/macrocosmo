@@ -1,4 +1,4 @@
-use crate::effect::{DescriptiveEffect, UiFragmentPresentationRequest};
+use macrocosmo_core::effect::{DescriptiveEffect, UiFragmentPresentationRequest};
 use mlua::prelude::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};

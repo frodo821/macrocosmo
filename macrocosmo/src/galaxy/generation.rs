@@ -23,11 +23,11 @@ use super::{
     HostileStats, Planet, Sovereignty, StarSystem, StarTypeModifierSet, SystemAttributes,
     SystemModifiers,
 };
-use crate::amount::SignedAmt;
 use crate::faction::{FactionOwner, HostileFactions};
 use crate::modifier::Modifier;
 use crate::scripting::faction_api::FactionRegistry;
 use crate::scripting::galaxy_api::StarTypeModifier;
+use macrocosmo_core::amount::SignedAmt;
 
 /// Galaxy generation parameters.
 pub(crate) struct GalaxyParams {

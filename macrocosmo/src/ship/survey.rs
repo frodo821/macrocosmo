@@ -641,11 +641,11 @@ pub fn deliver_survey_results(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
     use crate::components::Position;
     use crate::ship::Owner;
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
     use bevy::ecs::world::World;
+    use macrocosmo_core::amount::Amt;
 
     fn test_design_registry() -> ShipDesignRegistry {
         let mut registry = ShipDesignRegistry::default();

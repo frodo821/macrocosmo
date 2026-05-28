@@ -2,9 +2,9 @@ use bevy::prelude::Entity;
 use bevy_egui::egui;
 use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
-use crate::amount::{Amt, SignedAmt};
 use crate::scripting::ScriptEngine;
 use crate::time_system::{GameClock, GameSpeed};
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::DiplomacyPanelOpen;
 use super::ResearchPanelOpen;

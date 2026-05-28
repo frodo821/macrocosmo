@@ -24,7 +24,6 @@ use bevy::prelude::Entity;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-use crate::amount::Amt;
 use crate::colony::{
     AlertCooldowns, AuthorityParams, BuildKind, BuildOrder, BuildQueue, BuildingOrder,
     BuildingQueue, Buildings, ColonizationOrder, ColonizationQueue, Colony, ColonyJobRates,
@@ -37,7 +36,6 @@ use crate::communication::{
     RemoteCommand,
 };
 use crate::components::{MovementState, Position};
-use crate::condition::ScopedFlags;
 use crate::deep_space::{
     CommDirection, ConstructionPlatform, DeepSpaceStructure, FTLCommRelay, LifetimeCost,
     ResourceCost, Scrapyard, StructureHitpoints,
@@ -57,6 +55,7 @@ use crate::knowledge::{
     KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact,
     ShipProjection, ShipSnapshot, ShipSnapshotState, SystemKnowledge, SystemSnapshot,
 };
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::modifier::{ModifiedValue, ScopedModifiers};
 use crate::notifications::{Notification, NotificationPriority, NotificationQueue};
 use crate::player::{AboardShip, Empire, EmpireRuler, Faction, Player, Ruler, StationedAt};
@@ -73,6 +72,7 @@ use crate::technology::{
     PendingKnowledgePropagation, PendingResearch, RecentlyResearched, ResearchPool, ResearchQueue,
     TechId, TechKnowledge, TechTree,
 };
+use macrocosmo_core::amount::Amt;
 
 use super::remap::{EntityMap, RemapEntities};
 
@@ -5419,8 +5419,8 @@ mod tests {
                 def_id: "sensor_buoy".to_string(),
                 display_name: "Sensor Buoy".to_string(),
                 cargo_size: 2,
-                minerals_cost: crate::amount::Amt::units(100),
-                energy_cost: crate::amount::Amt::units(50),
+                minerals_cost: macrocosmo_core::amount::Amt::units(100),
+                energy_cost: macrocosmo_core::amount::Amt::units(50),
                 build_time: 30,
             },
         ];

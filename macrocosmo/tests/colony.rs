@@ -1,13 +1,13 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
 use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::ship::*;
 use macrocosmo::species::ColonyPopulation;
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, find_planet, spawn_test_colony, spawn_test_empire, spawn_test_system, test_app,

@@ -185,8 +185,8 @@ fn spawn_starter_with_frontier(app: &mut App) -> (Entity, Entity, Entity, Entity
     let colony = common::spawn_test_colony(
         app.world_mut(),
         capital,
-        macrocosmo::amount::Amt::units(100),
-        macrocosmo::amount::Amt::units(100),
+        macrocosmo_core::amount::Amt::units(100),
+        macrocosmo_core::amount::Amt::units(100),
         vec![],
     );
     // `spawn_test_colony` picks the FIRST empire it finds, which in
@@ -266,10 +266,10 @@ fn install_capital_only_region(app: &mut App, empire: Entity, capital: Entity) {
 /// `DeliverableDefinition` instead — otherwise these tests would now
 /// pass the bug-free production handler an unknown deliverable.
 fn register_test_infrastructure_core(app: &mut App) {
-    use macrocosmo::amount::Amt;
     use macrocosmo::deep_space::{
         DeliverableMetadata, DeliverableRegistry, ResourceCost, StructureDefinition,
     };
+    use macrocosmo_core::amount::Amt;
     let mut registry = app
         .world_mut()
         .remove_resource::<DeliverableRegistry>()
@@ -784,8 +784,8 @@ fn rule_3_and_rule_3_5_do_not_double_book_ship() {
     let cap_colony = common::spawn_test_colony(
         app.world_mut(),
         capital,
-        macrocosmo::amount::Amt::units(100),
-        macrocosmo::amount::Amt::units(100),
+        macrocosmo_core::amount::Amt::units(100),
+        macrocosmo_core::amount::Amt::units(100),
         vec![],
     );
     app.world_mut()

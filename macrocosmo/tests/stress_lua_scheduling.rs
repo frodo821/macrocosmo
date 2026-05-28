@@ -14,10 +14,10 @@
 //! bounded.
 
 use bevy::prelude::*;
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::event_system::{
     EventDefinition, EventSystem, EventTrigger, FiredEvent, LuaFunctionRef,
 };
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::lifecycle::{dispatch_event_handlers, evaluate_fire_conditions};

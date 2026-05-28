@@ -304,10 +304,10 @@ fn hash_resource_kind(kind: ResourceKind) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
     use crate::colony::ResourceStockpile;
     use crate::components::Position;
     use crate::galaxy::StarSystem;
+    use macrocosmo_core::amount::Amt;
 
     fn spawn_system_with_stockpile(world: &mut World, sp: ResourceStockpile) -> Entity {
         world

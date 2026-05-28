@@ -2,12 +2,12 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
-use crate::condition::Condition;
 use crate::event_system::LuaFunctionRef;
 use crate::modifier::ParsedModifier;
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::scripting::modifier_api::parse_parsed_modifiers;
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::Condition;
 
 /// An upgrade path from one building to another.
 #[derive(Clone, Debug, bevy::reflect::Reflect)]
@@ -172,7 +172,7 @@ impl BuildingRegistry {
     /// bypassed entirely via a scripted/remote command).
     pub fn available_planet_buildings(
         &self,
-        ctx: &crate::condition::EvalContext,
+        ctx: &macrocosmo_core::condition::EvalContext,
     ) -> Vec<&BuildingDefinition> {
         let mut result: Vec<_> = self
             .buildings
@@ -191,7 +191,7 @@ impl BuildingRegistry {
     /// `true`. See [`Self::available_planet_buildings`].
     pub fn available_system_buildings(
         &self,
-        ctx: &crate::condition::EvalContext,
+        ctx: &macrocosmo_core::condition::EvalContext,
     ) -> Vec<&BuildingDefinition> {
         let mut result: Vec<_> = self
             .buildings
@@ -210,7 +210,11 @@ impl BuildingRegistry {
     /// Returns `true` when the building has no prerequisites or the tree
     /// evaluates as satisfied. Returns `false` if the id is unknown — an
     /// unknown building can never be built.
-    pub fn prerequisites_satisfied(&self, id: &str, ctx: &crate::condition::EvalContext) -> bool {
+    pub fn prerequisites_satisfied(
+        &self,
+        id: &str,
+        ctx: &macrocosmo_core::condition::EvalContext,
+    ) -> bool {
         match self.get(id) {
             Some(def) => match &def.prerequisites {
                 Some(cond) => cond.evaluate(ctx).is_satisfied(),
@@ -847,7 +851,7 @@ mod tests {
 
     #[test]
     fn test_building_api_parses_prerequisites_field() {
-        use crate::condition::{Condition, ConditionAtom};
+        use macrocosmo_core::condition::{Condition, ConditionAtom};
 
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
@@ -895,7 +899,7 @@ mod tests {
     #[test]
     fn test_building_api_prerequisites_from_lua_file_wires_advanced_mine() {
         // Verify prerequisites are parsed from Lua fixture.
-        use crate::condition::{AtomKind, Condition};
+        use macrocosmo_core::condition::{AtomKind, Condition};
 
         let engine = ScriptEngine::new().unwrap();
         let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

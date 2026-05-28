@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use crate::amount::Amt;
 use crate::deep_space::{
     CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition, UpgradeEdge,
 };
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::scripting::helpers::extract_id_from_lua_value;
+use macrocosmo_core::amount::Amt;
 
 /// Parse structure + deliverable definitions from the Lua globals.
 ///
@@ -248,8 +248,8 @@ fn parse_upgrade_from(table: &mlua::Table) -> Result<Option<UpgradeEdge>, mlua::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
     use crate::scripting::ScriptEngine;
+    use macrocosmo_core::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
 
     #[test]
     fn test_parse_structure_definitions() {

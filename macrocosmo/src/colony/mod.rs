@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::modifier::ModifiedValue;
+use macrocosmo_core::amount::Amt;
 // Re-export BuildingId and BuildingRegistry for consumers of the colony module
 pub use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 

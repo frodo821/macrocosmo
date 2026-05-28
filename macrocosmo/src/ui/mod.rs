@@ -16,7 +16,6 @@ pub mod top_bar;
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, EguiPlugin, EguiPrimaryContextPass, egui};
 
-use crate::amount::{Amt, SignedAmt};
 use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
 use crate::choice::{PendingChoice, PendingChoiceSelection};
 use crate::colony::{
@@ -26,12 +25,12 @@ use crate::colony::{
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
-use crate::condition::ScopedFlags;
 use crate::events::{EventLog, GameEvent, GameEventKind};
 use crate::faction::FactionRelations;
 use crate::galaxy::{HomeSystem, Planet, Sovereignty, StarSystem, SystemAttributes};
 use crate::knowledge::{KnowledgeStore, ShipSnapshotState};
 use crate::modifier::ModifiedValue;
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::notifications::{NotificationPriority, NotificationQueue};
 use crate::observer::{ObserverMode, ObserverView};
 use crate::player::{AboardShip, Player, PlayerEmpire, StationedAt};
@@ -48,6 +47,7 @@ use crate::visualization::{
     ContextMenu, DeployMode, DeployPending, EguiWantsPointer, OutlineExpandedSystems,
     SelectedPlanet, SelectedShip, SelectedSystem,
 };
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use params::{
     MainPanelDeliverableRes, MainPanelRegistries, MainPanelSelection, MainPanelWorldQueries,
@@ -3147,7 +3147,10 @@ pub fn apply_design_refit(
     // any colony — inconsistent with construction rules.
     let has_shipyard = sys_mods_q
         .get(system_entity)
-        .map(|m| m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO)
+        .map(|m| {
+            m.shipyard_build_parallel_slots.value().final_value()
+                > macrocosmo_core::amount::Amt::ZERO
+        })
         .unwrap_or(false);
     if !has_shipyard {
         return;

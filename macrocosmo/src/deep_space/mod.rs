@@ -31,9 +31,9 @@ use std::collections::HashMap;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
-use crate::condition::Condition;
 use crate::ship::Owner;
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::Condition;
 
 /// A structure placed at arbitrary galactic coordinates, not attached to any star system.
 #[derive(Component, Clone, Debug, Reflect)]
@@ -341,7 +341,7 @@ impl DeliverableRegistry {
 /// `DeliverableMetadata`) so existing tests and fallback startup continue to
 /// see the same practical behaviour as before #223.
 pub fn default_structure_definitions() -> Vec<StructureDefinition> {
-    use crate::condition::ConditionAtom;
+    use macrocosmo_core::condition::ConditionAtom;
 
     vec![
         StructureDefinition {
@@ -1148,7 +1148,8 @@ pub fn relay_knowledge_propagate_system(
             // building was destroyed.
             let relay_has_shipyard = sys_mods
                 .map(|m| {
-                    m.shipyard_build_parallel_slots.value().final_value() > crate::amount::Amt::ZERO
+                    m.shipyard_build_parallel_slots.value().final_value()
+                        > macrocosmo_core::amount::Amt::ZERO
                 })
                 .unwrap_or(false);
 
@@ -1406,7 +1407,7 @@ pub fn load_structure_definitions(
 mod tests {
     use super::*;
     use crate::components::Position;
-    use crate::condition::ConditionAtom;
+    use macrocosmo_core::condition::ConditionAtom;
 
     #[test]
     fn test_default_structure_definitions() {

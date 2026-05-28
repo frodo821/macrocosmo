@@ -1,8 +1,8 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use macrocosmo::modifier::{ModifiedValue, Modifier};
 use macrocosmo::ship::*;
@@ -538,7 +538,7 @@ fn test_ship_maintenance_synced_via_modifiers() {
     let modifier = ship_maint_modifier.unwrap();
     assert_eq!(
         modifier.base_add,
-        macrocosmo::amount::SignedAmt::from_amt(Amt::new(0, 516)),
+        macrocosmo_core::amount::SignedAmt::from_amt(Amt::new(0, 516)),
         "Ship maintenance modifier should match Explorer derived maintenance (0.516 E/hd)"
     );
 }

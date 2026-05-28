@@ -1,4 +1,4 @@
-use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
+use macrocosmo_core::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
 
 /// Parse an optional `prerequisites` field from a definition table.
 ///

@@ -1,11 +1,11 @@
 use bevy::prelude::*;
 
-use crate::amount::{Amt, SignedAmt};
 use crate::galaxy::{Planet, StarSystem};
 use crate::modifier::{ModifiedValue, Modifier, ParsedModifier};
 use crate::scripting::building_api::BuildingRegistry;
 use crate::species::{ColonyJobs, JobRegistry, SpeciesRegistry};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::{
     AUTHORITY_DEFICIT_PENALTY, Buildings, Colony, LastProductionTick, ResourceCapacity,

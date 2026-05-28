@@ -1,7 +1,6 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Sovereignty, StarSystem};
@@ -12,6 +11,7 @@ use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::technology;
 use macrocosmo::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use macrocosmo::faction::FactionOwner;
 

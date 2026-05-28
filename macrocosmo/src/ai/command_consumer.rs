@@ -1177,12 +1177,12 @@ mod tests {
     use crate::ai::plugin::AiBusResource;
     use crate::ai::schema;
     use crate::ai::schema::ids::command as cmd_ids;
-    use crate::amount::Amt;
     use crate::colony::BuildKind;
     use crate::components::Position;
     use crate::technology::TechId;
     use crate::time_system::{GameClock, GameSpeed};
     use macrocosmo_ai::{Command, CommandValue, WarningMode};
+    use macrocosmo_core::amount::Amt;
 
     #[derive(Resource, Reflect)]
     #[reflect(Resource)]
@@ -1514,9 +1514,9 @@ mod tests {
             .push_modifier(crate::modifier::Modifier {
                 id: "test_shipyard".into(),
                 label: "Test Shipyard".into(),
-                base_add: crate::amount::SignedAmt::units(1),
-                multiplier: crate::amount::SignedAmt::ZERO,
-                add: crate::amount::SignedAmt::ZERO,
+                base_add: macrocosmo_core::amount::SignedAmt::units(1),
+                multiplier: macrocosmo_core::amount::SignedAmt::ZERO,
+                add: macrocosmo_core::amount::SignedAmt::ZERO,
                 expires_at: None,
                 on_expire_event: None,
             });
@@ -1985,9 +1985,9 @@ mod tests {
             .push_modifier(crate::modifier::Modifier {
                 id: "test_shipyard".into(),
                 label: "Test Shipyard".into(),
-                base_add: crate::amount::SignedAmt::units(1),
-                multiplier: crate::amount::SignedAmt::ZERO,
-                add: crate::amount::SignedAmt::ZERO,
+                base_add: macrocosmo_core::amount::SignedAmt::units(1),
+                multiplier: macrocosmo_core::amount::SignedAmt::ZERO,
+                add: macrocosmo_core::amount::SignedAmt::ZERO,
                 expires_at: None,
                 on_expire_event: None,
             });

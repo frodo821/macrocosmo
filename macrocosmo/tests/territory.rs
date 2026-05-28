@@ -7,10 +7,10 @@ mod common;
 
 use bevy::prelude::*;
 use common::{spawn_test_colony, spawn_test_system, test_app};
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::Colony;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::Planet;
+use macrocosmo_core::amount::Amt;
 
 /// Verify that every Colony entity resolves through planet -> system -> position
 /// without hitting a broken link. This is the chain that `sync_territory_material`

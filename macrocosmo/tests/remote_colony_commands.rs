@@ -9,7 +9,6 @@ mod common;
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue, BuildingQueue, SystemBuildingQueue};
 use macrocosmo::communication::{
     self, BuildingKind, BuildingScope, ColonyCommand, CommandLog, MAX_DISPATCH_RETRY_FRAMES,
@@ -18,6 +17,7 @@ use macrocosmo::communication::{
 use macrocosmo::components::Position;
 use macrocosmo::player::{Player, PlayerEmpire, StationedAt};
 use macrocosmo::scripting::building_api::BuildingId;
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, empire_entity, spawn_test_colony, spawn_test_system_with_planet, test_app,
