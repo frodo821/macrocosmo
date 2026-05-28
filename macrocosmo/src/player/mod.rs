@@ -7,7 +7,7 @@ use crate::communication::CommandLog;
 use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
 use crate::game_state::GameState;
-use crate::knowledge::{KnowledgeStore, PendingFactQueue, SystemVisibilityMap};
+use crate::knowledge::{KnowledgeNode, KnowledgeStore, PendingFactQueue, SystemVisibilityMap};
 use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::ship::ShipState;
 use crate::technology::{
@@ -49,41 +49,49 @@ impl Plugin for PlayerPlugin {
 /// Spawn the player's empire entity with all empire-level components.
 /// This must run before any system that queries for PlayerEmpire.
 pub fn spawn_player_empire(mut commands: Commands) {
-    commands.spawn((
-        (
-            Empire {
-                name: "Human Federation".into(),
-            },
-            PlayerEmpire,
-            Faction::new("humanity_empire", "Terran Federation"),
-            TechTree::default(),
-            ResearchQueue::default(),
-            ResearchPool::default(),
-            RecentlyResearched::default(),
-            AuthorityParams::default(),
-            ConstructionParams::default(),
-        ),
-        (
-            EmpireModifiers::default(),
-            GameFlags::default(),
-            GlobalParams::default(),
-            KnowledgeStore::default(),
-            SystemVisibilityMap::default(),
-            CommandLog::default(),
-            ScopedFlags::default(),
-            PendingColonyTechModifiers::default(),
-            CommsParams::default(),
-            // Round 9 PR #1 Step 2: per-empire fact queue. Callsites
-            // migrate from the legacy `Resource<PendingFactQueue>` to
-            // per-faction routing in Step 3.
-            PendingFactQueue::default(),
-            // #464: Per-empire faction discovery (was global resource).
-            crate::faction::KnownFactions::default(),
-            // #449 PR2a: empire-wide strategic memory (migrated out of
-            // the engine-agnostic `OrchestratorState.long_state`).
-            crate::region::EmpireLongTermState::default(),
-        ),
-    ));
+    let entity = commands
+        .spawn((
+            (
+                Empire {
+                    name: "Human Federation".into(),
+                },
+                PlayerEmpire,
+                Faction::new("humanity_empire", "Terran Federation"),
+                TechTree::default(),
+                ResearchQueue::default(),
+                ResearchPool::default(),
+                RecentlyResearched::default(),
+                AuthorityParams::default(),
+                ConstructionParams::default(),
+            ),
+            (
+                EmpireModifiers::default(),
+                GameFlags::default(),
+                GlobalParams::default(),
+                KnowledgeStore::default(),
+                SystemVisibilityMap::default(),
+                CommandLog::default(),
+                ScopedFlags::default(),
+                PendingColonyTechModifiers::default(),
+                CommsParams::default(),
+                // Round 9 PR #1 Step 2: per-empire fact queue. Callsites
+                // migrate from the legacy `Resource<PendingFactQueue>` to
+                // per-faction routing in Step 3.
+                PendingFactQueue::default(),
+                // #464: Per-empire faction discovery (was global resource).
+                crate::faction::KnownFactions::default(),
+                // #449 PR2a: empire-wide strategic memory (migrated out of
+                // the engine-agnostic `OrchestratorState.long_state`).
+                crate::region::EmpireLongTermState::default(),
+            ),
+        ))
+        .id();
+    // Knowledge redesign Slice 1: tag the empire as a knowledge holder.
+    // `KnowledgeStore` storage is unchanged; this just makes "who owns
+    // knowledge" first-class for later slices.
+    commands
+        .entity(entity)
+        .insert(KnowledgeNode::empire(entity));
     info!("Player empire entity spawned");
 }
 

@@ -12,6 +12,8 @@
 - `evidence.md`: 調査コマンド、観察結果、分離優先の根拠。
 - `decision-log.md`: 判断の変遷と採用した方針。
 - `remaining-work.md`: 実装後の残作業、PR 分割、検証コマンド。
+- `../../knowledge-redesign.md`: `KnowledgeStore` を empire 固定の store ではなく、subject-local な observation / commitment / belief state として再設計するドラフト。
+- `../../knowledge-redesign-implementation-plan.md`: 上記 redesign を既存コードに段階導入する PR 分割と対象ファイル。
 
 ## Current Recommendation
 

@@ -20,11 +20,14 @@
 //! Producers should pick exactly one of `Direct / Relay / Scout`. The
 //! convention `observed_at: i64` (integer hexadies) is preserved — the
 //! [`perceived::PerceivedInfo`] facade only renames it to `last_updated`.
+pub mod commitment;
 pub mod facts;
 pub mod kind_registry;
 pub mod payload;
 pub mod perceived;
+pub mod perception;
 pub mod ship_view;
+pub mod subject;
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -52,6 +55,18 @@ pub use perceived::{FactionId, PerceivedInfo, perceived_fleet, perceived_system}
 
 #[allow(unused_imports)]
 pub use ship_view::{ShipView, ShipViewTiming, realtime_state_to_snapshot, ship_view};
+
+#[allow(unused_imports)]
+pub use subject::{KnowledgeNode, KnowledgeScope, KnowledgeSubject};
+
+#[allow(unused_imports)]
+pub use perception::{Perception, PerceptionMode};
+
+#[allow(unused_imports)]
+pub use commitment::{
+    Commitment, CommitmentBasis, CommitmentId, CommitmentKind, CommitmentLedger, CommitmentStatus,
+    CommitmentTarget,
+};
 
 /// Round 9 PR #1 Step 3: Bundled `SystemParam` for the queries that
 /// [`collect_faction_vantages`] needs. Lets fact-emitting systems
@@ -435,6 +450,29 @@ impl Plugin for KnowledgePlugin {
                     .after(crate::time_system::advance_game_time)
                     .before(crate::scripting::knowledge_dispatch::dispatch_knowledge_observed)
                     .run_if(in_state(crate::game_state::GameState::InGame)),
+            )
+            // Slice 1.5 of knowledge redesign — backfill
+            // `KnowledgeNode` on any empire that has `KnowledgeStore`
+            // but is missing the node (loaded games, test setups, or
+            // any spawn path that bypassed `spawn_player_empire` /
+            // `run_all_factions_on_game_start`). Runs ungated so
+            // loaded empires get the node on the first `Update`
+            // after `LoadingSave` -> `InGame`. The `Without` filter
+            // keeps the system cheap after the initial pass.
+            .add_systems(
+                Update,
+                backfill_knowledge_node.after(crate::time_system::advance_game_time),
+            )
+            // Slice 3 of knowledge redesign — observation-driven
+            // commitment resolution. Runs after the projection
+            // reconciler so projections and commitments are kept in
+            // step for the same set of arrived facts.
+            .add_systems(
+                Update,
+                resolve_commitments_from_observations
+                    .after(reconcile_ship_projections)
+                    .before(crate::scripting::knowledge_dispatch::dispatch_knowledge_observed)
+                    .run_if(in_state(crate::game_state::GameState::InGame)),
             );
     }
 }
@@ -660,6 +698,20 @@ pub struct KnowledgeStore {
     /// #474: Per-empire ship trajectory projections for own-empire ships.
     /// See [`ShipProjection`] docs.
     projections: HashMap<Entity, ShipProjection>,
+    /// Slice 2 of knowledge redesign — see
+    /// `docs/knowledge-redesign-implementation-plan.md`.
+    ///
+    /// The ledger of decisions this subject has already issued. Slice 2
+    /// dual-writes from the AI dispatch path (`command_outbox.rs`)
+    /// alongside the existing `PendingAssignment` / `PendingAiShipCommand`
+    /// / projection markers; Slice 3 resolves entries from arriving
+    /// `KnowledgeFact`s; Slice 4 replaces the AI dedup union with
+    /// `commitments.has_active`. Not persisted yet — Slice 8 adds
+    /// `SavedCommitmentLedger`. Marked `#[reflect(ignore)]` because the
+    /// nested `HashMap` keys carry tuples of `KnowledgeSubject` which
+    /// keeps Bevy's reflection derive simple.
+    #[reflect(ignore)]
+    commitments: commitment::CommitmentLedger,
 }
 
 impl KnowledgeStore {
@@ -762,6 +814,34 @@ impl KnowledgeStore {
     /// #474: Remove a ship trajectory projection. Returns the removed entry.
     pub fn clear_projection(&mut self, ship: Entity) -> Option<ShipProjection> {
         self.projections.remove(&ship)
+    }
+
+    // ---------------------------------------------------------------
+    // Knowledge redesign Slice 2: commitment ledger access.
+    //
+    // Slice 2 keeps the storage as a `KnowledgeStore` field so existing
+    // `Query<&mut KnowledgeStore>` callers don't need to add a second
+    // query parameter. Slice 9 will split commitments out into its own
+    // sub-component once the API stabilizes.
+    // ---------------------------------------------------------------
+
+    pub fn commitments(&self) -> &commitment::CommitmentLedger {
+        &self.commitments
+    }
+
+    pub fn commitments_mut(&mut self) -> &mut commitment::CommitmentLedger {
+        &mut self.commitments
+    }
+
+    /// Slice 2 convenience: forward the `has_active` check without
+    /// requiring callers to know about the inner ledger type.
+    pub fn has_active_commitment(
+        &self,
+        subject: subject::KnowledgeSubject,
+        kind: commitment::CommitmentKind,
+        target: commitment::CommitmentTarget,
+    ) -> bool {
+        self.commitments.has_active(subject, kind, target)
     }
 }
 
@@ -1375,6 +1455,205 @@ fn apply_reconciliation(
     // the "tick the projection was last reconciled" semantics.
     if fact_observed_at > projection.dispatched_at {
         projection.dispatched_at = fact_observed_at;
+    }
+}
+
+/// Slice 1.5 of knowledge redesign — repair the
+/// `Empire + KnowledgeStore => KnowledgeNode` invariant.
+///
+/// Slice 1 only attached `KnowledgeNode` at spawn sites
+/// (`spawn_player_empire`, `run_all_factions_on_game_start`). Loaded
+/// games rehydrate `KnowledgeStore` through `SavedKnowledgeStore`
+/// without touching the node, and various test setups spawn empires
+/// directly without going through those helpers. This system closes
+/// the gap so every knowledge holder is also a subject — the
+/// invariant later slices (perception facade, belief materialization)
+/// rely on.
+///
+/// The `Without<KnowledgeNode>` filter means after the first pass
+/// covers all current empires, subsequent ticks iterate zero entries.
+pub fn backfill_knowledge_node(
+    mut commands: Commands,
+    needs_node: Query<
+        Entity,
+        (
+            With<Empire>,
+            With<KnowledgeStore>,
+            Without<subject::KnowledgeNode>,
+        ),
+    >,
+) {
+    for entity in &needs_node {
+        commands
+            .entity(entity)
+            .insert(subject::KnowledgeNode::empire(entity));
+    }
+}
+
+/// Slice 3 of knowledge redesign — resolve / fail commitments from
+/// arriving observations.
+///
+/// Mirrors [`reconcile_ship_projections`]'s arrival recomputation: a
+/// fact is only acted on once `compute_fact_arrival` agrees the fact
+/// has reached this empire's vantage. The cost is one extra ledger
+/// scan per empire per tick when the queue is non-empty; the dedup
+/// check at write time keeps the ledger small.
+///
+/// Resolution map:
+///
+/// * `SurveyComplete { system, .. }` → resolve `(empire, Survey, System(system))`.
+/// * `ColonyEstablished { system, planet, .. }` → resolve both
+///   `(empire, Colonize, System(system))` and `(empire, Colonize, Planet(planet))`.
+/// * `ShipDestroyed { ship, .. }` / `ShipMissing { ship, .. }` → fail
+///   all active commitments where `actor == Some(ship)` for this empire.
+pub fn resolve_commitments_from_observations(
+    clock: Res<GameClock>,
+    queue: Res<facts::PendingFactQueue>,
+    mut empire_q: Query<(Entity, &mut KnowledgeStore), With<Empire>>,
+    empire_comms: Query<&crate::empire::CommsParams, With<Empire>>,
+    relay_network: Res<facts::RelayNetwork>,
+    vantage_q: FactionVantageQueries,
+) {
+    if queue.facts.is_empty() {
+        return;
+    }
+    let vantages = vantage_q.collect();
+    if vantages.is_empty() {
+        return;
+    }
+    let now = clock.elapsed;
+    let relays = &relay_network.relays;
+    // Slice 1.5 review F4 — use this empire's CommsParams (or a
+    // sensible default if the spawn path missed it) so per-empire
+    // relay / FTL multipliers are honoured. Matches the design
+    // direction; `reconcile_ship_projections` has the same pre-existing
+    // single-CommsParams shortcut and should be migrated in the same
+    // pass when this code path stabilises.
+    let default_comms = crate::empire::CommsParams::default();
+
+    for (empire_entity, mut store) in empire_q.iter_mut() {
+        let Some(vantage) = vantages.iter().find(|v| v.faction == empire_entity) else {
+            continue;
+        };
+        let subject = subject::KnowledgeSubject::Empire(empire_entity);
+        let comms = empire_comms
+            .get(empire_entity)
+            .map(|c| c.clone())
+            .unwrap_or_else(|_| default_comms.clone());
+
+        for pf in &queue.facts {
+            let plan = facts::compute_fact_arrival(
+                pf.observed_at,
+                pf.origin_pos,
+                vantage.ref_pos,
+                relays,
+                &comms,
+            );
+            if plan.arrives_at > now {
+                continue;
+            }
+
+            match &pf.fact {
+                facts::KnowledgeFact::SurveyComplete { system, .. } => {
+                    resolve_commitment_triple(
+                        &mut store,
+                        subject,
+                        commitment::CommitmentKind::Survey,
+                        commitment::CommitmentTarget::System(*system),
+                    );
+                }
+                facts::KnowledgeFact::ColonyEstablished { system, planet, .. } => {
+                    resolve_commitment_triple(
+                        &mut store,
+                        subject,
+                        commitment::CommitmentKind::Colonize,
+                        commitment::CommitmentTarget::System(*system),
+                    );
+                    resolve_commitment_triple(
+                        &mut store,
+                        subject,
+                        commitment::CommitmentKind::Colonize,
+                        commitment::CommitmentTarget::Planet(*planet),
+                    );
+                    // Slice 4b2: a Core deployment that successfully
+                    // founded a colony at `system` is the terminal
+                    // signal for a `DeployDeliverable(System)`
+                    // commitment too.
+                    resolve_commitment_triple(
+                        &mut store,
+                        subject,
+                        commitment::CommitmentKind::DeployDeliverable,
+                        commitment::CommitmentTarget::System(*system),
+                    );
+                }
+                facts::KnowledgeFact::ShipDestroyed { ship, .. }
+                | facts::KnowledgeFact::ShipMissing { ship, .. } => {
+                    if *ship == Entity::PLACEHOLDER {
+                        continue;
+                    }
+                    fail_commitments_for_actor(&mut store, subject, *ship);
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+fn resolve_commitment_triple(
+    store: &mut KnowledgeStore,
+    subject: subject::KnowledgeSubject,
+    kind: commitment::CommitmentKind,
+    target: commitment::CommitmentTarget,
+) {
+    // Collect ids first so we don't mutate while iterating.
+    let active_ids: Vec<commitment::CommitmentId> = store
+        .commitments()
+        .ids_for(subject, kind, target)
+        .iter()
+        .copied()
+        .filter(|id| {
+            store
+                .commitments()
+                .get(*id)
+                .map(|c| c.status == commitment::CommitmentStatus::Active)
+                .unwrap_or(false)
+        })
+        .collect();
+    for id in active_ids {
+        store.commitments_mut().mark_resolved(id);
+    }
+}
+
+/// Fail every active commitment held by `subject` whose `actor` is the
+/// destroyed/missing ship.
+///
+/// The `subject` filter is load-bearing once merge or multi-subject
+/// stores arrive: a single `KnowledgeStore` may then contain
+/// commitments for several subjects (e.g. after a ship subject reports
+/// in and the empire imports its commitments), and a `ShipDestroyed`
+/// fact arriving at the empire's vantage must only fail commitments
+/// the empire itself issued, not commitments belonging to other
+/// subjects that happen to share storage. Today every store contains
+/// exactly one subject's commitments so the filter is a no-op, but
+/// keeping it in place pins the invariant before the merge skeleton
+/// (Slice 7) makes it observable.
+fn fail_commitments_for_actor(
+    store: &mut KnowledgeStore,
+    subject: subject::KnowledgeSubject,
+    actor: Entity,
+) {
+    let to_fail: Vec<commitment::CommitmentId> = store
+        .commitments()
+        .iter()
+        .filter(|c| {
+            c.subject == subject
+                && c.status == commitment::CommitmentStatus::Active
+                && c.actor == Some(actor)
+        })
+        .map(|c| c.id)
+        .collect();
+    for id in to_fail {
+        store.commitments_mut().mark_failed(id);
     }
 }
 

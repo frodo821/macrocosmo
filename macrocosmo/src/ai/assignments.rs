@@ -169,6 +169,8 @@ pub fn sweep_resolved_assignments(
     knowledge: Query<&crate::knowledge::KnowledgeStore>,
     planets: Query<&crate::galaxy::Planet>,
 ) {
+    use crate::knowledge::{CommitmentKind, CommitmentTarget, KnowledgeSubject};
+
     for (ship_entity, pa) in &assignments {
         // #468 PR-3: resolve the system to look up in the issuing
         // empire's KnowledgeStore. For `System` targets it's the
@@ -201,19 +203,38 @@ pub fn sweep_resolved_assignments(
         let Ok(store) = knowledge.get(pa.faction) else {
             continue;
         };
+
+        // Slice 3 of knowledge redesign — the sweep accepts either
+        // signal:
+        //
+        // 1. The legacy snapshot rule (target's `surveyed` /
+        //    `colonized` flag has reached this empire's store). This
+        //    is the path the pre-redesign tests pin
+        //    (`pending_assignment_outlives_handler_ok_until_knowledge_arrives`
+        //    directly writes `surveyed = true` to the store).
+        // 2. The ledger says the commitment has been resolved or
+        //    failed — observation-driven via
+        //    `resolve_commitments_from_observations`.
+        //
+        // Either signal flips the marker off. Slice 4 will collapse
+        // these once the dispatch path reliably double-writes for
+        // every AI command kind.
         let snapshot = store.get(system);
-        // #468 PR-2/PR-3: extended to drop the marker when the kind's
-        // target-state has been learned by the issuing empire. For
-        // `Survey` that's `surveyed = true`; for `Colonize` that's
-        // `colonized = true` (covers both colonize_system AND
-        // colonize_planet — both succeed when *any* planet in the
-        // system is colonized, which is the granularity of
-        // `SystemSnapshot.colonized`).
-        let resolved = match pa.kind {
+        let snapshot_resolved = match pa.kind {
             AssignmentKind::Survey => snapshot.map(|sk| sk.data.surveyed).unwrap_or(false),
             AssignmentKind::Colonize => snapshot.map(|sk| sk.data.colonized).unwrap_or(false),
         };
-        if resolved {
+        let subject = KnowledgeSubject::Empire(pa.faction);
+        let kind: CommitmentKind = pa.kind.into();
+        let target: CommitmentTarget = pa.target.into();
+        let ledger_has_entry = !store
+            .commitments()
+            .ids_for(subject, kind, target)
+            .is_empty();
+        let ledger_resolved =
+            ledger_has_entry && !store.has_active_commitment(subject, kind, target);
+
+        if snapshot_resolved || ledger_resolved {
             commands.entity(ship_entity).remove::<PendingAssignment>();
         }
     }

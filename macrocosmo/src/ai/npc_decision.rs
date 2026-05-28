@@ -999,6 +999,26 @@ pub fn npc_decision_tick(
             pending_colonize_targets.extend(set.iter().copied());
         }
 
+        // Slice 4 of knowledge redesign — augment the legacy dedup
+        // union with the commitment ledger. The legacy union remains
+        // authoritative for safety (the plan calls for "if they
+        // disagree, log and use the union"); the ledger entries fill
+        // in cases where a Survey / Colonize / DeployDeliverable
+        // commitment is active but none of the legacy sources
+        // surfaced it. Slice 4b3 will collapse this audit pattern
+        // and make the ledger authoritative.
+        let (ledger_survey, ledger_colonize, ledger_deploy) =
+            ledger_dedup_targets(knowledge, entity);
+        log_dedup_divergence(entity, "survey", &pending_survey_targets, &ledger_survey);
+        log_dedup_divergence(
+            entity,
+            "colonize",
+            &pending_colonize_targets,
+            &ledger_colonize,
+        );
+        pending_survey_targets.extend(ledger_survey);
+        pending_colonize_targets.extend(ledger_colonize);
+
         // #444 hotfix: in-flight `deploy_deliverable` chain targets (the
         // 4 primitives `deploy_deliverable` decomposes into +
         // outbox-resident macros). Rule 3.5 reads this to suppress
@@ -1008,6 +1028,9 @@ pub fn npc_decision_tick(
         if let Some(set) = outbox_deploy_per_empire.get(&entity) {
             pending_deploy_targets.extend(set.iter().copied());
         }
+        // Slice 4b2 ledger union for deploy targets.
+        log_dedup_divergence(entity, "deploy", &pending_deploy_targets, &ledger_deploy);
+        pending_deploy_targets.extend(ledger_deploy);
 
         // Extract system intel. Hostile / colonizable signals still come
         // from the KnowledgeStore (those require detailed snapshots),
@@ -1669,4 +1692,87 @@ pub fn npc_decision_tick(
             super::debug_log::write_decision_log(log, now, &faction.id, &bus);
         }
     }
+}
+
+/// Slice 4 of knowledge redesign — derive `(survey, colonize, deploy)`
+/// target sets from this empire's commitment ledger.
+///
+/// `(System(s), Survey)` → survey target set.
+/// `(System(s), Colonize)` → colonize target set.
+/// `(System(s), DeployDeliverable)` → deploy target set (Slice 4b2).
+///
+/// Slice 4b1: `colonize_planet` dispatches now sibling-write a
+/// system-keyed `Colonize(System)` entry alongside the planet-keyed
+/// one, so the ledger answers "is this system already being
+/// colonized?" without a planet → system resolver. The planet entry
+/// stays in the ledger for provenance / future per-planet dedup but
+/// is intentionally ignored here.
+///
+/// Slice 4b2: `deploy_deliverable` macros are recorded against
+/// `CommitmentKind::DeployDeliverable` at outbox emission (before
+/// eager decomposition) so the dedup union covers the in-flight
+/// Core deployment chain even after the macro decomposes.
+///
+/// Slice 4b3 (cut-over) will delete the legacy
+/// `pending_assignments` / `outbox_deploy_per_empire` scans once
+/// smoke shows no divergence.
+fn ledger_dedup_targets(
+    knowledge: &KnowledgeStore,
+    empire: Entity,
+) -> (
+    std::collections::HashSet<Entity>,
+    std::collections::HashSet<Entity>,
+    std::collections::HashSet<Entity>,
+) {
+    use crate::knowledge::{CommitmentKind, CommitmentStatus, CommitmentTarget, KnowledgeSubject};
+    let subject = KnowledgeSubject::Empire(empire);
+    let mut survey = std::collections::HashSet::new();
+    let mut colonize = std::collections::HashSet::new();
+    let mut deploy = std::collections::HashSet::new();
+    for c in knowledge.commitments().iter() {
+        if c.subject != subject || c.status != CommitmentStatus::Active {
+            continue;
+        }
+        match (c.kind, c.target) {
+            (CommitmentKind::Survey, CommitmentTarget::System(s)) => {
+                survey.insert(s);
+            }
+            (CommitmentKind::Colonize, CommitmentTarget::System(s)) => {
+                colonize.insert(s);
+            }
+            (CommitmentKind::DeployDeliverable, CommitmentTarget::System(s)) => {
+                deploy.insert(s);
+            }
+            // Planet-target colonize entries are sibling-written
+            // alongside a System entry (Slice 4b1) — ignoring them
+            // here avoids double-counting.
+            _ => {}
+        }
+    }
+    (survey, colonize, deploy)
+}
+
+/// Slice 4: log a warning when the legacy dedup union and the ledger
+/// dedup set disagree. This is the audit signal described in the
+/// implementation plan: once a smoke run shows no divergence, the
+/// legacy fallback path can be removed in a future slice.
+fn log_dedup_divergence(
+    empire: Entity,
+    label: &str,
+    legacy: &std::collections::HashSet<Entity>,
+    ledger: &std::collections::HashSet<Entity>,
+) {
+    let legacy_only: Vec<_> = legacy.difference(ledger).collect();
+    let ledger_only: Vec<_> = ledger.difference(legacy).collect();
+    if legacy_only.is_empty() && ledger_only.is_empty() {
+        return;
+    }
+    bevy::log::warn!(
+        target: "macrocosmo::knowledge::commitment",
+        "AI dedup divergence empire={:?} kind={} legacy_only={} ledger_only={}",
+        empire,
+        label,
+        legacy_only.len(),
+        ledger_only.len(),
+    );
 }

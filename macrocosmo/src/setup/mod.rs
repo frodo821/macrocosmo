@@ -9,7 +9,7 @@ use crate::communication::CommandLog;
 use crate::components::Position;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::game_state::{GameState, GameStatePlugin, LoadSaveRequest};
-use crate::knowledge::KnowledgeStore;
+use crate::knowledge::{KnowledgeNode, KnowledgeStore};
 use crate::modifier::ModifiedValue;
 use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::observer::{in_observer_mode, not_in_observer_mode};
@@ -356,7 +356,7 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
         }
         // If a bare Faction entity already exists (without Empire), upgrade
         // it to an Empire by inserting the bundle. Otherwise spawn fresh.
-        if let Some(entity) = existing_by_id.get(&snap.id) {
+        let empire_entity = if let Some(entity) = existing_by_id.get(&snap.id) {
             // Leave passive factions alone — they're added by
             // FactionRelationsPlugin and shouldn't be promoted to full
             // empires. `is_passive` is a preset field from the faction type.
@@ -376,16 +376,26 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
                 "Setup: upgraded existing Faction '{}' to full Empire",
                 snap.id
             );
+            *entity
         } else {
-            world.spawn(empire_bundle(
-                snap.name.clone(),
-                snap.id.clone(),
-                snap.name.clone(),
-                snap.can_diplomacy,
-                snap.allowed_diplomatic_options.clone(),
-            ));
+            let e = world
+                .spawn(empire_bundle(
+                    snap.name.clone(),
+                    snap.id.clone(),
+                    snap.name.clone(),
+                    snap.can_diplomacy,
+                    snap.allowed_diplomatic_options.clone(),
+                ))
+                .id();
             info!("Setup: spawned NPC Empire for faction '{}'", snap.id);
-        }
+            e
+        };
+        // Knowledge redesign Slice 1: tag the empire as a knowledge holder.
+        // Storage still lives on `KnowledgeStore`; this just makes subject
+        // identity first-class for later slices.
+        world
+            .entity_mut(empire_entity)
+            .insert(KnowledgeNode::empire(empire_entity));
 
         if snap.has_on_game_start {
             run_on_game_start_for_faction(world, &snap.id);
