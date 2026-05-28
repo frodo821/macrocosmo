@@ -5,7 +5,11 @@ use crate::{
     UiFragmentContextSpec, UiFragmentMeta, UiFragmentSource, UiModifierDisplayLine, UiNode,
 };
 use mlua::prelude::*;
-use std::{collections::BTreeSet, error::Error, fmt};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    error::Error,
+    fmt,
+};
 
 pub const UI_FRAGMENT_ACCUMULATOR: &str = "_ui_fragment_definitions";
 pub const UI_FRAGMENT_SOURCE_FIELD: &str = "_ui_source";
@@ -79,6 +83,7 @@ pub fn create_ui_dsl_module(lua: &Lua) -> LuaResult<LuaTable> {
     ui.set("vstack", make_node_builder(lua, "vstack")?)?;
     ui.set("hstack", make_node_builder(lua, "hstack")?)?;
     ui.set("grid", make_node_builder(lua, "grid")?)?;
+    ui.set("tabs", make_node_builder(lua, "tabs")?)?;
 
     let text = lua.create_function(|lua, value: String| {
         let t = lua.create_table()?;
@@ -176,6 +181,7 @@ pub fn render_lua_fragment_frame(
 #[derive(Default)]
 pub struct LuaUiFragmentRegistry {
     definitions: Vec<LuaUiFragmentDefinition>,
+    context_menu_index: Vec<usize>,
 }
 
 impl LuaUiFragmentRegistry {
@@ -187,6 +193,27 @@ impl LuaUiFragmentRegistry {
         self.definitions
             .iter()
             .find(|definition| definition.meta.id == id)
+    }
+
+    pub fn get_by_tag(&self, key: &str, value: &str) -> Option<&LuaUiFragmentDefinition> {
+        self.definitions.iter().find(|definition| {
+            definition
+                .meta
+                .tags
+                .get(key)
+                .is_some_and(|tag| tag == value)
+        })
+    }
+
+    pub fn context_menu_fragments<'a>(
+        &'a self,
+        query: &UiFacetQuery,
+    ) -> Vec<&'a LuaUiFragmentDefinition> {
+        self.context_menu_index
+            .iter()
+            .filter_map(|index| self.definitions.get(*index))
+            .filter(|definition| query.matches(&definition.meta.tags))
+            .collect()
     }
 
     pub fn len(&self) -> usize {
@@ -224,9 +251,108 @@ pub fn parse_ui_fragment_definitions(lua: &Lua) -> LuaResult<LuaUiFragmentRegist
             .then_with(|| a.meta.id.cmp(&b.meta.id))
     });
 
+    let context_menu_index = build_context_menu_index(&parsed)?;
+
     Ok(LuaUiFragmentRegistry {
         definitions: parsed,
+        context_menu_index,
     })
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct UiFacetQuery {
+    pub facets: BTreeMap<String, String>,
+}
+
+impl UiFacetQuery {
+    pub fn new<K, V, I>(facets: I) -> Self
+    where
+        K: Into<String>,
+        V: Into<String>,
+        I: IntoIterator<Item = (K, V)>,
+    {
+        Self {
+            facets: facets
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+
+    pub fn matches(&self, fragment_tags: &BTreeMap<String, String>) -> bool {
+        fragment_tags
+            .iter()
+            .filter(|(key, _)| is_context_menu_facet_key(key))
+            .all(|(key, value)| {
+                self.facets
+                    .get(key)
+                    .is_some_and(|query_value| query_value == value)
+            })
+    }
+}
+
+fn build_context_menu_index(definitions: &[LuaUiFragmentDefinition]) -> LuaResult<Vec<usize>> {
+    let mut indexes = Vec::new();
+    for (index, definition) in definitions.iter().enumerate() {
+        if definition
+            .meta
+            .tags
+            .get("part_of")
+            .is_some_and(|value| value == "context_menu")
+        {
+            validate_context_menu_facets(&definition.meta)?;
+            indexes.push(index);
+        }
+    }
+    Ok(indexes)
+}
+
+fn validate_context_menu_facets(meta: &UiFragmentMeta) -> LuaResult<()> {
+    for (key, value) in &meta.tags {
+        if is_context_menu_facet_key(key) || key == "command" {
+            validate_context_menu_facet_value(&meta.id, key, value)?;
+        }
+    }
+    if !meta.tags.contains_key("target") {
+        return Err(parse_error(
+            meta.id.clone(),
+            "tags.target",
+            "context_menu fragment requires target facet",
+        ));
+    }
+    Ok(())
+}
+
+fn is_context_menu_facet_key(key: &str) -> bool {
+    matches!(
+        key,
+        "part_of" | "target" | "ctx:selected" | "ctx:selected:ship:class"
+    )
+}
+
+fn validate_context_menu_facet_value(fragment_id: &str, key: &str, value: &str) -> LuaResult<()> {
+    let allowed = match key {
+        "part_of" => matches!(value, "context_menu"),
+        "target" => matches!(value, "entity:system" | "entity:ship" | "entity:planet"),
+        "ctx:selected" => matches!(value, "entity:ship" | "entity:system" | "none"),
+        "ctx:selected:ship:class" => matches!(
+            value,
+            "colonizer" | "surveyor" | "military" | "transport" | "civilian"
+        ),
+        "command" => value.chars().all(|ch| {
+            ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, '.' | '_' | '-')
+        }),
+        _ => true,
+    };
+    if allowed {
+        Ok(())
+    } else {
+        Err(parse_error(
+            fragment_id.to_string(),
+            format!("tags.{key}"),
+            format!("unsupported context menu facet value '{value}'"),
+        ))
+    }
 }
 
 fn parse_ui_fragment_definition(
@@ -239,6 +365,7 @@ fn parse_ui_fragment_definition(
         .map_err(|_| parse_error(format!("#{index}"), "id", "expected string id"))?;
 
     let labels = parse_string_array(table, "labels", &id)?;
+    let tags = parse_tags(table, &id)?;
     let order = table.get::<Option<i32>>("order")?.unwrap_or(0);
     let context = parse_context_spec(table, &id)?;
     let source = parse_source(table, index)?;
@@ -250,12 +377,40 @@ fn parse_ui_fragment_definition(
         meta: UiFragmentMeta {
             id,
             labels,
+            tags,
             order,
             context,
             source,
         },
         render: lua.create_registry_value(render)?,
     })
+}
+
+fn parse_tags(
+    table: &LuaTable,
+    fragment_id: &str,
+) -> LuaResult<std::collections::BTreeMap<String, String>> {
+    let Some(tags): Option<LuaTable> = table.get("tags")? else {
+        return Ok(Default::default());
+    };
+    let mut parsed = std::collections::BTreeMap::new();
+    for pair in tags.pairs::<String, String>() {
+        let (key, value) = pair.map_err(|_| {
+            parse_error(
+                fragment_id.to_string(),
+                "tags",
+                "expected string-to-string tag table",
+            )
+        })?;
+        if parsed.insert(key.clone(), value).is_some() {
+            return Err(parse_error(
+                fragment_id.to_string(),
+                format!("tags.{key}"),
+                "duplicate tag key",
+            ));
+        }
+    }
+    Ok(parsed)
 }
 
 fn parse_context_spec(table: &LuaTable, id: &str) -> LuaResult<UiFragmentContextSpec> {
@@ -409,9 +564,13 @@ fn parse_ui_node_at(table: &LuaTable, path: &str, depth: usize) -> LuaResult<UiN
             children: parse_children(table, path, depth)?,
         }),
         "vstack" => Ok(UiNode::VStack {
+            align_items: parse_align_items(table, path)?,
+            justify_content: parse_justify_content(table, path)?,
             children: parse_children(table, path, depth)?,
         }),
         "hstack" => Ok(UiNode::HStack {
+            align_items: parse_align_items(table, path)?,
+            justify_content: parse_justify_content(table, path)?,
             children: parse_children(table, path, depth)?,
         }),
         "grid" => {
@@ -429,6 +588,8 @@ fn parse_ui_node_at(table: &LuaTable, path: &str, depth: usize) -> LuaResult<UiN
             })
         }
         "row" => Ok(UiNode::Row {
+            align_items: parse_align_items(table, path)?,
+            justify_content: parse_justify_content(table, path)?,
             children: parse_children(table, path, depth)?,
         }),
         "text" => Ok(UiNode::Text {
@@ -449,6 +610,9 @@ fn parse_ui_node_at(table: &LuaTable, path: &str, depth: usize) -> LuaResult<UiN
             }
             Ok(UiNode::Progress { value })
         }
+        "tabs" => Ok(UiNode::Tabs {
+            tabs: parse_tabs(table, path)?,
+        }),
         "tooltip" => {
             let content: LuaTable = table.get("content").map_err(|_| {
                 parse_error(
@@ -490,6 +654,9 @@ fn parse_ui_node_at(table: &LuaTable, path: &str, depth: usize) -> LuaResult<UiN
                 parse_error("<descriptor>", format!("{path}.label"), "expected string")
             })?,
             command: table.get("command")?,
+            secondary_command: table.get("secondary_command")?,
+            secondary_shift_command: table.get("secondary_shift_command")?,
+            full_width: table.get::<Option<bool>>("full_width")?.unwrap_or(false),
             disabled: table.get::<Option<bool>>("disabled")?.unwrap_or(false),
             disabled_when: parse_optional_condition_display(table, "disabled_when", path)?,
         }),
@@ -500,6 +667,9 @@ fn parse_ui_node_at(table: &LuaTable, path: &str, depth: usize) -> LuaResult<UiN
             command: table.get("command").map_err(|_| {
                 parse_error("<descriptor>", format!("{path}.command"), "expected string")
             })?,
+            secondary_command: table.get("secondary_command")?,
+            secondary_shift_command: table.get("secondary_shift_command")?,
+            full_width: table.get::<Option<bool>>("full_width")?.unwrap_or(false),
             disabled: table.get::<Option<bool>>("disabled")?.unwrap_or(false),
             disabled_when: parse_optional_condition_display(table, "disabled_when", path)?,
         }),
@@ -509,6 +679,62 @@ fn parse_ui_node_at(table: &LuaTable, path: &str, depth: usize) -> LuaResult<UiN
             format!("unknown ui node kind '{kind}'"),
         )),
     }
+}
+
+fn parse_align_items(table: &LuaTable, path: &str) -> LuaResult<crate::UiAlignItems> {
+    match table.get::<Option<String>>("align_items")?.as_deref() {
+        None | Some("start") => Ok(crate::UiAlignItems::Start),
+        Some("center") => Ok(crate::UiAlignItems::Center),
+        Some("end") => Ok(crate::UiAlignItems::End),
+        Some(_) => Err(parse_error(
+            "<descriptor>",
+            format!("{path}.align_items"),
+            "expected start, center, or end",
+        )),
+    }
+}
+
+fn parse_justify_content(table: &LuaTable, path: &str) -> LuaResult<crate::UiJustifyContent> {
+    match table.get::<Option<String>>("justify_content")?.as_deref() {
+        None | Some("start") => Ok(crate::UiJustifyContent::Start),
+        Some("center") => Ok(crate::UiJustifyContent::Center),
+        Some("end") => Ok(crate::UiJustifyContent::End),
+        Some(_) => Err(parse_error(
+            "<descriptor>",
+            format!("{path}.justify_content"),
+            "expected start, center, or end",
+        )),
+    }
+}
+
+fn parse_tabs(table: &LuaTable, path: &str) -> LuaResult<Vec<crate::UiTabItem>> {
+    let tabs_table: LuaTable = table
+        .get("tabs")
+        .or_else(|_| table.get("children"))
+        .map_err(|_| parse_error("<descriptor>", format!("{path}.tabs"), "expected tab list"))?;
+    let mut tabs = Vec::new();
+    for pair in tabs_table.sequence_values::<LuaTable>() {
+        let item = pair?;
+        tabs.push(crate::UiTabItem {
+            label: item.get("label").map_err(|_| {
+                parse_error(
+                    "<descriptor>",
+                    format!("{path}.tabs[].label"),
+                    "expected string",
+                )
+            })?,
+            command: item.get("command").map_err(|_| {
+                parse_error(
+                    "<descriptor>",
+                    format!("{path}.tabs[].command"),
+                    "expected string",
+                )
+            })?,
+            selected: item.get::<Option<bool>>("selected")?.unwrap_or(false),
+            disabled: item.get::<Option<bool>>("disabled")?.unwrap_or(false),
+        });
+    }
+    Ok(tabs)
 }
 
 fn parse_optional_condition_display(
@@ -743,6 +969,11 @@ mod tests {
                         },
                         ui.button { label = "Open", command = "ui.open" },
                         ui.action { label = "Go", command = "ship.move" },
+                        ui.tabs {
+                            tabs = {
+                                { label = "Overview", command = "tab.overview", selected = true },
+                            },
+                        },
                     },
                 }
                 "#,
@@ -756,6 +987,8 @@ mod tests {
         assert_eq!(stack.get::<String>("_ui_node").unwrap(), "vstack");
         let button: LuaTable = children.get(2).unwrap();
         assert_eq!(button.get::<String>("_ui_node").unwrap(), "button");
+        let tabs: LuaTable = children.get(4).unwrap();
+        assert_eq!(tabs.get::<String>("_ui_node").unwrap(), "tabs");
     }
 
     #[test]
@@ -769,7 +1002,17 @@ mod tests {
                 return ui.section {
                     title = "Overview",
                     children = {
-                        ui.hstack { children = { ui.text("A"), ui.progress(0.25) } },
+                        ui.hstack {
+                            align_items = "center",
+                            justify_content = "start",
+                            children = { ui.text("A"), ui.progress(0.25) },
+                        },
+                        ui.tabs {
+                            tabs = {
+                                { label = "Overview", command = "tab.overview", selected = true },
+                                { label = "Details", command = "tab.details", disabled = true },
+                            },
+                        },
                         ui.button { label = "Open", command = "ui.open" },
                     },
                 }
@@ -784,6 +1027,8 @@ mod tests {
                 title: Some("Overview".to_string()),
                 children: vec![
                     UiNode::HStack {
+                        align_items: crate::UiAlignItems::Center,
+                        justify_content: crate::UiJustifyContent::Start,
                         children: vec![
                             UiNode::Text {
                                 value: "A".to_string()
@@ -791,9 +1036,28 @@ mod tests {
                             UiNode::Progress { value: 0.25 },
                         ],
                     },
+                    UiNode::Tabs {
+                        tabs: vec![
+                            crate::UiTabItem {
+                                label: "Overview".to_string(),
+                                command: "tab.overview".to_string(),
+                                selected: true,
+                                disabled: false,
+                            },
+                            crate::UiTabItem {
+                                label: "Details".to_string(),
+                                command: "tab.details".to_string(),
+                                selected: false,
+                                disabled: true,
+                            },
+                        ],
+                    },
                     UiNode::Button {
                         label: "Open".to_string(),
                         command: Some("ui.open".to_string()),
+                        secondary_command: None,
+                        secondary_shift_command: None,
+                        full_width: false,
                         disabled: false,
                         disabled_when: None,
                     },
@@ -915,6 +1179,9 @@ mod tests {
             UiNode::Button {
                 label: "Build".to_string(),
                 command: Some("colony.build".to_string()),
+                secondary_command: None,
+                secondary_shift_command: None,
+                full_width: false,
                 disabled: true,
                 disabled_when: Some(UiConditionDisplay {
                     label: "Can build mine".to_string(),
@@ -1099,6 +1366,7 @@ mod tests {
             define_ui_fragment {
                 id = "late",
                 labels = { "esc", "late" },
+                tags = { esc_tab = "construction_overview" },
                 order = 20,
                 context = { requires = { "empire" }, optional = { "system" } },
                 render = function(view) return ui.text("late") end,
@@ -1128,6 +1396,16 @@ mod tests {
             .expect("late fragment");
         assert_eq!(late.meta.labels, vec!["esc", "late"]);
         assert_eq!(
+            late.meta.tags.get("esc_tab").map(String::as_str),
+            Some("construction_overview")
+        );
+        assert_eq!(
+            registry
+                .get_by_tag("esc_tab", "construction_overview")
+                .map(|definition| definition.meta.id.as_str()),
+            Some("late")
+        );
+        assert_eq!(
             late.meta.context.requires,
             vec![UiContextBinding::untyped("empire")]
         );
@@ -1143,6 +1421,128 @@ mod tests {
                 .is_some_and(|short_src| short_src.contains("scripts/ui/init.lua"))
         );
         assert_eq!(source.registration_order, 1);
+    }
+
+    #[test]
+    fn context_menu_fragment_index_matches_static_facets() {
+        let lua = Lua::new();
+        register_ui_fragment_definition_accumulator(&lua).expect("register accumulator");
+        register_ui_dsl_helpers(&lua).expect("register helpers");
+
+        lua.load(
+            r#"
+            define_ui_fragment {
+                id = "ship_move",
+                tags = {
+                    part_of = "context_menu",
+                    target = "entity:system",
+                    ["ctx:selected"] = "entity:ship",
+                    command = "ship.move",
+                },
+                render = function(view) return ui.text("move") end,
+            }
+            define_ui_fragment {
+                id = "ship_survey",
+                tags = {
+                    part_of = "context_menu",
+                    target = "entity:system",
+                    ["ctx:selected"] = "entity:ship",
+                    ["ctx:selected:ship:class"] = "surveyor",
+                    command = "ship.survey",
+                },
+                render = function(view) return ui.text("survey") end,
+            }
+            define_ui_fragment {
+                id = "ship_colonize",
+                tags = {
+                    part_of = "context_menu",
+                    target = "entity:system",
+                    ["ctx:selected"] = "entity:ship",
+                    ["ctx:selected:ship:class"] = "colonizer",
+                    command = "ship.colonize",
+                },
+                render = function(view) return ui.text("colonize") end,
+            }
+            define_ui_fragment {
+                id = "unrelated",
+                tags = { part_of = "esc" },
+                render = function(view) return ui.text("other") end,
+            }
+            "#,
+        )
+        .exec()
+        .expect("define fragments");
+
+        let registry = parse_ui_fragment_definitions(&lua).expect("parse fragments");
+
+        let base_query = UiFacetQuery::new([
+            ("part_of", "context_menu"),
+            ("target", "entity:system"),
+            ("ctx:selected", "entity:ship"),
+        ]);
+        let base_ids: Vec<&str> = registry
+            .context_menu_fragments(&base_query)
+            .into_iter()
+            .map(|definition| definition.meta.id.as_str())
+            .collect();
+        assert_eq!(base_ids, vec!["ship_move"]);
+
+        let survey_query = UiFacetQuery::new([
+            ("part_of", "context_menu"),
+            ("target", "entity:system"),
+            ("ctx:selected", "entity:ship"),
+            ("ctx:selected:ship:class", "surveyor"),
+        ]);
+        let survey_ids: Vec<&str> = registry
+            .context_menu_fragments(&survey_query)
+            .into_iter()
+            .map(|definition| definition.meta.id.as_str())
+            .collect();
+        assert_eq!(survey_ids, vec!["ship_move", "ship_survey"]);
+
+        let colonize_query = UiFacetQuery::new([
+            ("part_of", "context_menu"),
+            ("target", "entity:system"),
+            ("ctx:selected", "entity:ship"),
+            ("ctx:selected:ship:class", "colonizer"),
+        ]);
+        let colonize_ids: Vec<&str> = registry
+            .context_menu_fragments(&colonize_query)
+            .into_iter()
+            .map(|definition| definition.meta.id.as_str())
+            .collect();
+        assert_eq!(colonize_ids, vec!["ship_colonize", "ship_move"]);
+    }
+
+    #[test]
+    fn context_menu_fragment_index_rejects_invalid_static_facets() {
+        let lua = Lua::new();
+        register_ui_fragment_definition_accumulator(&lua).expect("register accumulator");
+        register_ui_dsl_helpers(&lua).expect("register helpers");
+
+        lua.load(
+            r#"
+            define_ui_fragment {
+                id = "bad_target",
+                tags = {
+                    part_of = "context_menu",
+                    target = "runtime:anything",
+                },
+                render = function(view) return ui.text("bad") end,
+            }
+            "#,
+        )
+        .exec()
+        .expect("define fragment");
+
+        let err = match parse_ui_fragment_definitions(&lua) {
+            Ok(_) => panic!("invalid context menu facet should fail"),
+            Err(err) => err,
+        };
+        assert!(
+            err.to_string()
+                .contains("unsupported context menu facet value")
+        );
     }
 
     #[test]

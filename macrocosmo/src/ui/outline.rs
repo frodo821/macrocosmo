@@ -9,7 +9,10 @@ use crate::ship::Owner;
 use crate::ship::fleet::{Fleet, FleetMembers};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::ship_design::ShipDesignRegistry;
-use crate::visualization::{OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem};
+use crate::visualization::{
+    ContextMenu, CycleKind, OutlineExpandedSystems, SelectedShip, SelectedShips, SelectedSystem,
+    apply_entity_selection, open_context_menu_at,
+};
 
 // #491: The `ShipOutlineView` / `ship_outline_view` helpers were factored
 // out of this module into [`crate::knowledge::ship_view`] (data shape +
@@ -89,12 +92,16 @@ fn ship_tooltip(
 /// Returns whether the section is expanded.
 fn draw_system_header(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     system_entity: Entity,
     system_name: &str,
     is_capital: bool,
     is_selected: bool,
     expanded: &mut OutlineExpandedSystems,
     selected_system: &mut SelectedSystem,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
+    context_menu: &mut ContextMenu,
     planets: &Query<&Planet>,
 ) -> bool {
     let is_expanded = expanded.0.contains(&system_entity);
@@ -134,9 +141,23 @@ fn draw_system_header(
             ui.label(format!("Planets: {}", planet_count));
             ui.label("Colonized");
         });
-        if response.clicked() {
-            selected_system.0 = Some(system_entity);
-            // Don't touch selected_ship -- selections are independent
+        let command_held = ui.input(|i| i.modifiers.command);
+        if response.secondary_clicked()
+            || (response.clicked() && command_held && selected_ship.0.is_some())
+        {
+            if selected_ship.0.is_some() {
+                let shift_held = ui.input(|i| i.modifiers.shift);
+                open_context_menu_for_system(ctx, context_menu, system_entity, shift_held);
+            }
+        } else if response.clicked() {
+            apply_entity_selection(
+                CycleKind::StarSystem,
+                system_entity,
+                selected_system,
+                selected_ship,
+                selected_ships,
+                false,
+            );
         }
     });
 
@@ -146,11 +167,15 @@ fn draw_system_header(
 /// Draw an expandable header for an unowned system (ships stationed elsewhere).
 fn draw_unowned_system_header(
     ui: &mut egui::Ui,
+    ctx: &egui::Context,
     system_entity: Entity,
     system_name: &str,
     is_selected: bool,
     expanded: &mut OutlineExpandedSystems,
     selected_system: &mut SelectedSystem,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
+    context_menu: &mut ContextMenu,
     planets: &Query<&Planet>,
 ) -> bool {
     let is_expanded = expanded.0.contains(&system_entity);
@@ -179,12 +204,44 @@ fn draw_unowned_system_header(
             let planet_count = planets.iter().filter(|p| p.system == system_entity).count();
             ui.label(format!("Planets: {}", planet_count));
         });
-        if response.clicked() {
-            selected_system.0 = Some(system_entity);
+        let command_held = ui.input(|i| i.modifiers.command);
+        if response.secondary_clicked()
+            || (response.clicked() && command_held && selected_ship.0.is_some())
+        {
+            if selected_ship.0.is_some() {
+                let shift_held = ui.input(|i| i.modifiers.shift);
+                open_context_menu_for_system(ctx, context_menu, system_entity, shift_held);
+            }
+        } else if response.clicked() {
+            apply_entity_selection(
+                CycleKind::StarSystem,
+                system_entity,
+                selected_system,
+                selected_ship,
+                selected_ships,
+                false,
+            );
         }
     });
 
     is_expanded
+}
+
+fn open_context_menu_for_system(
+    ctx: &egui::Context,
+    context_menu: &mut ContextMenu,
+    target_system: Entity,
+    execute_default: bool,
+) {
+    let position = ctx
+        .pointer_latest_pos()
+        .unwrap_or_else(|| egui::pos2(24.0, 24.0));
+    open_context_menu_at(
+        context_menu,
+        target_system,
+        [position.x, position.y],
+        execute_default,
+    );
 }
 
 /// Draw the ship list for an expanded system section.
@@ -266,13 +323,14 @@ fn draw_ship_list(
             });
             if response.clicked() {
                 let shift_held = ui.input(|i| i.modifiers.shift);
-                if shift_held {
-                    selected_ships.toggle(*ship_entity);
-                } else {
-                    selected_ships.set_single(*ship_entity);
-                }
-                selected_ship.0 = selected_ships.primary();
-                // Don't touch selected_system -- selections are independent
+                apply_entity_selection(
+                    CycleKind::Ship,
+                    *ship_entity,
+                    selected_system,
+                    selected_ship,
+                    selected_ships,
+                    shift_held,
+                );
             }
         }
     }
@@ -312,8 +370,14 @@ fn draw_ship_context_menu(
         "Select ship"
     };
     if ui.button(select_label).clicked() {
-        selected_ships.set_single(ship_entity);
-        selected_ship.0 = selected_ships.primary();
+        apply_entity_selection(
+            CycleKind::Ship,
+            ship_entity,
+            selected_system,
+            selected_ship,
+            selected_ships,
+            false,
+        );
         ui.close_menu();
     }
     if let Some(sys) = parent_system {
@@ -503,6 +567,7 @@ pub fn draw_outline(
     selected_system: &mut SelectedSystem,
     selected_ship: &mut SelectedShip,
     selected_ships: &mut SelectedShips,
+    context_menu: &mut ContextMenu,
     planets: &Query<&Planet>,
     expanded: &mut OutlineExpandedSystems,
     design_registry: &ShipDesignRegistry,
@@ -581,12 +646,16 @@ pub fn draw_outline(
 
                     let is_expanded = draw_system_header(
                         ui,
+                        ctx,
                         *system_entity,
                         system_name,
                         *is_capital,
                         is_system_selected,
                         expanded,
                         selected_system,
+                        selected_ship,
+                        selected_ships,
+                        context_menu,
                         planets,
                     );
 
@@ -697,11 +766,15 @@ pub fn draw_outline(
 
                                 let is_expanded = draw_unowned_system_header(
                                     ui,
+                                    ctx,
                                     *system_entity,
                                     system_name,
                                     is_system_selected,
                                     expanded,
                                     selected_system,
+                                    selected_ship,
+                                    selected_ships,
+                                    context_menu,
                                     planets,
                                 );
 
@@ -798,12 +871,14 @@ pub fn draw_outline(
                                 });
                                 if response.clicked() {
                                     let shift_held = ui.input(|i| i.modifiers.shift);
-                                    if shift_held {
-                                        selected_ships.toggle(*entity);
-                                    } else {
-                                        selected_ships.set_single(*entity);
-                                    }
-                                    selected_ship.0 = selected_ships.primary();
+                                    apply_entity_selection(
+                                        CycleKind::Ship,
+                                        *entity,
+                                        selected_system,
+                                        selected_ship,
+                                        selected_ships,
+                                        shift_held,
+                                    );
                                 }
                             }
                         });

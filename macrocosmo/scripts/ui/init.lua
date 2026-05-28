@@ -10,8 +10,14 @@ local function stack(children)
     return ui.vstack { gap = "sm", children = children }
 end
 
-local function row(children)
-    return ui.hstack { gap = "sm", children = children }
+local function row(children, opts)
+    opts = opts or {}
+    return ui.hstack {
+        gap = "sm",
+        align_items = opts.align_items or "start",
+        justify_content = opts.justify_content or "start",
+        children = children,
+    }
 end
 
 local function kv(key, value)
@@ -24,12 +30,56 @@ local function kv(key, value)
     }
 end
 
-local function action(label, command)
-    return ui.button { label = label, command = command }
+local function action(label, command, opts)
+    opts = opts or {}
+    opts.label = label
+    opts.command = command
+    return ui.button(opts)
 end
 
 local function note(text)
     return ui.text("TODO: " .. text)
+end
+
+local function value_or(value, fallback)
+    if value == nil then
+        return fallback
+    end
+    return value
+end
+
+local function event_node(event, depth)
+    local children = {}
+    local prefix = string.rep("  ", depth)
+    local row_children = {
+        ui.text(prefix .. value_or(event.label, "")),
+    }
+    if event.progress ~= nil then
+        table.insert(row_children, ui.progress(event.progress))
+    end
+    if event.eta ~= nil then
+        table.insert(row_children, ui.text("ETA " .. tostring(event.eta)))
+    end
+    table.insert(children, row(row_children))
+
+    local nested = value_or(event.children, {})
+    for _, child in ipairs(nested) do
+        table.insert(children, event_node(child, depth + 1))
+    end
+    return stack(children)
+end
+
+local function event_tree(view, empty_label)
+    local children = {}
+    local events = value_or(view.events, {})
+    if #events == 0 then
+        table.insert(children, ui.text(value_or(empty_label, "(nothing ongoing)")))
+    else
+        for _, event in ipairs(events) do
+            table.insert(children, event_node(event, 0))
+        end
+    end
+    return stack(children)
 end
 
 local function fragment(id, labels, context, title, body)
@@ -48,47 +98,85 @@ local function fragment(id, labels, context, title, body)
     }
 end
 
+local function bare_fragment(id, labels, context, tags, body)
+    if body == nil then
+        body = tags
+        tags = nil
+    end
+    return define_ui_fragment {
+        id = id,
+        labels = labels,
+        tags = tags or {},
+        context = context or {},
+        render = body,
+    }
+end
+
 -- Frame chrome ---------------------------------------------------------------
 
-fragment(
+bare_fragment(
     "core.ui.top_bar",
     { "chrome", "top_bar", "global", "time", "resources", "action_entrypoints" },
     { requires = { "empire" }, optional = { "clock", "observer_view" } },
-    "Top Bar",
-    function(_)
-        return row {
-            ui.text("HD 0000"),
+    function(view)
+        local function open_label(label, is_open)
+            if is_open then
+                return label .. " [open]"
+            end
+            return label
+        end
+
+        local resource_children = {}
+        for _, resource in ipairs(value_or(view.resources, {})) do
+            table.insert(
+                resource_children,
+                ui.text(value_or(resource.label, "?") .. ":" .. value_or(resource.stockpile, "0") .. " (" .. value_or(resource.net, "0") .. ")")
+            )
+        end
+
+        local children = {
+            ui.text(value_or(view.date, "Year 0 Month 0 Hexadies 0")),
             action("Pause", "time.pause"),
             action("Play", "time.play"),
             action("Fast", "time.fast"),
-            ui.grid {
-                columns = 8,
-                children = {
-                    ui.text("Minerals"), ui.text("+0"),
-                    ui.text("Energy"), ui.text("+0"),
-                    ui.text("Food"), ui.text("+0"),
-                    ui.text("Authority"), ui.text("+0"),
-                },
-            },
-            action("Research", "ui.open.research"),
-            action("Diplomacy", "ui.open.diplomacy"),
-            action("Designer", "ui.open.ship_designer"),
-            action("ESC", "ui.toggle.situation_center"),
+            ui.text(value_or(view.speed, "PAUSED")),
         }
+        for _, resource_node in ipairs(resource_children) do
+            table.insert(children, resource_node)
+        end
+        table.insert(children, action(open_label("Research", view.research_open), "ui.toggle.research"))
+        table.insert(children, action(open_label("Diplomacy", view.diplomacy_open), "ui.toggle.diplomacy"))
+        table.insert(children, action(open_label("Designer", view.ship_designer_open), "ui.toggle.ship_designer"))
+
+        if view.observer_enabled then
+            local label = "Observer Mode"
+            if view.observer_read_only then
+                label = label .. " [read-only]"
+            end
+            table.insert(children, ui.text(label))
+        end
+
+        return row(children, { align_items = "center" })
     end
 )
 
-fragment(
+bare_fragment(
     "core.ui.bottom_bar",
     { "chrome", "bottom_bar", "event_log" },
     { optional = { "event_log" } },
-    "Bottom Bar",
-    function(_)
-        return row {
-            ui.text("[hd 0000] Event log entry"),
-            ui.text("[hd 0001] Another event"),
-            note("needs horizontal scroll or clipping policy for low-height chrome"),
+    function(view)
+        local children = {
+            ui.text("Event Log"),
         }
+        local entries = value_or(view.entries, {})
+        if #entries == 0 then
+            table.insert(children, ui.text("No events yet."))
+        else
+            for _, entry in ipairs(entries) do
+                table.insert(children, ui.text(value_or(entry.text, "")))
+            end
+        end
+        return stack(children)
     end
 )
 
@@ -97,63 +185,145 @@ fragment(
     { "overlay", "notifications", "transient" },
     { requires = { "empire" }, optional = { "notification_queue" } },
     "Notification Pills",
-    function(_)
-        return ui.vstack {
-            gap = "xs",
-            children = {
-                row { ui.text("High"), ui.text("Colony established"), action("Jump", "ui.jump.notification") },
-                row { ui.text("Info"), ui.text("Survey complete"), action("Ack", "notification.ack") },
-            },
-        }
+    function(view)
+        local children = {}
+        for _, notification in ipairs(value_or(view.notifications, {})) do
+            local label = value_or(notification.glyph, "i") .. " " .. value_or(notification.title, "")
+            local tooltip_children = {
+                ui.text(value_or(notification.title, "")),
+                ui.text(value_or(notification.description, "")),
+            }
+            if notification.remaining_hexadies ~= nil then
+                table.insert(tooltip_children, ui.text("auto-dismiss in " .. tostring(notification.remaining_hexadies) .. " hex"))
+            end
+
+            local row_children = {
+                ui.tooltip {
+                    content = ui.text(label),
+                    tooltip = tooltip_children,
+                },
+                action("Dismiss", "notification.dismiss:" .. tostring(notification.id)),
+            }
+            if notification.has_target then
+                table.insert(row_children, action("Jump", "notification.jump:" .. tostring(notification.id)))
+            end
+            table.insert(children, row(row_children))
+        end
+        return stack(children)
     end
 )
 
 -- Navigation / selection -----------------------------------------------------
 
-fragment(
+bare_fragment(
     "core.ui.outline",
     { "side_panel", "outline", "navigation", "systems", "ships" },
     { requires = { "empire" }, optional = { "selected_system", "selected_ship", "knowledge" } },
-    "Outline",
-    function(_)
+    function(view)
+        local system_children = {}
+        local systems = value_or(view.systems, {})
+        if #systems == 0 then
+            table.insert(system_children, ui.text("(no colonies)"))
+        else
+            for _, system in ipairs(systems) do
+                local label = value_or(system.name, "Unknown")
+                if system.is_capital then
+                    label = label .. " [capital]"
+                end
+                if system.selected then
+                    label = "> " .. label
+                end
+                local opts = { full_width = true }
+                if view.selected_ship_active then
+                    opts.secondary_command = "outline.command_system:" .. tostring(system.id)
+                    opts.secondary_shift_command = "outline.command_system_default:" .. tostring(system.id)
+                end
+                table.insert(system_children, action(label, "outline.select_system:" .. tostring(system.id), opts))
+            end
+        end
+
+        local transit_children = {}
+        local in_transit = value_or(view.in_transit, {})
+        if #in_transit == 0 then
+            table.insert(transit_children, ui.text("(none)"))
+        else
+            for _, ship in ipairs(in_transit) do
+                table.insert(transit_children, action(value_or(ship.name, "Ship") .. " [" .. value_or(ship.status, "?") .. "]", "outline.select_ship:" .. tostring(ship.id), { full_width = true }))
+            end
+        end
+
         return stack {
             ui.section {
                 title = "Systems",
                 children = {
-                    stack {
-                        row { ui.text("> Sol"), action("Select", "selection.system") },
-                        row { ui.text("  Alpha Centauri"), action("Select", "selection.system") },
+                    ui.grid {
+                        columns = 1,
+                        children = system_children,
                     },
                 },
             },
             ui.section {
-                title = "Ships",
+                title = "In Transit",
                 children = {
-                    stack {
-                        row { ui.text("Scout-1"), ui.text("Surveying"), action("Select", "selection.ship") },
-                        row { ui.text("Constructor-1"), ui.text("Idle"), action("Select", "selection.ship") },
+                    ui.grid {
+                        columns = 1,
+                        children = transit_children,
                     },
                 },
             },
-            note("tree/collapsing primitive would replace text arrows"),
         }
     end
 )
 
-fragment(
-    "core.ui.context_menu.ship_commands",
+bare_fragment(
+    "core.ui.context_menu.ship_move_to_system",
     { "modal", "context_menu", "ship", "commands", "action_heavy" },
     { requires = { "ship", "target_system" }, optional = { "empire", "target_planet" } },
-    "Ship Commands",
+    {
+        part_of = "context_menu",
+        target = "entity:system",
+        ["ctx:selected"] = "entity:ship",
+        command = "ship.move",
+    },
     function(_)
         return stack {
-            kv("Ship", "<selected ship>"),
-            kv("Target", "<target system>"),
             action("Move", "ship.move"),
+        }
+    end
+)
+
+bare_fragment(
+    "core.ui.context_menu.ship_survey_system",
+    { "modal", "context_menu", "ship", "commands", "survey", "action_heavy" },
+    { requires = { "ship", "target_system" }, optional = { "empire" } },
+    {
+        part_of = "context_menu",
+        target = "entity:system",
+        ["ctx:selected"] = "entity:ship",
+        ["ctx:selected:ship:class"] = "surveyor",
+        command = "ship.survey",
+    },
+    function(_)
+        return stack {
             action("Survey", "ship.survey"),
+        }
+    end
+)
+
+bare_fragment(
+    "core.ui.context_menu.ship_colonize_system",
+    { "modal", "context_menu", "ship", "commands", "colonize", "action_heavy" },
+    { requires = { "ship", "target_system" }, optional = { "empire", "target_planet" } },
+    {
+        part_of = "context_menu",
+        target = "entity:system",
+        ["ctx:selected"] = "entity:ship",
+        ["ctx:selected:ship:class"] = "colonizer",
+        command = "ship.colonize",
+    },
+    function(_)
+        return stack {
             action("Colonize", "ship.colonize"),
-            action("Cancel", "ui.close.context_menu"),
-            note("needs disabled reasons and command previews"),
         }
     end
 )
@@ -348,31 +518,85 @@ fragment(
 
 -- Major windows --------------------------------------------------------------
 
-fragment(
+bare_fragment(
     "core.ui.research",
     { "window", "research", "tabs", "tech_tree", "action_heavy" },
     { requires = { "empire" }, optional = { "research_queue", "tech_tree" } },
-    "Research",
-    function(_)
-        return stack {
-            row { action("Physics", "research.branch.physics"), action("Industrial", "research.branch.industrial"), action("Social", "research.branch.social"), action("Military", "research.branch.military") },
-            ui.section {
-                title = "Current",
-                children = {
-                    row { ui.text("Automated Mining"), ui.progress(0.6), action("Cancel Research", "research.cancel") },
-                },
+    function(view)
+        local children = {
+            row {
+                ui.text("Research Pool " .. value_or(view.research_pool, "0 RP/hd")),
             },
-            ui.section {
-                title = "Available",
-                children = {
-                    stack {
-                        row { ui.text("FTL Theory"), ui.text("100"), action("Research", "research.start") },
-                        row { ui.text("Habitat Engineering"), ui.text("150"), action("Research", "research.start") },
-                    },
-                },
-            },
-            note("needs tab strip/selectable primitive and prerequisite tooltip support"),
         }
+
+        if view.current then
+            local current_rows = {
+                kv("Project", value_or(view.current.name, "")),
+                ui.progress(value_or(view.current.progress, 0)),
+                ui.text(value_or(view.current.progress_label, "")),
+                action("Cancel Research", "research.cancel"),
+            }
+            if view.current.blocked then
+                table.insert(current_rows, ui.text("[Blocked]"))
+            end
+            table.insert(children, ui.section { title = "In Progress", children = { stack(current_rows) } })
+        else
+            table.insert(children, ui.text("No active research project."))
+        end
+
+        local tabs = {}
+        local selected_branch = nil
+        for _, branch in ipairs(value_or(view.branches, {})) do
+            table.insert(tabs, {
+                label = value_or(branch.name, "Branch"),
+                command = value_or(branch.command, ""),
+                selected = value_or(branch.selected, false),
+            })
+            if branch.selected then
+                selected_branch = branch
+            end
+        end
+        if #tabs == 0 then
+            table.insert(children, ui.text("No tech branches defined."))
+            return stack(children)
+        end
+
+        table.insert(children, ui.tabs { tabs = tabs })
+
+        local tech_nodes = {}
+        for _, tech in ipairs(value_or(value_or(selected_branch, {}).techs, {})) do
+            local rows = {
+                row {
+                    ui.text(value_or(tech.status, "")),
+                    ui.text(value_or(tech.name, "")),
+                    ui.text(value_or(tech.cost, "")),
+                },
+            }
+            if tech.dangerous then
+                table.insert(rows, ui.text("[!] Dangerous"))
+            end
+            if value_or(tech.description, "") ~= "" then
+                table.insert(rows, ui.text(tech.description))
+            end
+            for _, effect in ipairs(value_or(tech.effects, {})) do
+                table.insert(rows, ui.text("Effect: " .. effect))
+            end
+            for _, unlock in ipairs(value_or(tech.unlocks, {})) do
+                table.insert(rows, ui.text("Unlock: " .. unlock))
+            end
+            for _, requirement in ipairs(value_or(tech.missing_requirements, {})) do
+                table.insert(rows, ui.text("Requires: " .. requirement))
+            end
+            if tech.command then
+                table.insert(rows, action(value_or(tech.action_label, "Start Research"), tech.command, { disabled = value_or(tech.disabled, false) }))
+            elseif tech.note then
+                table.insert(rows, ui.text(tech.note))
+            end
+            table.insert(tech_nodes, ui.section { title = value_or(tech.name, "Technology"), children = { stack(rows) } })
+        end
+        table.insert(children, stack(tech_nodes))
+
+        return stack(children)
     end
 )
 
@@ -422,32 +646,59 @@ fragment(
     { "window", "diplomacy", "relations", "options", "action_heavy" },
     { requires = { "empire" }, optional = { "target_faction", "relations" } },
     "Diplomacy",
-    function(_)
-        return ui.hstack {
-            gap = "lg",
-            children = {
-                ui.section {
-                    title = "Factions",
-                    children = {
-                        stack {
-                            action("Terran Federation", "diplomacy.select_faction"),
-                            action("Vesk Combine", "diplomacy.select_faction"),
-                        },
-                    },
-                },
-                ui.section {
-                    title = "Relation",
-                    children = {
-                        stack {
-                            kv("State", "Peace"),
-                            kv("Standing", "+10"),
-                            row { action("Declare War", "diplomacy.declare_war"), action("Offer Peace", "diplomacy.offer_peace") },
-                            row { action("Open Borders", "diplomacy.option"), action("Trade", "diplomacy.option") },
-                        },
-                    },
-                },
-            },
-        }
+    function(view)
+        local children = {}
+
+        local wars = value_or(view.active_wars, {})
+        if #wars > 0 then
+            local war_children = {}
+            for _, war in ipairs(wars) do
+                local rows = {
+                    ui.text(value_or(war.title, "War")),
+                    kv("Duration", value_or(war.duration, "0 hd")),
+                    kv("Casus Belli", value_or(war.casus_belli, "")),
+                }
+                for _, demand in ipairs(value_or(war.demands, {})) do
+                    table.insert(rows, ui.text("Demand: " .. demand))
+                end
+                local scenario_buttons = {}
+                for _, scenario in ipairs(value_or(war.end_scenarios, {})) do
+                    table.insert(scenario_buttons, action(value_or(scenario.label, "End War"), scenario.command))
+                end
+                if #scenario_buttons > 0 then
+                    table.insert(rows, row(scenario_buttons))
+                end
+                table.insert(war_children, ui.section { title = value_or(war.opponent, "Opponent"), children = { stack(rows) } })
+            end
+            table.insert(children, ui.section { title = "Active Wars", children = { stack(war_children) } })
+        end
+
+        local faction_cards = {}
+        for _, faction in ipairs(value_or(view.factions, {})) do
+            local rows = {
+                ui.text(value_or(faction.name, "Unknown")),
+                kv("State", value_or(faction.state, "Neutral")),
+                kv("Standing", value_or(faction.standing_label, "0")),
+                ui.progress(value_or(faction.standing_progress, 0.5)),
+            }
+            local option_buttons = {}
+            for _, option in ipairs(value_or(faction.options, {})) do
+                table.insert(option_buttons, action(value_or(option.label, "Option"), option.command))
+            end
+            if #option_buttons > 0 then
+                table.insert(rows, row(option_buttons))
+            else
+                table.insert(rows, ui.text("(No diplomatic options)"))
+            end
+            table.insert(faction_cards, ui.section { title = value_or(faction.name, "Faction"), children = { stack(rows) } })
+        end
+
+        if #faction_cards == 0 then
+            table.insert(faction_cards, ui.text("No known factions."))
+        end
+        table.insert(children, ui.section { title = "Known Factions", children = { stack(faction_cards) } })
+
+        return stack(children)
     end
 )
 
@@ -456,19 +707,22 @@ fragment(
     { "window", "debug", "lua_console", "developer" },
     { optional = { "log_buffer" } },
     "Lua Console",
-    function(_)
+    function(view)
+        local lines = {}
+        for _, entry in ipairs(value_or(view.entries, {})) do
+            table.insert(lines, ui.text(value_or(entry.text, "")))
+        end
+        if #lines == 0 then
+            table.insert(lines, ui.text("(no console output)"))
+        end
         return stack {
             ui.section {
                 title = "Log",
                 children = {
-                    stack {
-                        ui.text("> print('hello')"),
-                        ui.text("hello"),
-                    },
+                    stack(lines),
                 },
             },
-            row { ui.text("<text input needed>"), action("Run", "lua_console.run") },
-            note("needs text_input and command history state"),
+            note("input is hosted by the game until text_input is a DSL primitive"),
         }
     end
 )
@@ -478,16 +732,27 @@ fragment(
     { "modal", "choice", "blocking", "event" },
     { requires = { "choice" }, optional = { "empire" } },
     "Choice Dialog",
-    function(_)
+    function(view)
+        local options = {}
+        for _, option in ipairs(value_or(view.options, {})) do
+            local rows = {
+                ui.text(value_or(option.label, "Option")),
+            }
+            if value_or(option.description, "") ~= "" then
+                table.insert(rows, ui.text(option.description))
+            end
+            if value_or(option.unmet_reason, "") ~= "" then
+                table.insert(rows, ui.text(option.unmet_reason))
+            end
+            table.insert(rows, action("Choose", option.command, { disabled = value_or(option.disabled, false) }))
+            table.insert(options, ui.section { title = value_or(option.label, "Option"), children = { stack(rows) } })
+        end
         return stack {
-            ui.text("<choice title/body>"),
+            ui.text(value_or(view.description, "")),
             ui.section {
-                title = "Options",
+                title = value_or(view.title, "Choice"),
                 children = {
-                    stack {
-                        row { ui.text("Option A"), ui.text("Effect preview"), action("Choose", "choice.select") },
-                        row { ui.text("Option B"), ui.text("Hidden effect"), action("Choose", "choice.select") },
-                    },
+                    stack(options),
                 },
             },
         }
@@ -496,83 +761,120 @@ fragment(
 
 -- Empire Situation Center ----------------------------------------------------
 
-fragment(
+bare_fragment(
     "core.ui.esc.notifications",
     { "window", "esc", "tab", "notifications", "ack" },
     { requires = { "empire" }, optional = { "notification_queue" } },
-    "ESC Notifications",
-    function(_)
+    { esc_tab = "notifications" },
+    function(view)
+        local function filter_action(label, key)
+            local text = label
+            if view.severity_filter == key then
+                text = "[" .. label .. "]"
+            end
+            return action(text, "esc.notifications.filter." .. key)
+        end
+
+        local function acked_filter_label()
+            if view.hide_acked then
+                return "[Hide acked]"
+            end
+            return "Hide acked"
+        end
+
+        local function notification_node(notif, depth)
+            local children = {}
+            local prefix = string.rep("  ", depth)
+            local message = value_or(notif.message, "")
+            if value_or(notif.acked, false) then
+                message = message .. " (acked)"
+            end
+
+            local row_children = {
+                ui.text(prefix .. value_or(notif.severity_label, "INFO")),
+                ui.text(message),
+                ui.text("t=" .. tostring(value_or(notif.timestamp, 0))),
+            }
+            if not value_or(notif.acked, false) then
+                table.insert(row_children, action("ack", "esc.notifications.ack:" .. tostring(notif.id)))
+            end
+            table.insert(children, row(row_children))
+
+            local nested = value_or(notif.children, {})
+            for _, child in ipairs(nested) do
+                table.insert(children, notification_node(child, depth + 1))
+            end
+
+            return stack(children)
+        end
+
+        local notification_children = {}
+        local notifications = value_or(view.notifications, {})
+        if #notifications == 0 then
+            table.insert(notification_children, ui.text("(no notifications)"))
+        else
+            for _, notif in ipairs(notifications) do
+                table.insert(notification_children, notification_node(notif, 0))
+            end
+        end
+
         return stack {
-            row { action("All", "esc.notifications.filter_all"), action("Info+", "esc.notifications.filter_info"), action("Warn+", "esc.notifications.filter_warn"), action("Ack all", "esc.notifications.ack_all") },
+            row {
+                filter_action("All", "all"),
+                filter_action("Info+", "info"),
+                filter_action("Warn+", "warn"),
+                filter_action("Critical", "critical"),
+                action(acked_filter_label(), "esc.notifications.hide_acked.toggle"),
+            },
+            row {
+                action("Ack all", "esc.notifications.ack_all"),
+                ui.text(tostring(value_or(view.unacked_count, 0)) .. " unacked"),
+            },
             ui.section {
                 title = "Notifications",
-                children = {
-                    stack {
-                        row { ui.text("Critical"), ui.text("Hostile detected"), action("ack", "notification.ack") },
-                        row { ui.text("Info"), ui.text("Survey complete"), action("ack", "notification.ack") },
-                    },
-                },
+                children = { stack(notification_children) },
             },
-            note("needs collapsible tree primitive"),
         }
     end
 )
 
-fragment(
+bare_fragment(
     "core.ui.esc.construction",
     { "window", "esc", "tab", "construction", "ongoing" },
     { requires = { "empire" }, optional = { "systems", "colonies" } },
-    "ESC Construction",
-    function(_)
-        return stack {
-            row { ui.text("Sol Shipyard"), ui.progress(0.35), ui.text("[BOTTLENECK]"), action("Jump", "ui.jump.system") },
-            row { ui.text("Mars Mine"), ui.progress(0.8), action("Jump", "ui.jump.colony") },
-        }
+    { esc_tab = "construction_overview" },
+    function(view)
+        return event_tree(view, "(nothing under construction)")
     end
 )
 
-fragment(
+bare_fragment(
     "core.ui.esc.ship_ops",
     { "window", "esc", "tab", "ship_ops", "ongoing" },
     { requires = { "empire" }, optional = { "ships", "fleets" } },
-    "ESC Ship Operations",
-    function(_)
-        return stack {
-            ui.section { title = "Survey", children = { row { ui.text("Scout-1 -> Alpha"), ui.progress(0.5), action("Jump", "ui.jump.ship") } } },
-            ui.section { title = "Transit", children = { row { ui.text("Constructor-1"), ui.text("ETA 42"), action("Jump", "ui.jump.ship") } } },
-        }
+    { esc_tab = "ship_operations" },
+    function(view)
+        return event_tree(view, "(no ship operations)")
     end
 )
 
-fragment(
+bare_fragment(
     "core.ui.esc.diplomacy",
     { "window", "esc", "tab", "diplomacy", "ongoing" },
     { requires = { "empire" }, optional = { "relations" } },
-    "ESC Diplomacy",
-    function(_)
-        return ui.grid {
-            columns = 4,
-            children = {
-                ui.text("Faction"), ui.text("State"), ui.text("Standing"), ui.text("Action"),
-                ui.text("Vesk"), ui.text("Peace"), ui.text("+10"), action("Open", "ui.open.diplomacy"),
-                ui.text("Krell"), ui.text("War"), ui.text("-80"), action("Open", "ui.open.diplomacy"),
-            },
-        }
+    { esc_tab = "diplomatic_standing" },
+    function(view)
+        return event_tree(view, "(no known factions)")
     end
 )
 
-fragment(
+bare_fragment(
     "core.ui.esc.resource_trends",
     { "window", "esc", "tab", "resources", "charts" },
     { requires = { "empire" }, optional = { "resource_history" } },
-    "ESC Resource Trends",
-    function(_)
-        return stack {
-            row { ui.text("Minerals"), ui.progress(0.7), ui.text("+12") },
-            row { ui.text("Energy"), ui.progress(0.4), ui.text("-3") },
-            row { ui.text("Food"), ui.progress(0.9), ui.text("+8") },
-            note("sparkline/chart primitive needed for actual trends"),
-        }
+    { esc_tab = "resource_trends" },
+    function(view)
+        return event_tree(view, "(no resource samples yet)")
     end
 )
 

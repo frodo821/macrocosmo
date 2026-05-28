@@ -297,6 +297,33 @@ fragment(
 )
 
 fragment(
+    "catalogue.atom.tabs",
+    { "catalogue", "atom", "tabs", "navigation", "selection" },
+    "Tab Atoms",
+    function(_)
+        return stack {
+            ui.tabs {
+                tabs = {
+                    { label = "Overview", command = "catalogue.tab.overview", selected = true },
+                    { label = "Details", command = "catalogue.tab.details" },
+                    { label = "History", command = "catalogue.tab.history" },
+                    { label = "Locked", command = "catalogue.tab.locked", disabled = true },
+                },
+            },
+            ui.section {
+                title = "Selected tab content",
+                children = {
+                    stack {
+                        ui.text("The host owns selected-tab state."),
+                        ui.text("The tab atom only emits commands and reflects selected/disabled flags."),
+                    },
+                },
+            },
+        }
+    end
+)
+
+fragment(
     "catalogue.atom.grouping",
     { "catalogue", "atom", "section", "grouping", "hierarchy" },
     "Grouping Atoms",

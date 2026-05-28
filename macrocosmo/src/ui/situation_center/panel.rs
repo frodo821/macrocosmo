@@ -118,54 +118,129 @@ pub fn draw_situation_center_system(world: &mut World) {
                 Vec::new()
             };
 
-        // Borrow split: egui `open` separately so the window X button
-        // works without fighting the ResMut<SituationCenterState>.
-        let mut open = state.open;
+        let screen = ctx.screen_rect();
+        let top_offset = 28.0;
+        let sheet_height = (screen.height() - top_offset).max(360.0);
+        let sheet_width = (screen.width() * 0.42)
+            .clamp(560.0, 760.0)
+            .min(screen.width().max(320.0));
+        let mut close_requested = false;
 
-        egui::Window::new("Empire Situation Center")
-            .id(egui::Id::new("empire_situation_center"))
-            .open(&mut open)
-            .resizable(true)
-            .default_size([680.0, 480.0])
+        egui::Area::new(egui::Id::new("empire_situation_center_sheet"))
+            .order(egui::Order::Foreground)
+            .fixed_pos(egui::pos2(screen.left(), screen.top() + top_offset))
             .show(&ctx, |ui| {
-                if registry_empty || meta_and_badges.is_empty() {
-                    ui.label(egui::RichText::new("(no situation tabs registered)").weak());
-                    return;
-                }
+                egui::Frame::NONE
+                    .fill(egui::Color32::from_rgb(18, 18, 20))
+                    .inner_margin(12.0)
+                    .show(ui, |ui| {
+                        let content_size = egui::vec2(sheet_width, sheet_height);
+                        ui.set_min_size(content_size);
+                        ui.set_clip_rect(ui.max_rect());
 
-                // --- Tab strip -----------------------------------------------
-                ui.horizontal(|ui| {
-                    for (meta, badge) in &meta_and_badges {
-                        let is_active = state.active_tab == Some(meta.id);
-                        let label = build_tab_label(meta, badge.as_ref());
-                        let tab_resp = ui.selectable_label(is_active, label);
-                        #[cfg(feature = "remote")]
-                        if let Some(mut reg) =
-                            world.get_resource_mut::<crate::ui::UiElementRegistry>()
-                        {
-                            crate::ui::register_ui_element(
-                                &mut reg,
-                                &format!("esc.tab.{}", meta.display_name),
-                                meta.display_name,
-                                tab_resp.rect,
-                            );
-                        }
-                        if tab_resp.clicked() && !is_active {
-                            state.active_tab = Some(meta.id);
-                        }
-                    }
-                });
-                ui.separator();
+                        ui.allocate_ui_with_layout(
+                            content_size,
+                            egui::Layout::top_down(egui::Align::Min),
+                            |ui| {
+                                ui.set_min_size(content_size);
+                                ui.set_max_size(content_size);
 
-                // --- Active tab body ----------------------------------------
-                let active_id = match state.active_tab {
-                    Some(id) => id,
-                    None => return,
-                };
-                render_active_tab(ui, world, &mut state, active_id);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(sheet_width, 36.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.heading("Empire Situation Center");
+                                        ui.with_layout(
+                                            egui::Layout::right_to_left(egui::Align::Center),
+                                            |ui| {
+                                                if ui.button("\u{00D7}").clicked() {
+                                                    close_requested = true;
+                                                }
+                                            },
+                                        );
+                                    },
+                                );
+                                ui.separator();
+
+                                if registry_empty || meta_and_badges.is_empty() {
+                                    ui.label(
+                                        egui::RichText::new("(no situation tabs registered)")
+                                            .weak(),
+                                    );
+                                    return;
+                                }
+
+                                let body_height = sheet_height - 52.0;
+                                let tab_width = 176.0;
+                                let content_width = sheet_width - tab_width - 18.0;
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(sheet_width, body_height),
+                                    egui::Layout::left_to_right(egui::Align::Min),
+                                    |ui| {
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(tab_width, body_height),
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.set_width(tab_width);
+                                                for (meta, badge) in &meta_and_badges {
+                                                    let is_active = state.active_tab == Some(meta.id);
+                                                    let label = build_tab_label(meta, badge.as_ref());
+                                                    let tab_resp = ui.add_sized(
+                                                        [tab_width, 28.0],
+                                                        egui::Button::new(label).selected(is_active),
+                                                    );
+                                                    #[cfg(feature = "remote")]
+                                                    if let Some(mut reg) = world
+                                                        .get_resource_mut::<crate::ui::UiElementRegistry>()
+                                                    {
+                                                        crate::ui::register_ui_element(
+                                                            &mut reg,
+                                                            &format!("esc.tab.{}", meta.display_name),
+                                                            meta.display_name,
+                                                            tab_resp.rect,
+                                                        );
+                                                    }
+                                                    if tab_resp.clicked() && !is_active {
+                                                        state.active_tab = Some(meta.id);
+                                                    }
+                                                }
+                                            },
+                                        );
+                                        ui.separator();
+                                        ui.allocate_ui_with_layout(
+                                            egui::vec2(content_width, body_height),
+                                            egui::Layout::top_down(egui::Align::Min),
+                                            |ui| {
+                                                ui.set_width(content_width);
+                                                egui::ScrollArea::vertical()
+                                                    .auto_shrink([false, false])
+                                                    .max_width(content_width)
+                                                    .max_height(body_height)
+                                                    .show(ui, |ui| {
+                                                        ui.set_max_width(content_width);
+                                                        let active_id = match state.active_tab {
+                                                            Some(id) => id,
+                                                            None => return,
+                                                        };
+                                                        render_active_tab(
+                                                            ui,
+                                                            world,
+                                                            &mut state,
+                                                            active_id,
+                                                        );
+                                                    });
+                                            },
+                                        );
+                                    },
+                                );
+                            },
+                        );
+                    });
             });
 
-        state.open = open;
+        if close_requested {
+            state.open = false;
+        }
     });
 }
 

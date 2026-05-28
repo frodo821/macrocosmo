@@ -34,7 +34,9 @@ pub use construction_tab::ConstructionOverviewTab;
 pub use diplomatic_tab::{
     DiplomaticStandingHistory, DiplomaticStandingTab, record_diplomatic_history,
 };
-pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration, LuaUiFragmentTab};
+pub use lua_adapter::{
+    LuaEventTreeTab, LuaOngoingTabAdapter, LuaTabRegistration, LuaUiFragmentTab,
+};
 pub use notifications_tab::{
     EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
     drain_pending_acks_for_tests, enqueue_pending_ack,
@@ -101,23 +103,10 @@ impl Plugin for SituationCenterPlugin {
         // Badge counts are cheap (aggregate over `World::query` with no
         // allocations beyond per-system buckets), so running them every
         // frame is fine.
-        app.register_ongoing_situation_tab(ConstructionOverviewTab);
-        app.register_ongoing_situation_tab(ShipOperationsTab);
-        app.register_ongoing_situation_tab(DiplomaticStandingTab);
-        // Resource Trends draws per-resource sparklines that the
-        // default Event-tree renderer can't express, so it implements
-        // `SituationTab` directly (not `OngoingTab`).
-        app.register_situation_tab(ResourceTrendsTab);
-
-        // First live bridge for Lua-defined UI fragments. This is a read-only
-        // preview tab for the existing shadow definitions; command dispatch is
-        // intentionally ignored until host capability validation is explicit.
-        app.register_situation_tab(LuaUiFragmentTab {
-            tab_id: "lua_ui_preview",
-            display_name: "Lua UI",
-            order: 800,
-            fragment_id: "core.ui.esc.notifications",
-        });
+        app.register_situation_tab(LuaEventTreeTab::new(ConstructionOverviewTab));
+        app.register_situation_tab(LuaEventTreeTab::new(ShipOperationsTab));
+        app.register_situation_tab(LuaEventTreeTab::new(DiplomaticStandingTab));
+        app.register_situation_tab(LuaEventTreeTab::new(ResourceTrendsTab));
     }
 }
 

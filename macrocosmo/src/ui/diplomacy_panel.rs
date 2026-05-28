@@ -16,9 +16,11 @@
 
 use bevy::prelude::*;
 use bevy_egui::egui;
+use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
 use crate::casus_belli::{ActiveWars, CasusBelliRegistry};
 use crate::faction::{FactionRelations, RelationState};
+use crate::scripting::ScriptEngine;
 use crate::scripting::faction_api::{
     DiplomaticOptionDefinition, DiplomaticOptionRegistry, FactionRegistry,
 };
@@ -70,11 +72,54 @@ pub fn draw_diplomacy_panel(
     _faction_registry: &FactionRegistry,
     factions: &[FactionEntry],
     clock: &GameClock,
+    engine: Option<&ScriptEngine>,
 ) -> DiplomacyAction {
     if !*open {
         return DiplomacyAction::None;
     }
 
+    if let Some(engine) = engine
+        && let Ok(action) = draw_diplomacy_panel_lua(
+            ctx,
+            open,
+            player_entity,
+            relations,
+            active_wars,
+            cb_registry,
+            option_registry,
+            factions,
+            clock,
+            engine,
+        )
+    {
+        return action;
+    }
+
+    draw_diplomacy_panel_legacy(
+        ctx,
+        open,
+        player_entity,
+        relations,
+        active_wars,
+        cb_registry,
+        option_registry,
+        factions,
+        clock,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_diplomacy_panel_legacy(
+    ctx: &egui::Context,
+    open: &mut bool,
+    player_entity: Entity,
+    relations: &FactionRelations,
+    active_wars: &ActiveWars,
+    cb_registry: &CasusBelliRegistry,
+    option_registry: &DiplomaticOptionRegistry,
+    factions: &[FactionEntry],
+    clock: &GameClock,
+) -> DiplomacyAction {
     let mut action = DiplomacyAction::None;
 
     egui::Window::new("Diplomacy")
@@ -349,6 +394,236 @@ pub fn draw_diplomacy_panel(
         });
 
     action
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_diplomacy_panel_lua(
+    ctx: &egui::Context,
+    open: &mut bool,
+    player_entity: Entity,
+    relations: &FactionRelations,
+    active_wars: &ActiveWars,
+    cb_registry: &CasusBelliRegistry,
+    option_registry: &DiplomaticOptionRegistry,
+    factions: &[FactionEntry],
+    clock: &GameClock,
+    engine: &ScriptEngine,
+) -> mlua::Result<DiplomacyAction> {
+    let lua = engine.lua();
+    let registry = parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.diplomacy") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.diplomacy' is not registered".into(),
+        ));
+    };
+
+    let view = diplomacy_view_table(
+        lua,
+        player_entity,
+        relations,
+        active_wars,
+        cb_registry,
+        option_registry,
+        factions,
+        clock,
+    )?;
+    let node = fragment.inflate(lua, view)?;
+    let mut clicked_commands = Vec::new();
+
+    egui::Window::new("Diplomacy")
+        .open(open)
+        .resizable(true)
+        .default_size([480.0, 520.0])
+        .show(ctx, |ui| {
+            let mut renderer = UiDslRenderer::default();
+            clicked_commands = renderer.render(ui, &node).clicked_commands;
+        });
+
+    Ok(clicked_commands
+        .into_iter()
+        .find_map(|command| parse_diplomacy_command(&command, player_entity))
+        .unwrap_or(DiplomacyAction::None))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn diplomacy_view_table(
+    lua: &mlua::Lua,
+    player_entity: Entity,
+    relations: &FactionRelations,
+    active_wars: &ActiveWars,
+    cb_registry: &CasusBelliRegistry,
+    option_registry: &DiplomaticOptionRegistry,
+    factions: &[FactionEntry],
+    clock: &GameClock,
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+
+    let wars = lua.create_table()?;
+    for (index, war) in active_wars
+        .wars_involving(player_entity)
+        .into_iter()
+        .enumerate()
+    {
+        let opponent = if war.attacker == player_entity {
+            war.defender
+        } else {
+            war.attacker
+        };
+        let opponent_name = factions
+            .iter()
+            .find(|f| f.entity == opponent)
+            .map(|f| f.name.as_str())
+            .unwrap_or("Unknown");
+        let cb_name = cb_registry
+            .get(&war.cb_id)
+            .map(|cb| cb.name.as_str())
+            .unwrap_or(&war.cb_id);
+
+        let row = lua.create_table()?;
+        row.set("opponent", opponent_name)?;
+        row.set("title", format!("War with {}", opponent_name))?;
+        row.set("duration", format!("{} hd", clock.elapsed - war.started_at))?;
+        row.set("casus_belli", cb_name)?;
+
+        let demands = lua.create_table()?;
+        let scenarios = lua.create_table()?;
+        if let Some(cb_def) = cb_registry.get(&war.cb_id) {
+            for (demand_index, demand) in cb_def.demands.iter().enumerate() {
+                demands.set(demand_index + 1, demand.kind.to_string())?;
+            }
+            for (scenario_index, scenario) in cb_def.end_scenarios.iter().enumerate() {
+                let scenario_row = lua.create_table()?;
+                scenario_row.set("label", scenario.label.clone())?;
+                scenario_row.set(
+                    "command",
+                    format!(
+                        "diplomacy.end_war:{}:{}:{}",
+                        war.attacker.to_bits(),
+                        war.defender.to_bits(),
+                        scenario.id
+                    ),
+                )?;
+                scenarios.set(scenario_index + 1, scenario_row)?;
+            }
+        }
+        row.set("demands", demands)?;
+        row.set("end_scenarios", scenarios)?;
+        wars.set(index + 1, row)?;
+    }
+    view.set("active_wars", wars)?;
+
+    let faction_rows = lua.create_table()?;
+    let mut output_index = 1;
+    for entry in factions {
+        if entry.entity == player_entity {
+            continue;
+        }
+
+        let relation = relations.get_or_default(player_entity, entry.entity);
+        let row = lua.create_table()?;
+        row.set("name", entry.name.clone())?;
+        row.set("state", relation_state_label(relation.state))?;
+        row.set("standing_label", format!("{:.0}", relation.standing))?;
+        row.set(
+            "standing_progress",
+            ((relation.standing + 100.0) / 200.0).clamp(0.0, 1.0),
+        )?;
+
+        let options = lua.create_table()?;
+        if entry.can_diplomacy {
+            let mut option_index = 1;
+            for (label, id) in builtin_diplomatic_actions(relation.state) {
+                let option = lua.create_table()?;
+                option.set("label", label)?;
+                option.set(
+                    "command",
+                    format!("diplomacy.send:{}:{}", entry.entity.to_bits(), id),
+                )?;
+                options.set(option_index, option)?;
+                option_index += 1;
+            }
+
+            let mut option_defs: Vec<&DiplomaticOptionDefinition> = option_registry
+                .options
+                .values()
+                .filter(|option| {
+                    entry.allowed_diplomatic_options.contains(&option.id)
+                        && !is_builtin_diplomatic_option(&option.id)
+                })
+                .collect();
+            option_defs.sort_by(|a, b| a.name.cmp(&b.name));
+            for option_def in option_defs {
+                let option = lua.create_table()?;
+                option.set("label", option_def.name.clone())?;
+                option.set(
+                    "command",
+                    format!(
+                        "diplomacy.send:{}:{}",
+                        entry.entity.to_bits(),
+                        option_def.id
+                    ),
+                )?;
+                options.set(option_index, option)?;
+                option_index += 1;
+            }
+        }
+        row.set("options", options)?;
+        faction_rows.set(output_index, row)?;
+        output_index += 1;
+    }
+    view.set("factions", faction_rows)?;
+
+    Ok(view)
+}
+
+fn parse_diplomacy_command(command: &str, player_entity: Entity) -> Option<DiplomacyAction> {
+    if let Some(rest) = command.strip_prefix("diplomacy.send:") {
+        let mut parts = rest.splitn(2, ':');
+        let to_bits = parts.next()?.parse::<u64>().ok()?;
+        let option_id = parts.next()?.to_string();
+        let to = Entity::from_bits(to_bits);
+        return Some(DiplomacyAction::SendDiplomaticEvent {
+            from: player_entity,
+            to,
+            option_id,
+        });
+    }
+
+    parse_end_war_command(command)
+}
+
+fn parse_end_war_command(command: &str) -> Option<DiplomacyAction> {
+    let rest = command.strip_prefix("diplomacy.end_war:")?;
+    let mut parts = rest.splitn(3, ':');
+    let faction_a = Entity::from_bits(parts.next()?.parse::<u64>().ok()?);
+    let faction_b = Entity::from_bits(parts.next()?.parse::<u64>().ok()?);
+    let scenario_id = parts.next()?.to_string();
+    Some(DiplomacyAction::EndWar {
+        faction_a,
+        faction_b,
+        scenario_id,
+    })
+}
+
+fn relation_state_label(state: RelationState) -> &'static str {
+    match state {
+        RelationState::Neutral => "Neutral",
+        RelationState::Peace => "Peace",
+        RelationState::War => "War",
+        RelationState::Alliance => "Alliance",
+    }
+}
+
+fn builtin_diplomatic_actions(state: RelationState) -> Vec<(&'static str, &'static str)> {
+    match state {
+        RelationState::War => vec![("Propose Peace", crate::faction::DIPLO_PROPOSE_PEACE)],
+        RelationState::Peace => vec![
+            ("Declare War", crate::faction::DIPLO_DECLARE_WAR),
+            ("Propose Alliance", crate::faction::DIPLO_PROPOSE_ALLIANCE),
+        ],
+        RelationState::Alliance => vec![("Break Alliance", crate::faction::DIPLO_BREAK_ALLIANCE)],
+        RelationState::Neutral => vec![("Declare War", crate::faction::DIPLO_DECLARE_WAR)],
+    }
 }
 
 /// Returns `true` for diplomatic option ids that are handled as built-in

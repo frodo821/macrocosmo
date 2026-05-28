@@ -428,32 +428,63 @@ fn collect_candidates(
     candidates
 }
 
-/// Apply selection for a `CycleCandidate`, updating the appropriate resources.
-fn apply_candidate_selection(
-    candidate: &CycleCandidate,
-    sel: &mut SelectionState,
+/// Apply selection for a selectable entity, updating the shared selection resources.
+pub fn apply_entity_selection(
+    kind: CycleKind,
+    entity: Entity,
+    selected_system: &mut SelectedSystem,
+    selected_ship: &mut SelectedShip,
+    selected_ships: &mut SelectedShips,
     shift_held: bool,
 ) {
-    match candidate.kind {
+    match kind {
         CycleKind::Ship => {
             if shift_held {
-                sel.selected_ships.toggle(candidate.entity);
+                selected_ships.toggle(entity);
             } else {
-                sel.selected_ships.set_single(candidate.entity);
+                selected_ships.set_single(entity);
             }
-            sel.selected_ship.0 = sel.selected_ships.primary();
+            selected_ship.0 = selected_ships.primary();
         }
         CycleKind::StarSystem => {
-            sel.selected.0 = Some(candidate.entity);
+            selected_system.0 = Some(entity);
             // Keep ship selected — star becomes command target (ship selection
             // persistence rule #5).
         }
         CycleKind::DeepSpaceStructure => {
             // Deep space structures use system selection for now; future may
             // have a dedicated SelectedStructure resource.
-            sel.selected.0 = Some(candidate.entity);
+            selected_system.0 = Some(entity);
         }
     }
+}
+
+/// Apply selection for a `CycleCandidate`, updating the appropriate resources.
+fn apply_candidate_selection(
+    candidate: &CycleCandidate,
+    sel: &mut SelectionState,
+    shift_held: bool,
+) {
+    apply_entity_selection(
+        candidate.kind,
+        candidate.entity,
+        &mut sel.selected,
+        &mut sel.selected_ship,
+        &mut sel.selected_ships,
+        shift_held,
+    );
+}
+
+pub fn open_context_menu_at(
+    context_menu: &mut ContextMenu,
+    target_system: Entity,
+    screen_position: [f32; 2],
+    execute_default: bool,
+) {
+    context_menu.open = true;
+    context_menu.position = screen_position;
+    context_menu.target_system = Some(target_system);
+    context_menu.execute_default = execute_default;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -497,7 +528,9 @@ pub fn click_select_system(
         return;
     }
 
-    if !mouse.just_pressed(MouseButton::Left) {
+    let primary_clicked = mouse.just_pressed(MouseButton::Left);
+    let secondary_clicked = mouse.just_pressed(MouseButton::Right);
+    if !primary_clicked && !secondary_clicked {
         return;
     }
 
@@ -581,15 +614,21 @@ pub fn click_select_system(
         return;
     }
 
-    // When a ship IS selected AND Cmd is held: context menu / default action
-    if sel.selected_ship.0.is_some() && cmd_held {
+    // When a ship IS selected and the input requests commands: context menu / default action.
+    if sel.selected_ship.0.is_some() && ((primary_clicked && cmd_held) || secondary_clicked) {
         if let Some((star_entity, _)) = best_star {
-            sel.context_menu.open = true;
-            sel.context_menu.position = [cursor_pos.x, cursor_pos.y];
-            sel.context_menu.target_system = Some(star_entity);
-            sel.context_menu.execute_default = shift_held; // Cmd+Shift = default action
+            open_context_menu_at(
+                &mut sel.context_menu,
+                star_entity,
+                [cursor_pos.x, cursor_pos.y],
+                shift_held,
+            );
             return;
         }
+    }
+
+    if secondary_clicked {
+        return;
     }
 
     if candidates.is_empty() {

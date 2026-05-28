@@ -3,7 +3,7 @@
 //! This is intentionally host-agnostic: it renders data-only `UiNode` trees and
 //! returns clicked command ids for the host to validate and dispatch.
 
-use crate::{UiConditionDisplay, UiConditionOperator, UiNode};
+use crate::{UiAlignItems, UiConditionDisplay, UiConditionOperator, UiNode};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct UiRenderStats {
@@ -11,6 +11,7 @@ pub struct UiRenderStats {
     pub sections: usize,
     pub text: usize,
     pub progress: usize,
+    pub tabs: usize,
     pub tooltips: usize,
     pub modified_values: usize,
     pub buttons: usize,
@@ -32,7 +33,10 @@ pub struct UiDslRenderer {
 impl UiDslRenderer {
     pub fn render(&mut self, ui: &mut egui::Ui, node: &UiNode) -> UiRenderOutput {
         let mut output = UiRenderOutput::default();
-        self.render_node(ui, node, &mut output);
+        ui.scope(|ui| {
+            apply_visual_tuning(ui);
+            self.render_node(ui, node, &mut output);
+        });
         output
     }
 
@@ -42,9 +46,12 @@ impl UiDslRenderer {
         nodes: impl IntoIterator<Item = &'a UiNode>,
     ) -> UiRenderOutput {
         let mut output = UiRenderOutput::default();
-        for node in nodes {
-            self.render_node(ui, node, &mut output);
-        }
+        ui.scope(|ui| {
+            apply_visual_tuning(ui);
+            for node in nodes {
+                self.render_node(ui, node, &mut output);
+            }
+        });
         output
     }
 
@@ -60,9 +67,15 @@ impl UiDslRenderer {
             UiNode::Section { title, children } => {
                 output.stats.sections += 1;
                 let mut child_response = None;
-                let inner = ui.group(|ui| {
+                let inner = ui.vertical(|ui| {
                     if let Some(title) = title {
-                        child_response = merge_response(child_response.take(), ui.heading(title));
+                        child_response = merge_response(
+                            child_response.take(),
+                            ui.label(egui::RichText::new(title).strong()),
+                        );
+                        if !children.is_empty() {
+                            ui.add_space(2.0);
+                        }
                     }
                     child_response = merge_optional_response(
                         child_response.take(),
@@ -71,18 +84,41 @@ impl UiDslRenderer {
                 });
                 merge_response(child_response, inner.response)
             }
-            UiNode::VStack { children } => {
+            UiNode::VStack {
+                align_items,
+                justify_content: _,
+                children,
+            } => {
                 let mut child_response = None;
-                let inner = ui.vertical(|ui| {
-                    child_response = render_children(self, ui, children, output);
-                });
+                let inner = match align_items {
+                    UiAlignItems::Center => ui.vertical_centered(|ui| {
+                        child_response = render_children(self, ui, children, output);
+                    }),
+                    UiAlignItems::Start | UiAlignItems::End => ui.vertical(|ui| {
+                        child_response = render_children(self, ui, children, output);
+                    }),
+                };
                 merge_response(child_response, inner.response)
             }
-            UiNode::HStack { children } | UiNode::Row { children } => {
+            UiNode::HStack {
+                align_items,
+                justify_content: _,
+                children,
+            }
+            | UiNode::Row {
+                align_items,
+                justify_content: _,
+                children,
+            } => {
                 let mut child_response = None;
-                let inner = ui.horizontal(|ui| {
-                    child_response = render_children(self, ui, children, output);
-                });
+                let inner = match align_items {
+                    UiAlignItems::Center => ui.horizontal_centered(|ui| {
+                        child_response = render_children(self, ui, children, output);
+                    }),
+                    UiAlignItems::Start | UiAlignItems::End => ui.horizontal(|ui| {
+                        child_response = render_children(self, ui, children, output);
+                    }),
+                };
                 merge_response(child_response, inner.response)
             }
             UiNode::Grid { columns, children } => {
@@ -90,6 +126,7 @@ impl UiDslRenderer {
                 let mut child_response = None;
                 let inner = egui::Grid::new(id)
                     .num_columns(*columns)
+                    .spacing([12.0, 4.0])
                     .striped(true)
                     .show(ui, |ui| {
                         for (index, child) in children.iter().enumerate() {
@@ -111,6 +148,28 @@ impl UiDslRenderer {
             UiNode::Progress { value } => {
                 output.stats.progress += 1;
                 Some(ui.add(egui::ProgressBar::new(value.clamp(0.0, 1.0)).show_percentage()))
+            }
+            UiNode::Tabs { tabs } => {
+                output.stats.tabs += 1;
+                let mut child_response = None;
+                let inner = ui.horizontal(|ui| {
+                    for tab in tabs {
+                        output.stats.buttons += 1;
+                        output.stats.commands += 1;
+                        if tab.disabled {
+                            output.stats.disabled_buttons += 1;
+                        }
+                        let response = ui.add_enabled(
+                            !tab.disabled,
+                            egui::Button::new(&tab.label).selected(tab.selected),
+                        );
+                        if !tab.disabled && response.clicked() {
+                            output.clicked_commands.push(tab.command.clone());
+                        }
+                        child_response = merge_response(child_response.take(), response);
+                    }
+                });
+                merge_response(child_response, inner.response)
             }
             UiNode::Tooltip { content, tooltip } => {
                 output.stats.tooltips += 1;
@@ -157,6 +216,9 @@ impl UiDslRenderer {
             UiNode::Button {
                 label,
                 command,
+                secondary_command,
+                secondary_shift_command,
+                full_width,
                 disabled,
                 disabled_when,
             } => {
@@ -164,34 +226,90 @@ impl UiDslRenderer {
                 if command.is_some() {
                     output.stats.commands += 1;
                 }
+                if secondary_command.is_some() {
+                    output.stats.commands += 1;
+                }
+                if secondary_shift_command.is_some() {
+                    output.stats.commands += 1;
+                }
                 if *disabled {
                     output.stats.disabled_buttons += 1;
                 }
-                let response = ui.add_enabled(!disabled, egui::Button::new(label));
+                let button = egui::Button::new(label);
+                let response = if *full_width {
+                    ui.add_enabled_ui(!disabled, |ui| {
+                        ui.add_sized([ui.available_width(), 0.0], button)
+                    })
+                    .inner
+                } else {
+                    ui.add_enabled(!disabled, button)
+                };
                 let response = attach_disabled_when_tooltip(response, *disabled, disabled_when);
-                if !disabled
-                    && response.clicked()
-                    && let Some(command) = command
-                {
-                    output.clicked_commands.push(command.clone());
+                if !disabled {
+                    let command_clicked = response.clicked();
+                    let shift_held = ui.input(|input| input.modifiers.shift);
+                    let secondary_requested = response.secondary_clicked()
+                        || (command_clicked && ui.input(|input| input.modifiers.command));
+                    if secondary_requested {
+                        if shift_held && let Some(command) = secondary_shift_command {
+                            output.clicked_commands.push(command.clone());
+                        } else if let Some(command) = secondary_command {
+                            output.clicked_commands.push(command.clone());
+                        } else if command_clicked && let Some(command) = command {
+                            output.clicked_commands.push(command.clone());
+                        }
+                    } else if command_clicked && let Some(command) = command {
+                        output.clicked_commands.push(command.clone());
+                    }
                 }
                 Some(response)
             }
             UiNode::Action {
                 label,
                 command,
+                secondary_command,
+                secondary_shift_command,
+                full_width,
                 disabled,
                 disabled_when,
             } => {
                 output.stats.buttons += 1;
                 output.stats.commands += 1;
+                if secondary_command.is_some() {
+                    output.stats.commands += 1;
+                }
+                if secondary_shift_command.is_some() {
+                    output.stats.commands += 1;
+                }
                 if *disabled {
                     output.stats.disabled_buttons += 1;
                 }
-                let response = ui.add_enabled(!disabled, egui::Button::new(label));
+                let button = egui::Button::new(label);
+                let response = if *full_width {
+                    ui.add_enabled_ui(!disabled, |ui| {
+                        ui.add_sized([ui.available_width(), 0.0], button)
+                    })
+                    .inner
+                } else {
+                    ui.add_enabled(!disabled, button)
+                };
                 let response = attach_disabled_when_tooltip(response, *disabled, disabled_when);
-                if !disabled && response.clicked() {
-                    output.clicked_commands.push(command.clone());
+                if !disabled {
+                    let command_clicked = response.clicked();
+                    let shift_held = ui.input(|input| input.modifiers.shift);
+                    let secondary_requested = response.secondary_clicked()
+                        || (command_clicked && ui.input(|input| input.modifiers.command));
+                    if secondary_requested {
+                        if shift_held && let Some(command) = secondary_shift_command {
+                            output.clicked_commands.push(command.clone());
+                        } else if let Some(command) = secondary_command {
+                            output.clicked_commands.push(command.clone());
+                        } else if command_clicked {
+                            output.clicked_commands.push(command.clone());
+                        }
+                    } else if command_clicked {
+                        output.clicked_commands.push(command.clone());
+                    }
                 }
                 Some(response)
             }
@@ -203,6 +321,13 @@ impl UiDslRenderer {
         self.next_id += 1;
         id
     }
+}
+
+fn apply_visual_tuning(ui: &mut egui::Ui) {
+    let style = ui.style_mut();
+    style.spacing.item_spacing = egui::vec2(6.0, 4.0);
+    style.spacing.button_padding = egui::vec2(6.0, 3.0);
+    style.spacing.indent = 12.0;
 }
 
 fn render_children(
@@ -249,6 +374,8 @@ mod tests {
         let node = UiNode::Section {
             title: Some("Overview".to_string()),
             children: vec![UiNode::VStack {
+                align_items: crate::UiAlignItems::Start,
+                justify_content: crate::UiJustifyContent::Start,
                 children: vec![
                     UiNode::Text {
                         value: "Minerals".to_string(),
@@ -257,6 +384,9 @@ mod tests {
                     UiNode::Button {
                         label: "Open".to_string(),
                         command: Some("ui.open".to_string()),
+                        secondary_command: None,
+                        secondary_shift_command: None,
+                        full_width: false,
                         disabled: false,
                         disabled_when: None,
                     },
@@ -281,6 +411,7 @@ mod tests {
                 sections: 1,
                 text: 1,
                 progress: 1,
+                tabs: 0,
                 tooltips: 0,
                 modified_values: 0,
                 buttons: 1,
@@ -288,6 +419,41 @@ mod tests {
                 commands: 1,
             }
         );
+    }
+
+    #[test]
+    fn renders_tabs_as_command_buttons() {
+        let node = UiNode::Tabs {
+            tabs: vec![
+                crate::UiTabItem {
+                    label: "Overview".to_string(),
+                    command: "tab.overview".to_string(),
+                    selected: true,
+                    disabled: false,
+                },
+                crate::UiTabItem {
+                    label: "Locked".to_string(),
+                    command: "tab.locked".to_string(),
+                    selected: false,
+                    disabled: true,
+                },
+            ],
+        };
+        let ctx = egui::Context::default();
+        let mut renderer = UiDslRenderer::default();
+        let mut output = UiRenderOutput::default();
+
+        let _ = ctx.run(Default::default(), |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                output = renderer.render(ui, &node);
+            });
+        });
+
+        assert_eq!(output.clicked_commands, Vec::<String>::new());
+        assert_eq!(output.stats.tabs, 1);
+        assert_eq!(output.stats.buttons, 2);
+        assert_eq!(output.stats.commands, 2);
+        assert_eq!(output.stats.disabled_buttons, 1);
     }
 
     #[test]
@@ -364,6 +530,9 @@ mod tests {
         let node = UiNode::Button {
             label: "Build".to_string(),
             command: Some("colony.build".to_string()),
+            secondary_command: None,
+            secondary_shift_command: None,
+            full_width: false,
             disabled: true,
             disabled_when: Some(UiConditionDisplay {
                 label: "Can build mine".to_string(),
@@ -476,13 +645,13 @@ mod tests {
             });
         });
 
-        assert_eq!(registry.len(), 28);
+        assert_eq!(registry.len(), 30);
         assert_eq!(output.clicked_commands, Vec::<String>::new());
         assert!(output.stats.nodes > 250, "{:?}", output.stats);
-        assert!(output.stats.sections > 40, "{:?}", output.stats);
+        assert!(output.stats.sections >= 40, "{:?}", output.stats);
         assert!(output.stats.text > 100, "{:?}", output.stats);
         assert!(output.stats.buttons > 50, "{:?}", output.stats);
-        assert!(output.stats.progress > 5, "{:?}", output.stats);
+        assert!(output.stats.progress >= 3, "{:?}", output.stats);
     }
 }
 

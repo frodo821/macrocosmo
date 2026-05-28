@@ -348,6 +348,7 @@ pub struct UiFragmentQuery {
 pub struct UiFragmentMeta {
     pub id: String,
     pub labels: Vec<String>,
+    pub tags: BTreeMap<String, String>,
     pub order: i32,
     pub context: UiFragmentContextSpec,
     pub source: Option<UiFragmentSource>,
@@ -370,9 +371,13 @@ pub enum UiNode {
         children: Vec<UiNode>,
     },
     VStack {
+        align_items: UiAlignItems,
+        justify_content: UiJustifyContent,
         children: Vec<UiNode>,
     },
     HStack {
+        align_items: UiAlignItems,
+        justify_content: UiJustifyContent,
         children: Vec<UiNode>,
     },
     Grid {
@@ -380,6 +385,8 @@ pub enum UiNode {
         children: Vec<UiNode>,
     },
     Row {
+        align_items: UiAlignItems,
+        justify_content: UiJustifyContent,
         children: Vec<UiNode>,
     },
     Text {
@@ -387,6 +394,9 @@ pub enum UiNode {
     },
     Progress {
         value: f32,
+    },
+    Tabs {
+        tabs: Vec<UiTabItem>,
     },
     Tooltip {
         content: Box<UiNode>,
@@ -401,15 +411,45 @@ pub enum UiNode {
     Button {
         label: String,
         command: Option<String>,
+        secondary_command: Option<String>,
+        secondary_shift_command: Option<String>,
+        full_width: bool,
         disabled: bool,
         disabled_when: Option<UiConditionDisplay>,
     },
     Action {
         label: String,
         command: String,
+        secondary_command: Option<String>,
+        secondary_shift_command: Option<String>,
+        full_width: bool,
         disabled: bool,
         disabled_when: Option<UiConditionDisplay>,
     },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiAlignItems {
+    #[default]
+    Start,
+    Center,
+    End,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum UiJustifyContent {
+    #[default]
+    Start,
+    Center,
+    End,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UiTabItem {
+    pub label: String,
+    pub command: String,
+    pub selected: bool,
+    pub disabled: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -561,6 +601,7 @@ mod tests {
                 meta: UiFragmentMeta {
                     id: id.to_string(),
                     labels: labels.iter().map(|label| label.to_string()).collect(),
+                    tags: BTreeMap::new(),
                     order,
                     context: UiFragmentContextSpec {
                         requires: requires
@@ -662,6 +703,7 @@ mod tests {
         let meta = UiFragmentMeta {
             id: "ship-list".to_string(),
             labels: vec!["ship_ops".to_string()],
+            tags: BTreeMap::new(),
             order: 0,
             context: UiFragmentContextSpec {
                 requires: vec![UiContextBinding::typed(

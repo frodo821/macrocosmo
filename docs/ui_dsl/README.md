@@ -1,5 +1,9 @@
 # Lua UI DSL Design
 
+Status note: the current implementation and migration snapshot is in
+`docs/ui_dsl/status-2026-05-29.md`. This document remains the broader design
+note and includes some older phase-1 framing.
+
 ## Purpose
 
 This note sketches a Lua-defined UI extension model for Macrocosmo, updated

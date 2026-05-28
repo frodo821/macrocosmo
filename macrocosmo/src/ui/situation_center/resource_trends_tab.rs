@@ -1,10 +1,8 @@
 //! Resource Trends tab (#346 / ESC-3 Commit 4).
 //!
 //! Surfaces per-resource trend history across the player empire.
-//! Unlike the other three ongoing tabs, the body includes per-resource
-//! sparkline plots that the default Event-tree renderer cannot draw —
-//! this tab therefore implements [`SituationTab`] directly and
-//! overrides `render`.
+//! The tab emits ordinary `Event` leaves and is rendered through the
+//! shared Lua UI DSL adapter registered by `SituationCenterPlugin`.
 //!
 //! Data flow:
 //! 1. A dedicated [`record_resource_trends`] system (scheduled in
@@ -16,8 +14,9 @@
 //!    leaf events (one per resource kind). Each leaf carries current
 //!    value in its label, and a severity prefix when a recent slope
 //!    drops by more than `RESOURCE_DROP_ALERT_FRACTION`.
-//! 3. `render` walks the Events and, per leaf, draws a tiny
-//!    sparkline beneath the label using egui's `plot` primitives.
+//! 3. The Lua UI DSL fragment renders those leaves. A future chart
+//!    primitive can reintroduce sparklines without putting drawing
+//!    logic back into this game-state collection module.
 //!
 //! Clicking through to top-bar resource detail is out of scope for
 //! this commit (integration lives alongside the top bar — see §plan
@@ -25,11 +24,9 @@
 //! `EventSource::Empire(player)` so a future click-handler can route
 //! the navigation without a schema change.
 
-use std::any::Any;
 use std::collections::{HashMap, VecDeque};
 
 use bevy::prelude::*;
-use bevy_egui::egui;
 
 use crate::colony::ResourceStockpile;
 use crate::galaxy::StarSystem;
@@ -37,8 +34,7 @@ use crate::knowledge::KnowledgeStore;
 use crate::player::PlayerEmpire;
 use crate::time_system::GameClock;
 
-use super::state::TabState;
-use super::tab::{SituationTab, TabBadge, TabMeta};
+use super::tab::{OngoingTab, TabBadge, TabMeta};
 use super::types::{Event, EventKind, EventSource, Severity};
 
 /// Keep 60 most-recent samples (1 year at 1-hexady sampling, or 1
@@ -206,7 +202,7 @@ impl ResourceTrendsTab {
     pub const ORDER: i32 = 400;
 }
 
-impl SituationTab for ResourceTrendsTab {
+impl OngoingTab for ResourceTrendsTab {
     fn meta(&self) -> TabMeta {
         TabMeta {
             id: Self::ID,
@@ -215,93 +211,16 @@ impl SituationTab for ResourceTrendsTab {
         }
     }
 
+    fn collect(&self, world: &World) -> Vec<Event> {
+        collect_resource_events(world)
+    }
+
     fn badge(&self, world: &World) -> Option<TabBadge> {
         let alerts = count_resource_alerts(world);
         if alerts == 0 {
             return None;
         }
         Some(TabBadge::new(alerts as u32, Severity::Warn))
-    }
-
-    fn render(&self, ui: &mut egui::Ui, world: &World, _state: &mut TabState) {
-        let events = collect_resource_events(world);
-        let history = world.get_resource::<ResourceTrendHistory>();
-        if events.is_empty() {
-            ui.label(egui::RichText::new("(no resource samples yet)").weak());
-            return;
-        }
-        for event in &events {
-            ui.horizontal(|ui| {
-                ui.label(&event.label);
-            });
-            if let Some(history) = history {
-                // Render the sparkline inline below the label row.
-                let kind = kind_from_event(event);
-                if let Some(kind) = kind {
-                    draw_sparkline(ui, history, kind);
-                }
-            }
-            ui.add_space(6.0);
-        }
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
-
-fn kind_from_event(event: &Event) -> Option<ResourceKind> {
-    // The leaf label starts with the resource name; match by prefix.
-    // This keeps `EventKind::Resource` as a closed v1 enum (per
-    // plan-326-esc.md) without a `Custom(String)` variant.
-    for k in ResourceKind::ALL {
-        if event.label.contains(k.label()) {
-            return Some(k);
-        }
-    }
-    None
-}
-
-fn draw_sparkline(ui: &mut egui::Ui, history: &ResourceTrendHistory, kind: ResourceKind) {
-    let values: Vec<f64> = history.samples.iter().map(|s| s.value(kind)).collect();
-    let width = 180.0f32;
-    let height = 24.0f32;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, height), egui::Sense::hover());
-    let painter = ui.painter_at(rect);
-    if values.is_empty() {
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "(no samples)",
-            egui::FontId::monospace(10.0),
-            egui::Color32::DARK_GRAY,
-        );
-        return;
-    }
-    let min = values.iter().copied().fold(f64::INFINITY, f64::min);
-    let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let span = (max - min).max(1.0);
-    let n = values.len();
-    if n < 2 {
-        // Single sample ⇒ draw a dot at the centre.
-        let x = rect.center().x;
-        let y = rect.center().y;
-        painter.circle_filled(egui::pos2(x, y), 1.5, egui::Color32::LIGHT_BLUE);
-        return;
-    }
-    let step = rect.width() / (n as f32 - 1.0);
-    let mut prev: Option<egui::Pos2> = None;
-    for (i, v) in values.iter().enumerate() {
-        let t = ((v - min) / span) as f32;
-        // Higher resource value ⇒ higher pixel (egui y grows down, so
-        // invert).
-        let y = rect.bottom() - t * rect.height();
-        let x = rect.left() + i as f32 * step;
-        let p = egui::pos2(x, y);
-        if let Some(prev) = prev {
-            painter.line_segment([prev, p], egui::Stroke::new(1.0, egui::Color32::LIGHT_BLUE));
-        }
-        prev = Some(p);
     }
 }
 
@@ -648,13 +567,18 @@ mod tests {
     fn render_does_not_panic_on_empty_or_populated_history() {
         // Exercise the render path without a real Bevy App / egui
         // context by spinning up a detached egui::Context.
+        use crate::ui::situation_center::lua_adapter::LuaEventTreeTab;
+        use crate::ui::situation_center::state::TabState;
+        use crate::ui::situation_center::tab::SituationTab;
+        use bevy_egui::egui;
+
         let mut world = World::new();
         world.insert_resource(GameClock::new(0));
         world.insert_resource(ResourceTrendHistory::default());
-        let tab = ResourceTrendsTab;
+        let tab = LuaEventTreeTab::new(ResourceTrendsTab);
         let ctx = egui::Context::default();
         let mut state = TabState::default();
-        ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run(Default::default(), |ctx| {
             egui::Area::new(egui::Id::new("rt_test_area")).show(ctx, |ui| {
                 tab.render(ui, &world, &mut state);
             });
@@ -681,7 +605,7 @@ mod tests {
         drop(hist);
 
         let ctx = egui::Context::default();
-        ctx.run(Default::default(), |ctx| {
+        let _ = ctx.run(Default::default(), |ctx| {
             egui::Area::new(egui::Id::new("rt_test_area_2")).show(ctx, |ui| {
                 tab.render(ui, &world, &mut state);
             });
