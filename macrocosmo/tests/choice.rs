@@ -162,11 +162,12 @@ fn evaluate_marks_unmet_condition_and_cost() {
     let lua = engine.lua();
     lua.load(
         r#"
+        local cond = require("macrocosmo.condition")
         show_choice {
             title = "T",
             description = "",
             options = {
-                { label = "Need tech", condition = has_tech("nonexistent_tech") },
+                { label = "Need tech", condition = cond.has_tech("nonexistent_tech") },
                 { label = "Too pricey", cost = { minerals = 1000 } },
                 { label = "Available" },
             },

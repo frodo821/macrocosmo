@@ -6,8 +6,8 @@ use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
 /// `define_hull`, `define_module`):
 ///
 /// * `nil` — no prerequisites.
-/// * a condition table produced by the condition helper functions
-///   (`has_tech`, `all`, `any`, `one_of`, `not_cond`, `has_flag`, ...).
+/// * a condition table produced by `require("macrocosmo.condition")`
+///   helpers (`cond.has_tech`, `cond.all`, `cond.any`, ...).
 /// * a function `function(ctx) return <condition table> end` — the function is
 ///   called with a `ConditionCtx` to allow scoped atoms like `ctx.empire:has_tech(...)`.
 pub fn parse_prerequisites_field(table: &mlua::Table) -> Result<Option<Condition>, mlua::Error> {
@@ -43,8 +43,8 @@ fn parse_scope(table: &mlua::Table) -> Result<ConditionScope, mlua::Error> {
     }
 }
 
-/// Parse a Condition tree from a Lua table produced by the condition helper functions
-/// (`has_tech`, `has_modifier`, `has_building`, `has_flag`, `all`, `any`, `one_of`, `not_cond`).
+/// Parse a Condition tree from a Lua table produced by the condition module helpers
+/// (`cond.has_tech`, `cond.has_modifier`, `cond.all`, `cond.any`, `cond.not_`, ...).
 pub fn parse_condition(table: &mlua::Table) -> Result<Condition, mlua::Error> {
     let cond_type: String = table.get("type")?;
     match cond_type.as_str() {
@@ -191,7 +191,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return has_tech("laser_weapons")"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.has_tech("laser_weapons")"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -207,7 +210,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return has_modifier("war_economy")"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.has_modifier("war_economy")"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -223,7 +229,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return has_building("shipyard")"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.has_building("shipyard")"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -238,7 +247,13 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let table: mlua::Table = lua.load(r#"return has_flag("my_flag")"#).eval().unwrap();
+        let table: mlua::Table = lua
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.has_flag("my_flag")"#,
+            )
+            .eval()
+            .unwrap();
         let cond = parse_condition(&table).unwrap();
         assert_eq!(cond, Condition::Atom(ConditionAtom::has_flag("my_flag")));
     }
@@ -249,7 +264,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return all(has_tech("a"), has_tech("b"))"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.all(cond.has_tech("a"), cond.has_tech("b"))"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -268,7 +286,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return any(has_tech("a"), has_modifier("b"))"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.any(cond.has_tech("a"), cond.has_modifier("b"))"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -287,7 +308,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return one_of(has_tech("a"), has_tech("b"))"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.one_of(cond.has_tech("a"), cond.has_tech("b"))"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -306,7 +330,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return not_cond(has_tech("forbidden"))"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.not_(cond.has_tech("forbidden"))"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -325,7 +352,8 @@ mod tests {
 
         let table: mlua::Table = lua
             .load(
-                r#"return all(has_tech("a"), any(has_modifier("m"), not_cond(has_building("b"))))"#,
+                r#"local cond = require("macrocosmo.condition")
+return cond.all(cond.has_tech("a"), cond.any(cond.has_modifier("m"), cond.not_(cond.has_building("b"))))"#,
             )
             .eval()
             .unwrap();
@@ -356,7 +384,13 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let table: mlua::Table = lua.load(r#"return has_flag("test_flag")"#).eval().unwrap();
+        let table: mlua::Table = lua
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.has_flag("test_flag")"#,
+            )
+            .eval()
+            .unwrap();
         let typ: String = table.get("type").unwrap();
         assert_eq!(typ, "has_flag");
         let id: String = table.get("id").unwrap();
@@ -393,7 +427,13 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let table: mlua::Table = lua.load(r#"return target_state_is("war")"#).eval().unwrap();
+        let table: mlua::Table = lua
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.target_state_is("war")"#,
+            )
+            .eval()
+            .unwrap();
         let cond = parse_condition(&table).unwrap();
         assert_eq!(
             cond,
@@ -412,7 +452,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return target_state_in("peace", "neutral")"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.target_state_in("peace", "neutral")"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -433,7 +476,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return target_standing_at_least(50)"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.target_standing_at_least(50)"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -452,7 +498,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return relative_power_at_least(1.5)"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.relative_power_at_least(1.5)"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -471,7 +520,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return target_allows_option("generic_negotiation")"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.target_allows_option("generic_negotiation")"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -492,7 +544,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return actor_has_modifier("cb_broken_treaty_recent")"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.actor_has_modifier("cb_broken_treaty_recent")"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -513,7 +568,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return actor_holds_capital_of_target()"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.actor_holds_capital_of_target()"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -532,7 +590,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return target_system_count_at_most(2)"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.target_system_count_at_most(2)"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -551,7 +612,10 @@ mod tests {
         let lua = engine.lua();
 
         let table: mlua::Table = lua
-            .load(r#"return target_attacked_actor_core_within(100)"#)
+            .load(
+                r#"local cond = require("macrocosmo.condition")
+return cond.target_attacked_actor_core_within(100)"#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&table).unwrap();
@@ -572,9 +636,10 @@ mod tests {
         // Test that diplomacy atoms work inside all/any combinators
         let table: mlua::Table = lua
             .load(
-                r#"return all(
-                    target_state_in("peace", "neutral"),
-                    target_allows_option("generic_negotiation")
+                r#"local cond = require("macrocosmo.condition")
+return cond.all(
+                    cond.target_state_in("peace", "neutral"),
+                    cond.target_allows_option("generic_negotiation")
                 )"#,
             )
             .eval()

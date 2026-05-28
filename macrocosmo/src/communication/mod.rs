@@ -575,7 +575,7 @@ pub fn process_pending_commands(
     let researched_techs: std::collections::HashSet<String> =
         tech_tree.researched.iter().map(|t| t.0.clone()).collect();
     let active_modifiers: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut empire_flags_union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+    let mut empire_flags_union: std::collections::HashSet<String> = scoped_flags.flag_set();
     empire_flags_union.extend(game_flags.flags.iter().cloned());
     let empire_buildings: std::collections::HashSet<String> = std::collections::HashSet::new();
     let prereq_ctx = crate::condition::EvalContext::flat(

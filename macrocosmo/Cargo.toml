@@ -38,6 +38,8 @@ bevy = { version = "0.18.1", default-features = false, features = [
 ] }
 bevy_egui = "0.39.1"
 mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
+macrocosmo-core = { path = "../macrocosmo-core", features = ["reflect"] }
+macrocosmo-ui-dsl = { path = "../macrocosmo-ui-dsl" }
 rand = "0.9"
 rand_xoshiro = { version = "0.7", features = ["serde"] }
 serde_json = "1"

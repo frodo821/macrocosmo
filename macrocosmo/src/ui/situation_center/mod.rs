@@ -34,7 +34,7 @@ pub use construction_tab::ConstructionOverviewTab;
 pub use diplomatic_tab::{
     DiplomaticStandingHistory, DiplomaticStandingTab, record_diplomatic_history,
 };
-pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration};
+pub use lua_adapter::{LuaOngoingTabAdapter, LuaTabRegistration, LuaUiFragmentTab};
 pub use notifications_tab::{
     EscNotificationQueue, NotificationsTab, PendingAck, PushOutcome, apply_pending_acks_system,
     drain_pending_acks_for_tests, enqueue_pending_ack,
@@ -108,6 +108,16 @@ impl Plugin for SituationCenterPlugin {
         // default Event-tree renderer can't express, so it implements
         // `SituationTab` directly (not `OngoingTab`).
         app.register_situation_tab(ResourceTrendsTab);
+
+        // First live bridge for Lua-defined UI fragments. This is a read-only
+        // preview tab for the existing shadow definitions; command dispatch is
+        // intentionally ignored until host capability validation is explicit.
+        app.register_situation_tab(LuaUiFragmentTab {
+            tab_id: "lua_ui_preview",
+            display_name: "Lua UI",
+            order: 800,
+            fragment_id: "core.ui.esc.notifications",
+        });
     }
 }
 

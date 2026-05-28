@@ -3,6 +3,7 @@ pub mod bottom_bar;
 pub mod console;
 pub mod context_menu;
 pub mod diplomacy_panel;
+pub mod dsl;
 pub mod outline;
 pub mod overlays;
 pub mod params;
@@ -153,52 +154,24 @@ pub fn draw_modifier_breakdown(
     format_fn: &dyn Fn(Amt) -> String,
     current_time: Option<i64>,
 ) {
-    let final_val = value.final_value();
-    let modifiers = value.modifiers();
+    let display =
+        macrocosmo_core::display::modified_value_display(label, value, format_fn, current_time);
 
     ui.set_min_width(220.0);
-    ui.label(egui::RichText::new(format!("{}: {}", label, format_fn(final_val))).strong());
+    ui.label(egui::RichText::new(format!("{}: {}", display.label, display.final_value)).strong());
     ui.separator();
-    ui.label(format!("Base: {}", format_fn(value.base())));
+    ui.label(format!("Base: {}", display.base));
 
-    for m in modifiers {
-        let mut parts = Vec::new();
-        if m.base_add.raw() != 0 {
-            parts.push(format!("{} (base add)", m.base_add.display()));
-        }
-        if m.multiplier.raw() != 0 {
-            let mult_with_one = SignedAmt::units(1).add(m.multiplier);
-            let abs_raw = mult_with_one.raw().unsigned_abs();
-            let w = abs_raw / 1000;
-            let f = abs_raw % 1000;
-            let sign = if mult_with_one.raw() < 0 { "-" } else { "" };
-            let mult_str = if f == 0 {
-                format!("x{}{}", sign, w)
-            } else if f % 100 == 0 {
-                format!("x{}{}.{}", sign, w, f / 100)
-            } else if f % 10 == 0 {
-                format!("x{}{}.{:02}", sign, w, f / 10)
-            } else {
-                format!("x{}{}.{:03}", sign, w, f)
-            };
-            parts.push(format!("{} (mult)", mult_str));
-        }
-        if m.add.raw() != 0 {
-            parts.push(format!("{} (add)", m.add.display()));
-        }
-        let effect = parts.join(", ");
-
-        let mut line = format!("[{}]  {}", m.label, effect);
-        if let Some(now) = current_time {
-            if let Some(remaining) = m.remaining_duration(now) {
-                line.push_str(&format!("  ({} hd left)", remaining));
-            }
+    for modifier in display.modifiers {
+        let mut line = format!("[{}]  {}", modifier.label, modifier.parts.join(", "));
+        if let Some(remaining) = modifier.remaining_duration {
+            line.push_str(&format!("  ({} hd left)", remaining));
         }
         ui.label(line);
     }
 
     ui.separator();
-    ui.label(format!("Final: {}", format_fn(final_val)));
+    ui.label(format!("Final: {}", display.final_value));
 }
 
 /// #391: Render a label showing a `ModifiedValue`'s final value, with a hover
@@ -1357,7 +1330,7 @@ fn draw_main_panels_system(
     let (empire_flags_union, empire_buildings) =
         match deliverables_res.empire_flags.get(empire_entity) {
             Ok((game_flags, scoped_flags)) => {
-                let mut union: std::collections::HashSet<String> = scoped_flags.flags.clone();
+                let mut union: std::collections::HashSet<String> = scoped_flags.flag_set();
                 union.extend(game_flags.flags.iter().cloned());
                 (union, std::collections::HashSet::<String>::new())
             }

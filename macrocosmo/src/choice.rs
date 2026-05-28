@@ -294,11 +294,10 @@ pub fn evaluate_choice_availability(
         .map(|(id, _)| id.0.clone())
         .collect();
     let active_modifiers: HashSet<String> = HashSet::new();
-    let empire_flags = &scoped_flags.flags;
     let empire_buildings: HashSet<String> = HashSet::new();
 
     // Union with game_flags so legacy flag storage still works.
-    let mut flags_union: HashSet<String> = empire_flags.clone();
+    let mut flags_union: HashSet<String> = scoped_flags.flag_set();
     flags_union.extend(game_flags.flags.iter().cloned());
 
     let ctx = EvalContext {
@@ -430,6 +429,12 @@ pub fn apply_choice_effect(
             // UI display. A future patch can integrate these; for now we
             // simply log.
             info!("Choice effect requests event fire: {event_id}");
+        }
+        DescriptiveEffect::PresentUiFragment { request } => {
+            debug!(
+                "Choice effect requests UI fragment presentation: {:?}",
+                request
+            );
         }
         DescriptiveEffect::Hidden { inner, .. } => {
             apply_choice_effect(inner, game_flags, scoped_flags, global_params);
@@ -693,7 +698,12 @@ mod tests {
 
         // Build a condition table via Lua and parse it.
         let cond_table: mlua::Table = lua
-            .load(r#"return has_tech("nonexistent_tech")"#)
+            .load(
+                r#"
+                local cond = require("macrocosmo.condition")
+                return cond.has_tech("nonexistent_tech")
+                "#,
+            )
             .eval()
             .unwrap();
         let cond = parse_condition(&cond_table).unwrap();

@@ -4760,13 +4760,15 @@ pub struct SavedScopedFlags {
 impl SavedScopedFlags {
     pub fn from_live(v: &ScopedFlags) -> Self {
         Self {
-            flags: v.flags.iter().cloned().collect(),
+            flags: v.iter_flags().cloned().collect(),
         }
     }
     pub fn into_live(self) -> ScopedFlags {
-        ScopedFlags {
-            flags: self.flags.into_iter().collect(),
+        let mut scoped = ScopedFlags::default();
+        for flag in self.flags {
+            scoped.set(&flag);
         }
+        scoped
     }
 }
 

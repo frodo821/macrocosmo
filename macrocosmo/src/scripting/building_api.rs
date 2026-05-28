@@ -52,7 +52,7 @@ pub struct BuildingDefinition {
     /// Buildings with cost = nil in Lua are upgrade-only.
     pub is_direct_buildable: bool,
     /// Optional Condition tree gating construction / upgrade of this building.
-    /// Populated from the Lua `prerequisites = has_tech(...)` / `all(...)` / ... field.
+    /// Populated from the Lua `prerequisites = cond.has_tech(...)` / `cond.all(...)` / ... field.
     pub prerequisites: Option<Condition>,
     /// #281: Optional Lua hook invoked when a building of this id finishes
     /// fresh construction (cause = "construction"). Auto-subscribed as a
@@ -456,6 +456,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_building {
                 id = "mine",
                 name = "Mine",
@@ -511,6 +512,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_building {
                 id = "basic",
                 name = "Basic Building",
@@ -729,6 +731,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             local mine = define_building {
                 id = "mine",
                 name = "Mine",
@@ -851,6 +854,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_building {
                 id = "plain",
                 name = "Plain",
@@ -858,14 +862,14 @@ mod tests {
             define_building {
                 id = "tech_gated",
                 name = "Tech Gated",
-                prerequisites = has_tech("industrial_automated_mining"),
+                prerequisites = cond.has_tech("industrial_automated_mining"),
             }
             define_building {
                 id = "complex_gated",
                 name = "Complex Gated",
-                prerequisites = all(
-                    has_tech("tech_a"),
-                    any(has_tech("tech_b"), has_flag("enabled"))
+                prerequisites = cond.all(
+                    cond.has_tech("tech_a"),
+                    cond.any(cond.has_tech("tech_b"), cond.has_flag("enabled"))
                 ),
             }
             "#,
@@ -930,6 +934,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_building {
                 id = "plain",
                 name = "Plain",

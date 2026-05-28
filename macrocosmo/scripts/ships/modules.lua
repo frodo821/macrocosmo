@@ -1,5 +1,6 @@
 local slot_types = require("ships.slot_types")
 local tech = require("tech")
+local cond = require("macrocosmo.condition")
 
 -- #239: `build_time` (hexadies) contributes to the design's total build time
 -- (`hull.build_time + Σ module.build_time`). Range is 5-20 hd with a rough
@@ -71,7 +72,7 @@ local weapon_laser_s = define_module {
     name = "Small Laser Battery",
     slot_type = slot_types.weapon,
     size = "small",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 5.0, precision = 0.85, cooldown = 1, range = 10.0,
         shield_damage = 4.0, shield_damage_div = 1.0, shield_piercing = 0.0,
@@ -88,7 +89,7 @@ local weapon_laser_m = define_module {
     name = "Medium Laser Battery",
     slot_type = slot_types.weapon,
     size = "medium",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 4.0, precision = 0.87, cooldown = 1, range = 12.0,
         shield_damage = 8.0, shield_damage_div = 2.0, shield_piercing = 0.0,
@@ -105,7 +106,7 @@ local weapon_laser_l = define_module {
     name = "Large Laser Battery",
     slot_type = slot_types.weapon,
     size = "large",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 3.0, precision = 0.90, cooldown = 2, range = 14.0,
         shield_damage = 16.0, shield_damage_div = 4.0, shield_piercing = 0.0,
@@ -123,7 +124,7 @@ local weapon_railgun_m = define_module {
     name = "Medium Railgun",
     slot_type = slot_types.weapon,
     size = "medium",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 2.0, precision = 0.90, cooldown = 3, range = 20.0,
         shield_damage = 2.0, shield_damage_div = 0.5, shield_piercing = 0.5,
@@ -140,7 +141,7 @@ local weapon_railgun_l = define_module {
     name = "Large Railgun",
     slot_type = slot_types.weapon,
     size = "large",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 1.5, precision = 0.92, cooldown = 4, range = 25.0,
         shield_damage = 4.0, shield_damage_div = 1.0, shield_piercing = 0.5,
@@ -158,7 +159,7 @@ local weapon_missile_s = define_module {
     name = "Small Missile Launcher",
     slot_type = slot_types.weapon,
     size = "small",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 8.0, precision = 0.70, cooldown = 2, range = 15.0,
         shield_damage = 1.0, shield_damage_div = 0.5, shield_piercing = 0.8,
@@ -175,7 +176,7 @@ local weapon_missile_m = define_module {
     name = "Medium Missile Launcher",
     slot_type = slot_types.weapon,
     size = "medium",
-    prerequisites = has_tech(tech.military.kinetic_weapons),
+    prerequisites = cond.has_tech(tech.military.kinetic_weapons),
     weapon = {
         track = 6.0, precision = 0.75, cooldown = 3, range = 18.0,
         shield_damage = 2.0, shield_damage_div = 1.0, shield_piercing = 0.8,
@@ -240,7 +241,7 @@ local shield_generator_s = define_module {
     name = "Small Shield Generator",
     slot_type = slot_types.defense,
     size = "small",
-    prerequisites = has_tech(tech.military.deflector_shields),
+    prerequisites = cond.has_tech(tech.military.deflector_shields),
     modifiers = {
         { target = "ship.shield_max", base_add = 40.0 },
         { target = "ship.shield_regen", base_add = 2.0 },
@@ -255,7 +256,7 @@ local shield_generator_m = define_module {
     name = "Medium Shield Generator",
     slot_type = slot_types.defense,
     size = "medium",
-    prerequisites = has_tech(tech.military.deflector_shields),
+    prerequisites = cond.has_tech(tech.military.deflector_shields),
     modifiers = {
         { target = "ship.shield_max", base_add = 80.0 },
         { target = "ship.shield_regen", base_add = 4.0 },
@@ -270,7 +271,7 @@ local shield_generator_l = define_module {
     name = "Large Shield Generator",
     slot_type = slot_types.defense,
     size = "large",
-    prerequisites = has_tech(tech.military.deflector_shields),
+    prerequisites = cond.has_tech(tech.military.deflector_shields),
     modifiers = {
         { target = "ship.shield_max", base_add = 160.0 },
         { target = "ship.shield_regen", base_add = 8.0 },

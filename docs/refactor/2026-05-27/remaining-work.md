@@ -175,27 +175,35 @@ cargo test -p macrocosmo --lib savebag
 
 ### Slice 5: UI Root Module Split
 
-Status: not started.
+Status: not started. Re-scope this slice around the Lua UI DSL boundary before
+doing a broad root-module split.
 
 Suggested PR title:
 
 ```text
-refactor(ui): split root ui module responsibilities
+refactor(ui): introduce Lua UI DSL command boundary
 ```
 
 Scope:
 
-- `ui/plugin.rs`: `UiPlugin` registration.
-- `ui/font.rs`: CJK font setup and font tests.
-- `ui/view_context.rs`: `resolve_ui_empire`, `resolve_viewing_knowledge`, omniscient handling.
-- `ui/state.rs`: `UiState`, `compute_ui_state`, observer variant.
-- `ui/notifications_panel.rs`: notification pill drawing.
+- Documented design: `docs/ui_dsl/README.md`.
+- First target: Empire Situation Center Lua tabs, matching the existing
+  `LuaOngoingTabAdapter` future-proof boundary.
+- Reuse existing `Condition` / `ConditionCtx` parsing for `visible` and
+  `enabled` state.
+- Use an `EffectScope`-like `UiCommandScope` to collect command descriptors,
+  but keep UI commands separate from tech/effect descriptors.
+- Route mutation through an `AppCommandRegistry`; the Lua UI interpreter must
+  not own domain command semantics.
+- Keep any mechanical `ui/mod.rs` split small and in service of this boundary
+  (`plugin.rs`, `view_context.rs`, `state.rs` are still reasonable follow-ups).
 
 Constraints:
 
 - Keep Bevy/egui UI code in interactions-side modules.
-- Do not change layout or behavior in this PR.
-- Avoid moving large panel modules at the same time.
+- Do not expose `&mut World` or egui APIs to Lua.
+- Do not add generic mutation commands such as `set_component_field`.
+- Avoid moving large panel modules in the same PR as the DSL boundary.
 
 Validation:
 
@@ -203,6 +211,7 @@ Validation:
 cargo test -p macrocosmo --test observer_mode
 cargo test -p macrocosmo --test observer_mode_omniscient
 cargo test -p macrocosmo --test ai_debug_smoke
+cargo test -p macrocosmo --test situation_center_ftl_leak
 ```
 
 ### Slice 6: System Building Capability Index

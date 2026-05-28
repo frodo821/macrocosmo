@@ -717,7 +717,7 @@ pub(crate) mod views {
                 flag_set.extend(f.flags.iter().cloned());
             }
             if let Some(f) = eref.get::<ScopedFlags>() {
-                flag_set.extend(f.flags.iter().cloned());
+                flag_set.extend(f.iter_flags().cloned());
             }
         }
         etbl.set("techs", techs_tbl.clone())?;
@@ -1426,7 +1426,7 @@ pub mod apply {
                         gf.flags.remove(name);
                     }
                     if let Some(mut sf) = eref.get_mut::<ScopedFlags>() {
-                        sf.flags.remove(name);
+                        sf.unset(name);
                     }
                 }
                 Ok(())

@@ -367,6 +367,12 @@ fn apply_effect(
             // Fire events are handled by the event system; queue them
             info!("Tech effect requests event fire: {event_id} (not yet wired to EventSystem)");
         }
+        DescriptiveEffect::PresentUiFragment { request } => {
+            debug!(
+                "Tech effect requests UI fragment presentation: {:?}",
+                request
+            );
+        }
         DescriptiveEffect::Hidden { inner, .. } => {
             apply_effect(
                 inner,

@@ -1,7 +1,6 @@
 use mlua::prelude::*;
 use std::path::Path;
 
-use super::effect_scope;
 use super::helpers::extract_id_from_lua_value;
 use super::log_buffer::{LogEntry, LogSource, SharedPrintBuffer};
 
@@ -22,6 +21,7 @@ pub fn setup_globals_with_print_buffer(
     print_buffer: Option<SharedPrintBuffer>,
 ) -> Result<(), mlua::Error> {
     let globals = lua.globals();
+    macrocosmo_core::lua::register_core_lua_modules(lua)?;
 
     // --- Sandbox: disable dangerous globals ---
     globals.set("loadfile", mlua::Value::Nil)?;
@@ -194,6 +194,13 @@ pub fn setup_globals_with_print_buffer(
         super::negotiation_api::ACCUMULATOR,
     )?;
 
+    // --- Lua UI DSL skeleton ---
+    //
+    // `define_ui_fragment { ... }` records fragment definitions for the future
+    // UI DSL runtime. The parser/renderer is intentionally not wired yet.
+    super::ui_dsl_api::register_ui_fragment_definition_accumulator(lua)?;
+    super::ui_dsl_api::register_ui_dsl_module(lua)?;
+
     // --- #160: Balance constants Lua binding ---
     // `define_balance { ... }` is expected to be called AT MOST ONCE from
     // `scripts/config/balance.lua`. Subsequent calls overwrite the stored
@@ -357,171 +364,6 @@ pub fn setup_globals_with_print_buffer(
         Ok(())
     })?;
     globals.set("on", on_fn)?;
-
-    // --- Condition helper functions ---
-    // These return Lua tables that represent condition nodes, parsed by condition_parser.
-
-    // has_tech / has_modifier / has_building accept either a string ID
-    // or a reference table (returned by define_xxx) from which the id is extracted.
-    let has_tech = lua.create_function(|lua, value: mlua::Value| {
-        let t = lua.create_table()?;
-        t.set("type", "has_tech")?;
-        t.set("id", extract_id_from_lua_value(&value)?)?;
-        Ok(t)
-    })?;
-    globals.set("has_tech", has_tech)?;
-
-    let has_modifier = lua.create_function(|lua, value: mlua::Value| {
-        let t = lua.create_table()?;
-        t.set("type", "has_modifier")?;
-        t.set("id", extract_id_from_lua_value(&value)?)?;
-        Ok(t)
-    })?;
-    globals.set("has_modifier", has_modifier)?;
-
-    let has_building = lua.create_function(|lua, value: mlua::Value| {
-        let t = lua.create_table()?;
-        t.set("type", "has_building")?;
-        t.set("id", extract_id_from_lua_value(&value)?)?;
-        Ok(t)
-    })?;
-    globals.set("has_building", has_building)?;
-
-    let has_flag = lua.create_function(|lua, value: mlua::Value| {
-        let t = lua.create_table()?;
-        t.set("type", "has_flag")?;
-        t.set("id", extract_id_from_lua_value(&value)?)?;
-        Ok(t)
-    })?;
-    globals.set("has_flag", has_flag)?;
-
-    // --- Diplomacy condition helpers (#322) ---
-
-    let target_state_is = lua.create_function(|lua, state: String| {
-        let t = lua.create_table()?;
-        t.set("type", "target_state_is")?;
-        t.set("state", state)?;
-        Ok(t)
-    })?;
-    globals.set("target_state_is", target_state_is)?;
-
-    let target_state_in = lua.create_function(|lua, args: mlua::MultiValue| {
-        let t = lua.create_table()?;
-        t.set("type", "target_state_in")?;
-        let states = lua.create_table()?;
-        for (i, arg) in args.into_iter().enumerate() {
-            states.set(i + 1, arg)?;
-        }
-        t.set("states", states)?;
-        Ok(t)
-    })?;
-    globals.set("target_state_in", target_state_in)?;
-
-    let target_standing_at_least = lua.create_function(|lua, threshold: f64| {
-        let t = lua.create_table()?;
-        t.set("type", "target_standing_at_least")?;
-        t.set("threshold", threshold)?;
-        Ok(t)
-    })?;
-    globals.set("target_standing_at_least", target_standing_at_least)?;
-
-    let relative_power_at_least = lua.create_function(|lua, ratio: f64| {
-        let t = lua.create_table()?;
-        t.set("type", "relative_power_at_least")?;
-        t.set("ratio", ratio)?;
-        Ok(t)
-    })?;
-    globals.set("relative_power_at_least", relative_power_at_least)?;
-
-    let target_allows_option = lua.create_function(|lua, value: mlua::Value| {
-        let t = lua.create_table()?;
-        t.set("type", "target_allows_option")?;
-        t.set("option_id", extract_id_from_lua_value(&value)?)?;
-        Ok(t)
-    })?;
-    globals.set("target_allows_option", target_allows_option)?;
-
-    let actor_has_modifier = lua.create_function(|lua, value: mlua::Value| {
-        let t = lua.create_table()?;
-        t.set("type", "actor_has_modifier")?;
-        t.set("modifier_id", extract_id_from_lua_value(&value)?)?;
-        Ok(t)
-    })?;
-    globals.set("actor_has_modifier", actor_has_modifier)?;
-
-    let actor_holds_capital_of_target = lua.create_function(|lua, _: ()| {
-        let t = lua.create_table()?;
-        t.set("type", "actor_holds_capital_of_target")?;
-        Ok(t)
-    })?;
-    globals.set(
-        "actor_holds_capital_of_target",
-        actor_holds_capital_of_target,
-    )?;
-
-    let target_system_count_at_most = lua.create_function(|lua, count: u32| {
-        let t = lua.create_table()?;
-        t.set("type", "target_system_count_at_most")?;
-        t.set("count", count)?;
-        Ok(t)
-    })?;
-    globals.set("target_system_count_at_most", target_system_count_at_most)?;
-
-    let target_attacked_actor_core_within = lua.create_function(|lua, hexadies: i64| {
-        let t = lua.create_table()?;
-        t.set("type", "target_attacked_actor_core_within")?;
-        t.set("hexadies", hexadies)?;
-        Ok(t)
-    })?;
-    globals.set(
-        "target_attacked_actor_core_within",
-        target_attacked_actor_core_within,
-    )?;
-
-    let all_fn = lua.create_function(|lua, args: mlua::MultiValue| {
-        let t = lua.create_table()?;
-        t.set("type", "all")?;
-        let children = lua.create_table()?;
-        for (i, arg) in args.into_iter().enumerate() {
-            children.set(i + 1, arg)?;
-        }
-        t.set("children", children)?;
-        Ok(t)
-    })?;
-    globals.set("all", all_fn)?;
-
-    let any_fn = lua.create_function(|lua, args: mlua::MultiValue| {
-        let t = lua.create_table()?;
-        t.set("type", "any")?;
-        let children = lua.create_table()?;
-        for (i, arg) in args.into_iter().enumerate() {
-            children.set(i + 1, arg)?;
-        }
-        t.set("children", children)?;
-        Ok(t)
-    })?;
-    globals.set("any", any_fn)?;
-
-    let one_of_fn = lua.create_function(|lua, args: mlua::MultiValue| {
-        let t = lua.create_table()?;
-        t.set("type", "one_of")?;
-        let children = lua.create_table()?;
-        for (i, arg) in args.into_iter().enumerate() {
-            children.set(i + 1, arg)?;
-        }
-        t.set("children", children)?;
-        Ok(t)
-    })?;
-    globals.set("one_of", one_of_fn)?;
-
-    // "not" is a Lua keyword, so we use "not_cond" as the function name.
-    let not_cond_fn = lua.create_function(|lua, child: mlua::Table| {
-        let t = lua.create_table()?;
-        t.set("type", "not")?;
-        t.set("child", child)?;
-        Ok(t)
-    })?;
-    globals.set("not_cond", not_cond_fn)?;
 
     // mtth_trigger(params) -- constructor that tags a table as type "mtth"
     let mtth_trigger = lua.create_function(|_, table: mlua::Table| {
@@ -794,14 +636,6 @@ pub fn setup_globals_with_print_buffer(
     globals.set("fire_event", fire_event_fn)?;
 
     // --- Effect descriptor helpers ---
-    // effect_fire_event(event_id, payload?) -- returns a descriptor table (does NOT queue the event)
-    let effect_fire_event_fn = effect_scope::create_fire_event_descriptor(lua)?;
-    globals.set("effect_fire_event", effect_fire_event_fn)?;
-
-    // hide(label, inner_descriptor) -- wraps a descriptor with a display label
-    let hide_fn = effect_scope::create_hide_function(lua)?;
-    globals.set("hide", hide_fn)?;
-
     Ok(())
 }
 

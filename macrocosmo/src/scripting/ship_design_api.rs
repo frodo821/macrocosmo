@@ -411,6 +411,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_slot_type { id = "weapon", name = "Weapon Slot" }
             define_slot_type { id = "utility", name = "Utility Slot" }
             define_slot_type { id = "ftl", name = "FTL Drive Slot" }
@@ -434,6 +435,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_hull {
                 id = "corvette",
                 name = "Corvette",
@@ -488,6 +490,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_hull {
                 id = "plain_hull",
                 name = "Plain",
@@ -499,7 +502,7 @@ mod tests {
                 name = "Cruiser",
                 size = 4,
                 base_hp = 200,
-                prerequisites = has_tech("hull_cruiser"),
+                prerequisites = cond.has_tech("hull_cruiser"),
             }
             "#,
         )
@@ -526,6 +529,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_module {
                 id = "ftl_drive",
                 name = "FTL Drive",
@@ -589,6 +593,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_module {
                 id = "heavy_drive",
                 name = "Heavy Drive",
@@ -625,6 +630,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_module {
                 id = "reactor",
                 name = "Reactor",
@@ -678,6 +684,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_hull {
                 id = "sized_hull",
                 name = "Sized Hull",
@@ -719,6 +726,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_module {
                 id = "plain",
                 name = "Plain",
@@ -729,7 +737,7 @@ mod tests {
                 id = "advanced",
                 name = "Advanced",
                 slot_type = "utility",
-                prerequisites = all(has_tech("laser_weapons"), has_flag("militarized")),
+                prerequisites = cond.all(cond.has_tech("laser_weapons"), cond.has_flag("militarized")),
                 cost = { minerals = 10 },
             }
             "#,
@@ -762,6 +770,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_module {
                 id = "legacy",
                 name = "Legacy",
@@ -789,6 +798,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_module {
                 id = "weapon_laser",
                 name = "Laser Battery",
@@ -835,6 +845,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_ship_design {
                 id = "explorer_mk1",
                 name = "Explorer Mk.I",
@@ -926,6 +937,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_slot_type { id = "weapon", name = "Weapon Slot" }
             local laser = define_module {
                 id = "weapon_laser",
@@ -973,6 +985,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_ship_design {
                 id = "bogus",
                 name = "Bogus",
@@ -1025,6 +1038,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_hull {
                 id = "no_size",
                 name = "No Size",
@@ -1047,6 +1061,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_hull {
                 id = "basic",
                 name = "Basic",

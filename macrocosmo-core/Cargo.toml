@@ -1,0 +1,14 @@
+[package]
+name = "macrocosmo-core"
+version.workspace = true
+edition.workspace = true
+description = "Shared Macrocosmo data contracts and Lua authoring modules."
+
+[dependencies]
+bevy_reflect = { version = "0.18.1", optional = true }
+mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
+serde.workspace = true
+
+[features]
+default = []
+reflect = ["dep:bevy_reflect"]

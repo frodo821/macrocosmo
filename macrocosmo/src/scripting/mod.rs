@@ -26,6 +26,7 @@ pub mod region_api;
 pub mod ship_design_api;
 pub mod species_api;
 pub mod structure_api;
+pub mod ui_dsl_api;
 pub mod victory_api;
 
 // Re-exports for backward compatibility
@@ -973,16 +974,25 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        // String form (backward compatible)
-        let cond_str: mlua::Table = lua.load(r#"return has_tech("my_tech")"#).eval().unwrap();
+        // String form
+        let cond_str: mlua::Table = lua
+            .load(
+                r#"
+                local cond = require("macrocosmo.condition")
+                return cond.has_tech("my_tech")
+            "#,
+            )
+            .eval()
+            .unwrap();
         assert_eq!(cond_str.get::<String>("id").unwrap(), "my_tech");
 
         // Reference form
         let cond_ref: mlua::Table = lua
             .load(
                 r#"
+                local cond = require("macrocosmo.condition")
                 local t = define_tech { id = "ref_tech", name = "Ref" }
-                return has_tech(t)
+                return cond.has_tech(t)
             "#,
             )
             .eval()

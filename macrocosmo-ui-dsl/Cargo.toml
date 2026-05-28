@@ -1,0 +1,12 @@
+[package]
+name = "macrocosmo-ui-dsl"
+version.workspace = true
+edition.workspace = true
+description = "Lua-authored UI DSL contracts and reconciliation primitives for Macrocosmo."
+
+[dependencies]
+egui = "0.33.3"
+mlua = { version = "0.11", features = ["luajit", "vendored", "send"] }
+
+[dev-dependencies]
+eframe = "0.33.3"
