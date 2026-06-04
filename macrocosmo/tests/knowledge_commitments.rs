@@ -757,10 +757,9 @@ fn colony_established_resolves_deploy_commitment() {
     );
 }
 
-/// Followup 3 (review 2026-06-04) — simulate the post-save/load
+/// Followup 3 (review 2026-06-04) — simulate a migrated / legacy
 /// state: the legacy `PendingAssignment` / `PendingAiShipCommand` /
-/// `AiCommandOutbox` are populated (they ARE persisted) but the
-/// ledger is empty (it is NOT persisted by `SavedKnowledgeStore`).
+/// `AiCommandOutbox` are populated but the ledger is empty.
 /// `backfill_commitments_from_legacy_markers` must reconstruct the
 /// ledger so Slice 4b3 dedup does not re-emit in-flight commands.
 #[test]

@@ -52,8 +52,10 @@ use crate::galaxy::{
 };
 use crate::knowledge::facts::CombatVictor;
 use crate::knowledge::{
-    KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact,
-    ShipProjection, ShipSnapshot, ShipSnapshotState, SystemKnowledge, SystemSnapshot,
+    Commitment, CommitmentId, CommitmentKind, CommitmentLedger, CommitmentStatus, CommitmentTarget,
+    KnowledgeFact, KnowledgeStore, KnowledgeSubject, ObservationSource, PendingFactQueue,
+    PerceivedFact, ShipProjection, ShipSnapshot, ShipSnapshotState, SystemKnowledge,
+    SystemSnapshot,
 };
 use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::modifier::{ModifiedValue, ScopedModifiers};
@@ -3227,6 +3229,208 @@ impl SavedShipProjection {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SavedKnowledgeSubject {
+    Empire { entity_bits: u64 },
+    Region { entity_bits: u64 },
+    Fleet { entity_bits: u64 },
+    Ship { entity_bits: u64 },
+    Colony { entity_bits: u64 },
+}
+
+impl SavedKnowledgeSubject {
+    pub fn from_live(v: KnowledgeSubject) -> Self {
+        match v {
+            KnowledgeSubject::Empire(e) => Self::Empire {
+                entity_bits: e.to_bits(),
+            },
+            KnowledgeSubject::Region(e) => Self::Region {
+                entity_bits: e.to_bits(),
+            },
+            KnowledgeSubject::Fleet(e) => Self::Fleet {
+                entity_bits: e.to_bits(),
+            },
+            KnowledgeSubject::Ship(e) => Self::Ship {
+                entity_bits: e.to_bits(),
+            },
+            KnowledgeSubject::Colony(e) => Self::Colony {
+                entity_bits: e.to_bits(),
+            },
+        }
+    }
+
+    pub fn into_live(self, map: &EntityMap) -> KnowledgeSubject {
+        match self {
+            Self::Empire { entity_bits } => {
+                KnowledgeSubject::Empire(remap_entity(entity_bits, map))
+            }
+            Self::Region { entity_bits } => {
+                KnowledgeSubject::Region(remap_entity(entity_bits, map))
+            }
+            Self::Fleet { entity_bits } => KnowledgeSubject::Fleet(remap_entity(entity_bits, map)),
+            Self::Ship { entity_bits } => KnowledgeSubject::Ship(remap_entity(entity_bits, map)),
+            Self::Colony { entity_bits } => {
+                KnowledgeSubject::Colony(remap_entity(entity_bits, map))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SavedCommitmentTarget {
+    System { entity_bits: u64 },
+    Planet { entity_bits: u64 },
+}
+
+impl SavedCommitmentTarget {
+    pub fn from_live(v: CommitmentTarget) -> Self {
+        match v {
+            CommitmentTarget::System(e) => Self::System {
+                entity_bits: e.to_bits(),
+            },
+            CommitmentTarget::Planet(e) => Self::Planet {
+                entity_bits: e.to_bits(),
+            },
+        }
+    }
+
+    pub fn into_live(self, map: &EntityMap) -> CommitmentTarget {
+        match self {
+            Self::System { entity_bits } => {
+                CommitmentTarget::System(remap_entity(entity_bits, map))
+            }
+            Self::Planet { entity_bits } => {
+                CommitmentTarget::Planet(remap_entity(entity_bits, map))
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SavedCommitmentKind {
+    Survey,
+    Colonize,
+    Move,
+    DeployDeliverable,
+}
+
+impl From<CommitmentKind> for SavedCommitmentKind {
+    fn from(v: CommitmentKind) -> Self {
+        match v {
+            CommitmentKind::Survey => Self::Survey,
+            CommitmentKind::Colonize => Self::Colonize,
+            CommitmentKind::Move => Self::Move,
+            CommitmentKind::DeployDeliverable => Self::DeployDeliverable,
+        }
+    }
+}
+
+impl From<SavedCommitmentKind> for CommitmentKind {
+    fn from(v: SavedCommitmentKind) -> Self {
+        match v {
+            SavedCommitmentKind::Survey => Self::Survey,
+            SavedCommitmentKind::Colonize => Self::Colonize,
+            SavedCommitmentKind::Move => Self::Move,
+            SavedCommitmentKind::DeployDeliverable => Self::DeployDeliverable,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub enum SavedCommitmentStatus {
+    Active,
+    Resolved,
+    Failed,
+}
+
+impl From<CommitmentStatus> for SavedCommitmentStatus {
+    fn from(v: CommitmentStatus) -> Self {
+        match v {
+            CommitmentStatus::Active => Self::Active,
+            CommitmentStatus::Resolved => Self::Resolved,
+            CommitmentStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+impl From<SavedCommitmentStatus> for CommitmentStatus {
+    fn from(v: SavedCommitmentStatus) -> Self {
+        match v {
+            SavedCommitmentStatus::Active => Self::Active,
+            SavedCommitmentStatus::Resolved => Self::Resolved,
+            SavedCommitmentStatus::Failed => Self::Failed,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedCommitment {
+    pub id: u64,
+    pub subject: SavedKnowledgeSubject,
+    pub actor_bits: Option<u64>,
+    pub kind: SavedCommitmentKind,
+    pub target: SavedCommitmentTarget,
+    pub issued_at: i64,
+    pub status: SavedCommitmentStatus,
+    pub basis_observed_at: Option<i64>,
+    pub expected_effect_at: Option<i64>,
+    pub expected_resolution_at: Option<i64>,
+}
+
+impl SavedCommitment {
+    pub fn from_live(v: &Commitment) -> Self {
+        Self {
+            id: v.id.0,
+            subject: SavedKnowledgeSubject::from_live(v.subject),
+            actor_bits: v.actor.map(|e| e.to_bits()),
+            kind: v.kind.into(),
+            target: SavedCommitmentTarget::from_live(v.target),
+            issued_at: v.issued_at,
+            status: v.status.into(),
+            basis_observed_at: v.basis_observed_at,
+            expected_effect_at: v.expected_effect_at,
+            expected_resolution_at: v.expected_resolution_at,
+        }
+    }
+
+    pub fn into_live(self, map: &EntityMap) -> Commitment {
+        Commitment {
+            id: CommitmentId(self.id),
+            subject: self.subject.into_live(map),
+            actor: self.actor_bits.map(|bits| remap_entity(bits, map)),
+            kind: self.kind.into(),
+            target: self.target.into_live(map),
+            issued_at: self.issued_at,
+            status: self.status.into(),
+            basis_observed_at: self.basis_observed_at,
+            expected_effect_at: self.expected_effect_at,
+            expected_resolution_at: self.expected_resolution_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedCommitmentLedger {
+    pub next_id: u64,
+    pub entries: Vec<SavedCommitment>,
+}
+
+impl SavedCommitmentLedger {
+    pub fn from_live(v: &CommitmentLedger) -> Self {
+        Self {
+            next_id: v.next_id_for_persistence(),
+            entries: v.iter().map(SavedCommitment::from_live).collect(),
+        }
+    }
+
+    pub fn into_live(self, map: &EntityMap) -> CommitmentLedger {
+        CommitmentLedger::from_persisted(
+            self.next_id,
+            self.entries.into_iter().map(|entry| entry.into_live(map)),
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SavedKnowledgeStore {
     pub entries: Vec<SavedSystemKnowledge>,
@@ -3235,6 +3439,11 @@ pub struct SavedKnowledgeStore {
     /// pre-#474 saves (which lack this field) round-trip to an empty Vec.
     #[serde(default)]
     pub projections: Vec<SavedShipProjection>,
+    /// Commitment ledger owned by this `KnowledgeStore`. Appended with
+    /// `SAVE_VERSION` bumped because postcard encodes struct fields
+    /// positionally.
+    #[serde(default)]
+    pub commitments: SavedCommitmentLedger,
 }
 
 impl SavedKnowledgeStore {
@@ -3252,6 +3461,7 @@ impl SavedKnowledgeStore {
                 .iter_projections()
                 .map(|(_, p)| SavedShipProjection::from_live(p))
                 .collect(),
+            commitments: SavedCommitmentLedger::from_live(v.commitments()),
         }
     }
     pub fn into_live(self, map: &EntityMap) -> KnowledgeStore {
@@ -3265,6 +3475,7 @@ impl SavedKnowledgeStore {
         for projection in self.projections {
             store.update_projection(projection.into_live(map));
         }
+        store.replace_commitments_for_persistence(self.commitments.into_live(map));
         store
     }
 }

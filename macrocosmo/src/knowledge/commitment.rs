@@ -296,6 +296,38 @@ impl CommitmentLedger {
     pub fn iter(&self) -> impl Iterator<Item = &Commitment> {
         self.entries.values()
     }
+
+    /// Next ledger-local id to allocate. Used by save/load so post-load
+    /// commitments do not reuse an existing persisted id.
+    pub fn next_id_for_persistence(&self) -> u64 {
+        self.next_id
+    }
+
+    /// Rebuild a ledger from persisted entries, including the secondary
+    /// `(subject, kind, target)` index used by dedup queries.
+    pub fn from_persisted(next_id: u64, entries: impl IntoIterator<Item = Commitment>) -> Self {
+        let mut ledger = Self {
+            next_id,
+            entries: HashMap::new(),
+            by_subject_kind_target: HashMap::new(),
+        };
+        let mut max_seen_next = next_id;
+        for entry in entries {
+            if entry.id.0 < u64::MAX {
+                max_seen_next = max_seen_next.max(entry.id.0 + 1);
+            } else {
+                max_seen_next = u64::MAX;
+            }
+            ledger
+                .by_subject_kind_target
+                .entry((entry.subject, entry.kind, entry.target))
+                .or_default()
+                .push(entry.id);
+            ledger.entries.insert(entry.id, entry);
+        }
+        ledger.next_id = max_seen_next;
+        ledger
+    }
 }
 
 #[cfg(test)]

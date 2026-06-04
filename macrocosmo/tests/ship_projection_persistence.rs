@@ -9,6 +9,9 @@
 //!    independent of the parent `SavedKnowledgeStore`.
 //! 3. `clear_projection` / `iter_projections` / `update_projection`
 //!    semantics on `KnowledgeStore`.
+//! 4. `CommitmentLedger` entries embedded in `SavedKnowledgeStore`
+//!    survive save/load with entity references remapped and the next id
+//!    preserved.
 //!
 //! Note: postcard's positional encoding does NOT support missing-trailing
 //! fields via `#[serde(default)]` (the decoder hits `UnexpectedEnd`).
@@ -19,7 +22,8 @@
 use bevy::prelude::*;
 
 use macrocosmo::knowledge::{
-    KnowledgeStore, ObservationSource, ShipProjection, ShipSnapshot, ShipSnapshotState,
+    CommitmentBasis, CommitmentKind, CommitmentStatus, CommitmentTarget, KnowledgeStore,
+    KnowledgeSubject, ObservationSource, ShipProjection, ShipSnapshot, ShipSnapshotState,
 };
 use macrocosmo::persistence::EntityMap;
 use macrocosmo::persistence::savebag::{SavedKnowledgeStore, SavedShipProjection};
@@ -159,6 +163,112 @@ fn ship_projection_round_trips_through_postcard() {
     assert_eq!(p_c.intended_takes_effect_at, Some(208));
 
     assert_eq!(restored.iter_projections().count(), 3);
+}
+
+#[test]
+fn commitment_ledger_round_trips_through_saved_knowledge_store() {
+    let mut world = World::new();
+    let old_empire = world.spawn_empty().id();
+    let old_ship = world.spawn_empty().id();
+    let old_system = world.spawn_empty().id();
+    let old_planet = world.spawn_empty().id();
+    let new_empire = world.spawn_empty().id();
+    let new_ship = world.spawn_empty().id();
+    let new_system = world.spawn_empty().id();
+    let new_planet = world.spawn_empty().id();
+
+    let mut store = KnowledgeStore::default();
+    let active_id = store.commitments_mut().record_issued_with_basis(
+        KnowledgeSubject::Empire(old_empire),
+        Some(old_ship),
+        CommitmentKind::Survey,
+        CommitmentTarget::System(old_system),
+        10,
+        CommitmentBasis {
+            basis_observed_at: Some(7),
+            expected_effect_at: Some(12),
+            expected_resolution_at: Some(20),
+        },
+    );
+    let resolved_id = store.commitments_mut().record_issued(
+        KnowledgeSubject::Empire(old_empire),
+        Some(old_ship),
+        CommitmentKind::Colonize,
+        CommitmentTarget::Planet(old_planet),
+        11,
+    );
+    let failed_id = store.commitments_mut().record_issued(
+        KnowledgeSubject::Empire(old_empire),
+        Some(old_ship),
+        CommitmentKind::DeployDeliverable,
+        CommitmentTarget::System(old_system),
+        12,
+    );
+    assert!(store.commitments_mut().mark_resolved(resolved_id));
+    assert!(store.commitments_mut().mark_failed(failed_id));
+
+    let saved = SavedKnowledgeStore::from_live(&store);
+    assert_eq!(saved.commitments.entries.len(), 3);
+
+    let bytes = postcard::to_stdvec(&saved).expect("encode SavedKnowledgeStore");
+    let decoded: SavedKnowledgeStore =
+        postcard::from_bytes(&bytes).expect("decode SavedKnowledgeStore");
+
+    let mut map = EntityMap::new();
+    map.insert(old_empire.to_bits(), new_empire);
+    map.insert(old_ship.to_bits(), new_ship);
+    map.insert(old_system.to_bits(), new_system);
+    map.insert(old_planet.to_bits(), new_planet);
+    let mut restored = decoded.into_live(&map);
+
+    assert!(restored.has_active_commitment(
+        KnowledgeSubject::Empire(new_empire),
+        CommitmentKind::Survey,
+        CommitmentTarget::System(new_system),
+    ));
+    assert!(!restored.has_active_commitment(
+        KnowledgeSubject::Empire(new_empire),
+        CommitmentKind::Colonize,
+        CommitmentTarget::Planet(new_planet),
+    ));
+    assert!(!restored.has_active_commitment(
+        KnowledgeSubject::Empire(new_empire),
+        CommitmentKind::DeployDeliverable,
+        CommitmentTarget::System(new_system),
+    ));
+
+    let active = restored
+        .commitments()
+        .get(active_id)
+        .expect("active commitment persisted");
+    assert_eq!(active.subject, KnowledgeSubject::Empire(new_empire));
+    assert_eq!(active.actor, Some(new_ship));
+    assert_eq!(active.target, CommitmentTarget::System(new_system));
+    assert_eq!(active.status, CommitmentStatus::Active);
+    assert_eq!(active.basis_observed_at, Some(7));
+    assert_eq!(active.expected_effect_at, Some(12));
+    assert_eq!(active.expected_resolution_at, Some(20));
+
+    assert_eq!(
+        restored.commitments().get(resolved_id).unwrap().status,
+        CommitmentStatus::Resolved
+    );
+    assert_eq!(
+        restored.commitments().get(failed_id).unwrap().status,
+        CommitmentStatus::Failed
+    );
+
+    let post_load_id = restored.commitments_mut().record_issued(
+        KnowledgeSubject::Empire(new_empire),
+        Some(new_ship),
+        CommitmentKind::Move,
+        CommitmentTarget::System(new_system),
+        30,
+    );
+    assert_eq!(
+        post_load_id.0, 3,
+        "post-load ledger must allocate after the highest persisted id"
+    );
 }
 
 /// `clear_projection` removes the entry and returns it; iter no longer

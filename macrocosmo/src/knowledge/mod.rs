@@ -719,8 +719,7 @@ pub struct KnowledgeStore {
     /// alongside the existing `PendingAssignment` / `PendingAiShipCommand`
     /// / projection markers; Slice 3 resolves entries from arriving
     /// `KnowledgeFact`s; Slice 4 replaces the AI dedup union with
-    /// `commitments.has_active`. Not persisted yet — Slice 8 adds
-    /// `SavedCommitmentLedger`. Marked `#[reflect(ignore)]` because the
+    /// `commitments.has_active`. Marked `#[reflect(ignore)]` because the
     /// nested `HashMap` keys carry tuples of `KnowledgeSubject` which
     /// keeps Bevy's reflection derive simple.
     #[reflect(ignore)]
@@ -844,6 +843,13 @@ impl KnowledgeStore {
 
     pub fn commitments_mut(&mut self) -> &mut commitment::CommitmentLedger {
         &mut self.commitments
+    }
+
+    pub fn replace_commitments_for_persistence(
+        &mut self,
+        commitments: commitment::CommitmentLedger,
+    ) {
+        self.commitments = commitments;
     }
 
     /// Slice 2 convenience: forward the `has_active` check without
@@ -1476,12 +1482,11 @@ fn apply_reconciliation(
 /// when the ledger has no matching entry.
 ///
 /// Slice 4b3 made the commitment ledger the authoritative dedup
-/// source, but [`SavedKnowledgeStore`] (`persistence/savebag.rs`)
-/// does NOT persist the ledger yet (Slice 8 will). After save/load
-/// the legacy markers (`PendingAssignment`, `PendingAiShipCommand`,
-/// `AiCommandOutbox`) come back populated while the ledger is empty
-/// — the post-cut-over `npc_decision_tick` would then happily
-/// re-emit commands for the same in-flight targets.
+/// source. This backfill is now a migration / defensive repair path:
+/// if a pre-ledger or partially migrated state has legacy markers
+/// (`PendingAssignment`, `PendingAiShipCommand`, `AiCommandOutbox`)
+/// but no matching ledger entry, the post-cut-over `npc_decision_tick`
+/// would otherwise re-emit commands for the same in-flight targets.
 ///
 /// This system rebuilds the ledger from the legacy state. It is
 /// idempotent at the `(subject, kind, target)` level: if the ledger

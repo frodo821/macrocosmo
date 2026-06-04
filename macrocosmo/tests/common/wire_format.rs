@@ -10,7 +10,7 @@
 //! bump can add a `build_vN_wire_format_fixture()` next to its peers,
 //! and the per-bump test stays a one-liner.
 //!
-//! Implementation note (2026-04-29, SAVE_VERSION=20):
+//! Implementation note (updated for SAVE_VERSION=21):
 //!
 //! The 19→20 bump split `ShipSnapshotState::InTransit` into
 //! `InTransitSubLight` / `InTransitFTL`. Postcard encodes enum
@@ -23,6 +23,11 @@
 //! `Surveying` has tag-index 3 in v20 because the InTransit split
 //! shifted later variants). A v20 decoder reading those bytes either
 //! mis-tags the variant or reports an `UnexpectedEnd`.
+//!
+//! The 20→21 bump appended `SavedKnowledgeStore::commitments`, another
+//! positional struct change. The strict-reject policy is still covered by
+//! [`forge_current_shape_with_version_field`]; the v19 positional bytes
+//! remain useful as the richer enum-misparse guard.
 //!
 //! The simpler `forge_current_shape_with_version_field()` helper is
 //! retained for the version-mismatch path; it is a sanity check that
