@@ -37,8 +37,8 @@ use macrocosmo::empire::CommsParams;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::{AtSystem, HomeSystem, Planet, StarSystem, SystemAttributes};
 use macrocosmo::knowledge::{
-    KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot, SystemVisibilityMap,
-    SystemVisibilityTier,
+    CommitmentKind, CommitmentStatus, CommitmentTarget, KnowledgeStore, KnowledgeSubject,
+    ObservationSource, SystemKnowledge, SystemSnapshot, SystemVisibilityMap, SystemVisibilityTier,
 };
 use macrocosmo::persistence::{load::load_game_from_reader, save::save_game_to_writer};
 use macrocosmo::player::{Empire, Faction};
@@ -422,6 +422,56 @@ fn count_pending_assignments_for(
         .count()
 }
 
+fn assert_no_duplicate_active_commitments(app: &mut App, empire: Entity, tick: i64) {
+    let store = app
+        .world()
+        .get::<KnowledgeStore>(empire)
+        .expect("empire must carry KnowledgeStore");
+    let subject = KnowledgeSubject::Empire(empire);
+    let mut seen: std::collections::HashMap<(CommitmentKind, CommitmentTarget), usize> =
+        std::collections::HashMap::new();
+    for c in store.commitments().iter() {
+        if c.subject != subject || c.status != CommitmentStatus::Active {
+            continue;
+        }
+        *seen.entry((c.kind, c.target)).or_default() += 1;
+    }
+    let duplicates: Vec<_> = seen
+        .iter()
+        .filter_map(|((kind, target), count)| (*count > 1).then_some((*kind, *target, *count)))
+        .collect();
+    assert!(
+        duplicates.is_empty(),
+        "tick {tick}: active commitment ledger must not contain duplicate \
+         entries for the same (kind,target); duplicates={duplicates:?}",
+    );
+}
+
+fn active_commitment_count(
+    app: &mut App,
+    empire: Entity,
+    kind: CommitmentKind,
+    target: CommitmentTarget,
+) -> usize {
+    let store = app
+        .world()
+        .get::<KnowledgeStore>(empire)
+        .expect("empire must carry KnowledgeStore");
+    let subject = KnowledgeSubject::Empire(empire);
+    store
+        .commitments()
+        .ids_for(subject, kind, target)
+        .iter()
+        .filter(|id| {
+            store
+                .commitments()
+                .get(**id)
+                .map(|c| c.status == CommitmentStatus::Active)
+                .unwrap_or(false)
+        })
+        .count()
+}
+
 /// Extract the `ship_0` Entity from a command's params (used by Rule 3
 /// `colonize_system` to pass the ship the order is for).
 ///
@@ -676,6 +726,74 @@ fn per_region_npc_emits_independently_and_no_cross_region_leak() {
          target_b={})",
         seen_a,
         seen_b,
+    );
+}
+
+#[test]
+fn per_region_npc_1000_tick_ledger_dedup_smoke() {
+    let mut app = test_app();
+    let layout = build_two_region_npc(&mut app);
+
+    for tick in 1..=1000 {
+        advance_time(&mut app, 1);
+        assert_no_duplicate_active_commitments(&mut app, layout.empire, tick);
+
+        for target in [layout.target_a, layout.target_b] {
+            let colonize = active_commitment_count(
+                &mut app,
+                layout.empire,
+                CommitmentKind::Colonize,
+                CommitmentTarget::System(target),
+            );
+            assert!(
+                colonize <= 1,
+                "tick {tick}: target {:?} has duplicate active Colonize \
+                 commitments after Slice 4b3 cut-over: {colonize}",
+                target,
+            );
+
+            let deploy = active_commitment_count(
+                &mut app,
+                layout.empire,
+                CommitmentKind::DeployDeliverable,
+                CommitmentTarget::System(target),
+            );
+            assert!(
+                deploy <= 1,
+                "tick {tick}: target {:?} has duplicate active DeployDeliverable \
+                 commitments after Slice 4b3 cut-over: {deploy}",
+                target,
+            );
+        }
+    }
+
+    // The smoke should have exercised the ledger-authoritative path at
+    // least once. If this fails, the fixture no longer reaches the AI
+    // rules this smoke is intended to cover.
+    let total_active = active_commitment_count(
+        &mut app,
+        layout.empire,
+        CommitmentKind::Colonize,
+        CommitmentTarget::System(layout.target_a),
+    ) + active_commitment_count(
+        &mut app,
+        layout.empire,
+        CommitmentKind::Colonize,
+        CommitmentTarget::System(layout.target_b),
+    ) + active_commitment_count(
+        &mut app,
+        layout.empire,
+        CommitmentKind::DeployDeliverable,
+        CommitmentTarget::System(layout.target_a),
+    ) + active_commitment_count(
+        &mut app,
+        layout.empire,
+        CommitmentKind::DeployDeliverable,
+        CommitmentTarget::System(layout.target_b),
+    );
+    assert!(
+        total_active > 0,
+        "1000-tick smoke did not observe any active colonize/deploy commitments"
     );
 }
 
