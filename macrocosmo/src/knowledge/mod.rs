@@ -1269,7 +1269,6 @@ pub fn reconcile_ship_projections(
         return;
     }
     let now = clock.elapsed;
-    let comms = empire_comms.iter().next().cloned().unwrap_or_default();
     let relays = &relay_network.relays;
 
     // Iterate empires once; for each empire, scan the queue for facts
@@ -1281,6 +1280,7 @@ pub fn reconcile_ship_projections(
         let Some(vantage) = vantages.iter().find(|v| v.faction == empire_entity) else {
             continue;
         };
+        let comms = empire_comms.get(empire_entity).cloned().unwrap_or_default();
 
         for pf in &queue.facts {
             // Pull the (ship, fact-kind data) tuple. Variants without

@@ -1205,7 +1205,8 @@ impl<'w, 's> FactSysParam<'w, 's> {
     ///
     /// Behaviour notes:
     /// * Each vantage gets an independent arrival-time computation
-    ///   ([`compute_fact_arrival`]) keyed on `vantage.ref_pos`.
+    ///   ([`compute_fact_arrival`]) keyed on `vantage.ref_pos` and that
+    ///   faction's own [`CommsParams`].
     /// * The same `EventId` is shared across all vantage pushes — the
     ///   tri-state [`NotifiedEventIds`] map deduplicates the eventual
     ///   banner so the player sees one notification per logical event.
@@ -1242,7 +1243,6 @@ impl<'w, 's> FactSysParam<'w, 's> {
         }
 
         // Snapshot immutable inputs once, before borrowing ResMut fields.
-        let comms = self.empire_comms.iter().next().cloned().unwrap_or_default();
         let relays = self.relay_network.relays.clone();
 
         // K-5 core mirror: push the pending `core:*` record exactly once
@@ -1274,6 +1274,11 @@ impl<'w, 's> FactSysParam<'w, 's> {
             // String fields; multi-vantage scenarios are rare today
             // (player + 0-2 NPCs) so this is acceptable.
             let f = fact.clone();
+            let comms = self
+                .empire_comms
+                .get(v.faction)
+                .cloned()
+                .unwrap_or_default();
             let result = record_fact_or_local(
                 f,
                 origin_pos,
@@ -2125,6 +2130,84 @@ mod tests {
         // Both arrival times present — order matches vantage order.
         assert_eq!(queue.facts[0].arrives_at, 600);
         assert_eq!(queue.facts[1].arrives_at, 3000);
+    }
+
+    #[test]
+    fn record_for_uses_each_factions_comms_params() {
+        let mut app = make_facts_app();
+        app.world_mut().resource_mut::<RelayNetwork>().relays = vec![
+            RelaySnapshot {
+                position: [0.0, 0.0, 0.0],
+                range_ly: 1.0,
+                paired: true,
+            },
+            RelaySnapshot {
+                position: [100.0, 0.0, 0.0],
+                range_ly: 1.0,
+                paired: true,
+            },
+        ];
+
+        let slow_empire = app
+            .world_mut()
+            .spawn((
+                crate::player::Empire {
+                    name: "Slow".into(),
+                },
+                CommsParams::default(),
+            ))
+            .id();
+
+        let mut fast_comms = CommsParams::default();
+        fast_comms.empire_relay_inv_latency.push_modifier(Modifier {
+            id: "test:fast_relay".into(),
+            label: "Fast relay".into(),
+            base_add: SignedAmt::from_f64(10.0),
+            multiplier: SignedAmt::ZERO,
+            add: SignedAmt::ZERO,
+            expires_at: None,
+            on_expire_event: None,
+        });
+        let fast_empire = app
+            .world_mut()
+            .spawn((
+                crate::player::Empire {
+                    name: "Fast".into(),
+                },
+                fast_comms,
+            ))
+            .id();
+
+        let mut state: SystemState<FactSysParam> = SystemState::new(app.world_mut());
+        let mut fact_sys = state.get_mut(app.world_mut());
+
+        let slow = FactionVantage {
+            faction: slow_empire,
+            ref_pos: [100.0, 0.0, 0.0],
+            ruler_aboard: false,
+        };
+        let fast = FactionVantage {
+            faction: fast_empire,
+            ref_pos: [100.0, 0.0, 0.0],
+            ruler_aboard: false,
+        };
+        let result = fact_sys.record_for(survey_fact(), &[slow, fast], [0.0, 0.0, 0.0], 0);
+        assert_eq!(
+            result.0, 600,
+            "return value follows the first vantage's default comms"
+        );
+        assert_eq!(result.1, ObservationSource::Relay);
+
+        state.apply(app.world_mut());
+        let queue = app.world().resource::<PendingFactQueue>();
+        assert_eq!(queue.pending_len(), 2);
+        assert_eq!(queue.facts[0].arrives_at, 600);
+        assert_eq!(
+            queue.facts[1].arrives_at, 300,
+            "second vantage must use its own relay latency modifier"
+        );
+        assert_eq!(queue.facts[0].source, ObservationSource::Relay);
+        assert_eq!(queue.facts[1].source, ObservationSource::Relay);
     }
 
     #[test]
