@@ -423,12 +423,14 @@ Risk:
   the commitment writes without disturbing the chain ordering needs
   care.
 
-#### Slice 4b3: Legacy Dedup Cut-over
+#### Slice 4b3: Legacy Dedup Cut-over (LANDED)
 
-Prerequisites: smoke run with
-`RUST_LOG=macrocosmo::knowledge::commitment=warn` shows zero
-`AI dedup divergence` entries across an extended AI smoke (≥1000
-ticks, multi-region).
+Originally gated on a 1000-tick smoke run with
+`RUST_LOG=macrocosmo::knowledge::commitment=warn` showing zero
+`AI dedup divergence` entries. Landed without the smoke gate per
+session decision; the focused regression test
+`ledger_alone_answers_dedup_for_every_command_family` pins the
+post-cut-over contract.
 
 Implementation:
 

@@ -463,6 +463,19 @@ impl Plugin for KnowledgePlugin {
                 Update,
                 backfill_knowledge_node.after(crate::time_system::advance_game_time),
             )
+            // Followup 3 (review 2026-06-04) — rebuild the
+            // commitment ledger from persisted `PendingAssignment`
+            // / `PendingAiShipCommand` / `AiCommandOutbox` after
+            // save/load so the Slice 4b3 ledger-authoritative dedup
+            // doesn't re-emit in-flight commands. Ordered before
+            // `npc_decision_tick` (Reason set) so the rebuilt
+            // commitments are visible at the next dedup pass.
+            .add_systems(
+                Update,
+                backfill_commitments_from_legacy_markers
+                    .after(crate::time_system::advance_game_time)
+                    .before(crate::ai::npc_decision::npc_decision_tick),
+            )
             // Slice 3 of knowledge redesign — observation-driven
             // commitment resolution. Runs after the projection
             // reconciler so projections and commitments are kept in
@@ -1455,6 +1468,242 @@ fn apply_reconciliation(
     // the "tick the projection was last reconciled" semantics.
     if fact_observed_at > projection.dispatched_at {
         projection.dispatched_at = fact_observed_at;
+    }
+}
+
+/// Followup 3 (review 2026-06-04) — reconstruct ledger entries from
+/// persisted legacy markers / outbox / in-flight ship-command holders
+/// when the ledger has no matching entry.
+///
+/// Slice 4b3 made the commitment ledger the authoritative dedup
+/// source, but [`SavedKnowledgeStore`] (`persistence/savebag.rs`)
+/// does NOT persist the ledger yet (Slice 8 will). After save/load
+/// the legacy markers (`PendingAssignment`, `PendingAiShipCommand`,
+/// `AiCommandOutbox`) come back populated while the ledger is empty
+/// — the post-cut-over `npc_decision_tick` would then happily
+/// re-emit commands for the same in-flight targets.
+///
+/// This system rebuilds the ledger from the legacy state. It is
+/// idempotent at the `(subject, kind, target)` level: if the ledger
+/// already has ANY entry for the triple — Active / Resolved /
+/// Failed — the backfill skips it. Using "any entry" rather than
+/// "any active entry" (Followup 5, review 2026-06-04) prevents the
+/// backfill from flipping a Resolved or Failed commitment back to
+/// Active in cross-tick races between
+/// `resolve_commitments_from_observations` and
+/// `sweep_resolved_assignments` (legacy markers can outlive the
+/// ledger transition by a tick).
+///
+/// Restored commitments carry the ship entity as `actor` when one
+/// is available (Followup 6): `PendingAssignment` uses the marker's
+/// host ship, and `PendingAiShipCommand` uses `pending.ship`. This
+/// is load-bearing for `fail_commitments_for_actor` — a
+/// `ShipDestroyed` arrival can only fail a commitment whose
+/// `actor` matches the destroyed ship. Outbox entries pre-date
+/// ship resolution so they restore with `actor: None`.
+///
+/// [`SavedKnowledgeStore`]: crate::persistence::savebag::SavedKnowledgeStore
+pub fn backfill_commitments_from_legacy_markers(
+    pending_assignments: Query<(Entity, &crate::ai::assignments::PendingAssignment)>,
+    pending_ai_ship_commands: Query<&crate::ai::command_consumer::PendingAiShipCommand>,
+    outbox: Option<Res<crate::ai::command_outbox::AiCommandOutbox>>,
+    empires: Query<Entity, With<Empire>>,
+    planets: Query<&crate::galaxy::Planet>,
+    mut empire_stores: Query<&mut KnowledgeStore, With<Empire>>,
+) {
+    use crate::knowledge::commitment::{CommitmentKind, CommitmentTarget};
+    use crate::knowledge::subject::KnowledgeSubject;
+
+    // PendingAssignment: per-ship Survey / Colonize marker. The
+    // ship entity is the marker's owner — we restore it as the
+    // commitment's `actor` so that a subsequent `ShipDestroyed` /
+    // `ShipMissing` arrival can fail the commitment via
+    // `fail_commitments_for_actor`.
+    for (ship_entity, pa) in &pending_assignments {
+        let subject = KnowledgeSubject::Empire(pa.faction);
+        let kind = CommitmentKind::from(pa.kind);
+        let primary = CommitmentTarget::from(pa.target);
+        let Ok(mut store) = empire_stores.get_mut(pa.faction) else {
+            continue;
+        };
+        // Followup 5 (review 2026-06-04): guard against
+        // resurrecting a terminal commitment. If the ledger has ANY
+        // entry for the triple — Active / Resolved / Failed — skip
+        // it. Otherwise a Resolved/Failed commitment whose legacy
+        // marker hasn't been swept yet (cross-tick race between
+        // `resolve_commitments_from_observations` and
+        // `sweep_resolved_assignments`) would be flipped back to
+        // Active and dedup the target forever post-4b3.
+        if store
+            .commitments()
+            .ids_for(subject, kind, primary)
+            .is_empty()
+        {
+            store.commitments_mut().record_issued(
+                subject,
+                Some(ship_entity),
+                kind,
+                primary,
+                pa.since,
+            );
+        }
+        // Slice 4b1 sibling for colonize_planet: System(parent_system).
+        if let crate::ai::assignments::AssignmentTarget::Planet(planet) = pa.target {
+            if let Ok(p) = planets.get(planet) {
+                let sibling = CommitmentTarget::System(p.system);
+                if store
+                    .commitments()
+                    .ids_for(subject, kind, sibling)
+                    .is_empty()
+                {
+                    store.commitments_mut().record_issued(
+                        subject,
+                        Some(ship_entity),
+                        kind,
+                        sibling,
+                        pa.since,
+                    );
+                }
+            }
+        }
+    }
+
+    // PendingAiShipCommand: in-flight Ruler→ship command holders. The
+    // deploy chain primitives (`load_deliverable` / `reposition` /
+    // `unload_deliverable`) restore as `DeployDeliverable(target_system)`
+    // so the macro-level dedup answer survives the save round-trip.
+    let survey_kind = crate::ai::schema::ids::command::survey_system();
+    let colonize_kind = crate::ai::schema::ids::command::colonize_system();
+    let colonize_planet_kind = crate::ai::schema::ids::command::colonize_planet();
+    let deploy_kind = crate::ai::schema::ids::command::deploy_deliverable();
+    let load_kind = crate::ai::schema::ids::command::load_deliverable();
+    let reposition_kind = crate::ai::schema::ids::command::reposition();
+    let unload_kind = crate::ai::schema::ids::command::unload_deliverable();
+    for pending in &pending_ai_ship_commands {
+        let issuer = pending.issuer_empire;
+        let subject = KnowledgeSubject::Empire(issuer);
+        let Ok(mut store) = empire_stores.get_mut(issuer) else {
+            continue;
+        };
+        let (kind, target) = if pending.kind == survey_kind {
+            (
+                CommitmentKind::Survey,
+                CommitmentTarget::System(pending.target_system),
+            )
+        } else if pending.kind == colonize_kind {
+            (
+                CommitmentKind::Colonize,
+                CommitmentTarget::System(pending.target_system),
+            )
+        } else if pending.kind == colonize_planet_kind {
+            // colonize_planet: write both the planet and the system
+            // sibling (matches Slice 4b1's dispatch-time behavior).
+            if let Some(planet) = pending.target_planet {
+                let planet_target = CommitmentTarget::Planet(planet);
+                if store
+                    .commitments()
+                    .ids_for(subject, CommitmentKind::Colonize, planet_target)
+                    .is_empty()
+                {
+                    store.commitments_mut().record_issued(
+                        subject,
+                        Some(pending.ship),
+                        CommitmentKind::Colonize,
+                        planet_target,
+                        pending.sent_at,
+                    );
+                }
+            }
+            (
+                CommitmentKind::Colonize,
+                CommitmentTarget::System(pending.target_system),
+            )
+        } else if pending.kind == deploy_kind
+            || pending.kind == load_kind
+            || pending.kind == reposition_kind
+            || pending.kind == unload_kind
+        {
+            (
+                CommitmentKind::DeployDeliverable,
+                CommitmentTarget::System(pending.target_system),
+            )
+        } else {
+            continue;
+        };
+        if store
+            .commitments()
+            .ids_for(subject, kind, target)
+            .is_empty()
+        {
+            // Followup 6 (review 2026-06-04): restore `actor` from
+            // `pending.ship` so `ShipDestroyed` / `ShipMissing` can
+            // fail the commitment. For DeployDeliverable restored
+            // from a primitive (`load_deliverable` / `reposition` /
+            // `unload_deliverable`), tying the commitment to that
+            // primitive's ship is correct: if THAT ship is lost,
+            // the deploy chain cannot complete and the parent
+            // should fail. The dispatch-time path still records
+            // `DeployDeliverable` with `actor: None` (it's the
+            // macro before any specific ship is chosen); that's a
+            // pre-decomposition gap and out of scope here.
+            store.commitments_mut().record_issued(
+                subject,
+                Some(pending.ship),
+                kind,
+                target,
+                pending.sent_at,
+            );
+        }
+    }
+
+    // AiCommandOutbox: light-speed outbox for kinds that didn't go
+    // through the dispatch_table at dispatch time. After load the
+    // outbox is repopulated; map per-entry kinds to commitments the
+    // same way the dispatcher would once the entry matures. Outbox
+    // entries don't carry a ship (commands haven't been ship-resolved
+    // yet) so `actor` stays `None`.
+    let Some(outbox) = outbox else {
+        return;
+    };
+    for entry in &outbox.entries {
+        let cmd = &entry.command;
+        // FactionId encodes the empire entity's index, so scan empires
+        // for a matching `to_ai_faction`. Linear in #empires (small).
+        let issuer = empires
+            .iter()
+            .find(|e| crate::ai::convert::to_ai_faction(*e) == cmd.issuer);
+        let Some(issuer) = issuer else {
+            continue;
+        };
+        let subject = KnowledgeSubject::Empire(issuer);
+        let target_system =
+            if let Some(macrocosmo_ai::CommandValue::System(s)) = cmd.params.get("target_system") {
+                crate::ai::convert::from_ai_system(*s)
+            } else {
+                continue;
+            };
+        let kind = if cmd.kind == survey_kind {
+            CommitmentKind::Survey
+        } else if cmd.kind == colonize_kind || cmd.kind == colonize_planet_kind {
+            CommitmentKind::Colonize
+        } else if cmd.kind == deploy_kind {
+            CommitmentKind::DeployDeliverable
+        } else {
+            continue;
+        };
+        let Ok(mut store) = empire_stores.get_mut(issuer) else {
+            continue;
+        };
+        let target = CommitmentTarget::System(target_system);
+        if store
+            .commitments()
+            .ids_for(subject, kind, target)
+            .is_empty()
+        {
+            store
+                .commitments_mut()
+                .record_issued(subject, None, kind, target, entry.sent_at);
+        }
     }
 }
 

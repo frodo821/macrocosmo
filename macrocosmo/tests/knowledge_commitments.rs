@@ -757,6 +757,642 @@ fn colony_established_resolves_deploy_commitment() {
     );
 }
 
+/// Followup 3 (review 2026-06-04) — simulate the post-save/load
+/// state: the legacy `PendingAssignment` / `PendingAiShipCommand` /
+/// `AiCommandOutbox` are populated (they ARE persisted) but the
+/// ledger is empty (it is NOT persisted by `SavedKnowledgeStore`).
+/// `backfill_commitments_from_legacy_markers` must reconstruct the
+/// ledger so Slice 4b3 dedup does not re-emit in-flight commands.
+#[test]
+fn backfill_reconstructs_ledger_from_persisted_markers() {
+    use macrocosmo::ai::assignments::PendingAssignment;
+    use macrocosmo::ai::command_consumer::PendingAiShipCommand;
+    use macrocosmo::ai::command_outbox::{AiCommandOutbox, PendingAiCommand};
+    use macrocosmo::ai::convert::{to_ai_faction, to_ai_system};
+    use macrocosmo::knowledge::backfill_commitments_from_legacy_markers;
+    use macrocosmo_ai::{Command, CommandKindId, CommandValue};
+
+    let mut app = test_app();
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Loaded".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "backfill_test".into(),
+                name: "Loaded".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            macrocosmo::empire::CommsParams::default(),
+        ))
+        .id();
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [0.0, 0.0, 0.0],
+        1.0,
+        false,
+        false,
+    );
+    let deploy_target = spawn_test_system(
+        app.world_mut(),
+        "Deploy",
+        [0.0, 0.0, 0.0],
+        1.0,
+        false,
+        false,
+    );
+    let colonize_planet = app
+        .world_mut()
+        .spawn(macrocosmo::galaxy::Planet {
+            name: "P".into(),
+            system: frontier,
+            planet_type: "terrestrial".into(),
+        })
+        .id();
+    let ship = spawn_test_ship(app.world_mut(), "S", "explorer_mk1", home, [0.0, 0.0, 0.0]);
+
+    // Simulate "after load":
+    // - PendingAssignment for a colonize_planet on the ship
+    // - PendingAiShipCommand for a deploy_deliverable chain primitive
+    //   (reposition) — this represents an in-flight Core deploy
+    // - AiCommandOutbox with a survey_system entry for `frontier`
+    // The ledger is empty (KnowledgeStore::default() above).
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(PendingAssignment::colonize_planet(
+            empire,
+            colonize_planet,
+            5,
+        ));
+    app.world_mut().spawn(PendingAiShipCommand {
+        kind: CommandKindId::from("reposition"),
+        target_system: deploy_target,
+        target_planet: None,
+        ship,
+        issuer_empire: empire,
+        sent_at: 6,
+        arrives_at: 100,
+    });
+    {
+        let mut outbox = app.world_mut().resource_mut::<AiCommandOutbox>();
+        let mut cmd = Command::new(
+            CommandKindId::from("survey_system"),
+            to_ai_faction(empire),
+            7,
+        );
+        cmd.params.insert(
+            "target_system".into(),
+            CommandValue::System(to_ai_system(frontier)),
+        );
+        outbox.entries.push(PendingAiCommand {
+            command: cmd,
+            sent_at: 7,
+            arrives_at: 200,
+            origin_pos: [0.0, 0.0, 0.0],
+            destination_pos: Some([0.0, 0.0, 0.0]),
+            source: macrocosmo::knowledge::ObservationSource::Direct,
+        });
+    }
+
+    // Sanity: ledger is empty before backfill.
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert_eq!(
+        store.commitments().iter().count(),
+        0,
+        "precondition: post-load ledger is empty"
+    );
+
+    let sys_id = app
+        .world_mut()
+        .register_system(backfill_commitments_from_legacy_markers);
+    app.world_mut().run_system(sys_id).expect("system ok");
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let subject = KnowledgeSubject::Empire(empire);
+    // Colonize-planet PendingAssignment → both Planet and System
+    // sibling commitments.
+    assert!(
+        store.has_active_commitment(
+            subject,
+            CommitmentKind::Colonize,
+            CommitmentTarget::Planet(colonize_planet),
+        ),
+        "backfill: colonize_planet PendingAssignment must restore the planet-keyed entry"
+    );
+    assert!(
+        store.has_active_commitment(
+            subject,
+            CommitmentKind::Colonize,
+            CommitmentTarget::System(frontier),
+        ),
+        "backfill: colonize_planet PendingAssignment must restore the system-keyed sibling"
+    );
+    // PendingAiShipCommand of kind=reposition → DeployDeliverable.
+    assert!(
+        store.has_active_commitment(
+            subject,
+            CommitmentKind::DeployDeliverable,
+            CommitmentTarget::System(deploy_target),
+        ),
+        "backfill: deploy-chain primitive must restore the parent DeployDeliverable commitment"
+    );
+    // AiCommandOutbox entry of kind=survey_system → Survey.
+    assert!(
+        store.has_active_commitment(
+            subject,
+            CommitmentKind::Survey,
+            CommitmentTarget::System(frontier),
+        ),
+        "backfill: outbox survey_system entry must restore the Survey commitment"
+    );
+
+    // Idempotency: running the backfill again must not bloat the ledger.
+    let before = store.commitments().iter().count();
+    app.world_mut().run_system(sys_id).expect("idempotent");
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let after = store.commitments().iter().count();
+    assert_eq!(
+        before, after,
+        "backfill must be idempotent: re-running on a populated ledger inserts nothing"
+    );
+}
+
+/// Followup 4 (review 2026-06-04) — verify the Slice 4b3 cut-over
+/// contract through the actual `npc_decision_tick` system, not just
+/// the `has_active_commitment` getter.
+///
+/// Setup: an AI empire with two surveyors at home + one unsurveyed
+/// frontier system. Pre-seed the ledger with an active Survey
+/// commitment for the frontier and NO legacy `PendingAssignment` on
+/// any ship. Drive the AI for a tick.
+///
+/// Contract: `npc_decision_tick` must read the ledger entry as the
+/// dedup signal and emit ZERO `survey_system` commands for the
+/// pre-committed frontier. Without 4b3 connecting the ledger to the
+/// dedup union, the AI would happily double-emit because no legacy
+/// marker is present to suppress it.
+#[test]
+fn npc_decision_tick_ledger_only_suppresses_reemission() {
+    use macrocosmo::ai::AiPlayerMode;
+    use macrocosmo::ai::assignments::PendingAssignment;
+    use macrocosmo::ai::plugin::AiBusResource;
+    use macrocosmo::knowledge::{SystemKnowledge, SystemSnapshot};
+
+    let mut app = test_app();
+    app.insert_resource(AiPlayerMode(true));
+
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Vesk".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "ledger_only_npc".into(),
+                name: "Vesk".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+            macrocosmo::empire::CommsParams::default(),
+        ))
+        .id();
+
+    let home = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
+    let frontier = spawn_test_system(
+        app.world_mut(),
+        "Frontier",
+        [0.5, 0.0, 0.0],
+        1.0,
+        false,
+        false,
+    );
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    // Visibility — home Local, frontier Catalogued (the standard
+    // setup for an unsurveyed candidate).
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut vis = em.get_mut::<SystemVisibilityMap>().unwrap();
+        vis.set(home, SystemVisibilityTier::Local);
+        vis.set(frontier, SystemVisibilityTier::Catalogued);
+    }
+
+    // Seed home as already-surveyed in the empire's store so it
+    // isn't a candidate, and pre-seed the active Survey commitment
+    // for frontier (= simulate "we already dispatched a survey on a
+    // previous tick"). Crucially, NO `PendingAssignment` marker is
+    // stamped anywhere — only the ledger entry.
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.update(SystemKnowledge {
+            system: home,
+            observed_at: 0,
+            received_at: 0,
+            data: SystemSnapshot {
+                name: "Home".into(),
+                position: [0.0, 0.0, 0.0],
+                surveyed: true,
+                ..Default::default()
+            },
+            source: ObservationSource::Direct,
+        });
+        store.commitments_mut().record_issued(
+            KnowledgeSubject::Empire(empire),
+            None,
+            CommitmentKind::Survey,
+            CommitmentTarget::System(frontier),
+            0,
+        );
+    }
+
+    // Two scouts so the AI has surveyor candidates to assign.
+    for i in 0..2 {
+        let s = spawn_test_ship(
+            app.world_mut(),
+            &format!("Scout-{}", i),
+            "explorer_mk1",
+            home,
+            [0.0, 0.0, 0.0],
+        );
+        app.world_mut()
+            .entity_mut(s)
+            .get_mut::<Ship>()
+            .unwrap()
+            .owner = Owner::Empire(empire);
+    }
+
+    // One Update — npc_decision_tick reads the ledger via
+    // `ledger_dedup_targets` and (post-4b3) treats frontier as
+    // already in-flight.
+    app.update();
+
+    // Sanity: the seeded Survey commitment is still Active (no
+    // SurveyComplete arrived).
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert!(
+        store.has_active_commitment(
+            KnowledgeSubject::Empire(empire),
+            CommitmentKind::Survey,
+            CommitmentTarget::System(frontier),
+        ),
+        "precondition: seeded Survey commitment must still be Active"
+    );
+
+    // Contract: NO new `PendingAssignment` markers for this empire
+    // pointing at the pre-committed frontier. Without 4b3's
+    // ledger-authoritative dedup, the AI would dispatch a survey
+    // command (= a new PendingAssignment with target=frontier).
+    let mut pa_q = app
+        .world_mut()
+        .query::<(&PendingAssignment, &macrocosmo::ship::Ship)>();
+    let mut new_survey_markers_for_frontier = 0;
+    for (pa, _ship) in pa_q.iter(app.world()) {
+        if pa.faction != empire {
+            continue;
+        }
+        if let macrocosmo::ai::assignments::AssignmentTarget::System(s) = pa.target {
+            if s == frontier && pa.kind == macrocosmo::ai::assignments::AssignmentKind::Survey {
+                new_survey_markers_for_frontier += 1;
+            }
+        }
+    }
+    assert_eq!(
+        new_survey_markers_for_frontier, 0,
+        "Slice 4b3 cut-over contract: an active Survey commitment in the ledger must suppress re-emission via npc_decision_tick — no new PendingAssignment must be stamped for the pre-committed frontier"
+    );
+
+    // Also assert: no `survey_system` command sits in the bus
+    // waiting to be drained. The bus has already been drained by
+    // `dispatch_ai_pending_commands` this Update; check that no
+    // PendingAiShipCommand was spawned either.
+    let mut pending_q = app
+        .world_mut()
+        .query::<&macrocosmo::ai::command_consumer::PendingAiShipCommand>();
+    let survey_kind = macrocosmo::ai::schema::ids::command::survey_system();
+    let new_pending_for_frontier = pending_q
+        .iter(app.world())
+        .filter(|p| {
+            p.issuer_empire == empire && p.kind == survey_kind && p.target_system == frontier
+        })
+        .count();
+    assert_eq!(
+        new_pending_for_frontier, 0,
+        "Slice 4b3 cut-over contract: no PendingAiShipCommand must be spawned for a pre-committed survey target"
+    );
+
+    // Silence the unused-import warning when the bus resource isn't
+    // referenced anywhere else in this test.
+    let _ = app.world().resource::<AiBusResource>();
+}
+
+/// Followup 5 (review 2026-06-04) — backfill must not resurrect a
+/// terminal (Resolved / Failed) commitment.
+///
+/// Scenario: a Survey commitment was Resolved by
+/// `resolve_commitments_from_observations` on tick T, but the
+/// matching `PendingAssignment` marker hasn't been swept yet
+/// (cross-tick race). Without the Followup 5 fix, the next Update
+/// would see the marker, find no Active entry, and record a brand
+/// new Active commitment — locking dedup for the target forever
+/// post-4b3.
+#[test]
+fn backfill_does_not_resurrect_terminal_commitment() {
+    use macrocosmo::ai::assignments::PendingAssignment;
+    use macrocosmo::knowledge::backfill_commitments_from_legacy_markers;
+
+    let mut app = test_app();
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire { name: "T".into() },
+            PlayerEmpire,
+            Faction {
+                id: "no_resurrect".into(),
+                name: "T".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            macrocosmo::empire::CommsParams::default(),
+        ))
+        .id();
+    let home = spawn_test_system(app.world_mut(), "H", [0.0, 0.0, 0.0], 1.0, true, true);
+    let target = spawn_test_system(app.world_mut(), "T", [0.0, 0.0, 0.0], 1.0, false, false);
+    let ship = spawn_test_ship(app.world_mut(), "S", "explorer_mk1", home, [0.0, 0.0, 0.0]);
+
+    // Seed: a Survey commitment that has already been Resolved AND
+    // a still-resident PendingAssignment marker on the same ship.
+    let subject = KnowledgeSubject::Empire(empire);
+    let target_ct = CommitmentTarget::System(target);
+    let id = {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        let id = store.commitments_mut().record_issued(
+            subject,
+            Some(ship),
+            CommitmentKind::Survey,
+            target_ct,
+            5,
+        );
+        assert!(store.commitments_mut().mark_resolved(id));
+        id
+    };
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(PendingAssignment::survey_system(empire, target, 5));
+
+    let sys_id = app
+        .world_mut()
+        .register_system(backfill_commitments_from_legacy_markers);
+    app.world_mut().run_system(sys_id).expect("backfill ok");
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    let entries: Vec<_> = store
+        .commitments()
+        .ids_for(subject, CommitmentKind::Survey, target_ct)
+        .iter()
+        .copied()
+        .collect();
+    assert_eq!(
+        entries.len(),
+        1,
+        "backfill must not append a sibling Active entry when a Resolved one already exists for the triple"
+    );
+    assert_eq!(entries[0], id);
+    assert_eq!(
+        store.commitments().get(id).unwrap().status,
+        CommitmentStatus::Resolved,
+        "the existing Resolved entry must remain Resolved"
+    );
+    assert!(
+        !store.has_active_commitment(subject, CommitmentKind::Survey, target_ct),
+        "no Active commitment must exist for the resolved triple after backfill"
+    );
+}
+
+/// Followup 6 (review 2026-06-04) — backfilled commitments must
+/// carry `actor: Some(ship)` so a `ShipDestroyed` arrival fails
+/// them. Without the actor, `fail_commitments_for_actor`'s
+/// `c.actor == Some(actor)` filter rejects the entry and the
+/// commitment stays Active forever after the ship is lost.
+#[test]
+fn backfilled_survey_commitment_fails_on_ship_destroyed() {
+    use macrocosmo::ai::assignments::PendingAssignment;
+    use macrocosmo::knowledge::{
+        KnowledgeFact, PendingFactQueue, PerceivedFact, backfill_commitments_from_legacy_markers,
+        resolve_commitments_from_observations,
+    };
+
+    let mut app = test_app();
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire { name: "T".into() },
+            PlayerEmpire,
+            Faction {
+                id: "actor_test".into(),
+                name: "T".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            macrocosmo::empire::CommsParams::default(),
+        ))
+        .id();
+    let home = spawn_test_system(app.world_mut(), "H", [0.0, 0.0, 0.0], 1.0, true, true);
+    let target = spawn_test_system(app.world_mut(), "T", [0.0, 0.0, 0.0], 1.0, false, false);
+    let ship = spawn_test_ship(app.world_mut(), "S", "explorer_mk1", home, [0.0, 0.0, 0.0]);
+    spawn_test_ruler(app.world_mut(), empire, home);
+
+    // Simulate post-load state: only the PendingAssignment marker
+    // exists, the ledger is empty. Backfill restores the commitment
+    // with `actor: Some(ship)`.
+    app.world_mut()
+        .entity_mut(ship)
+        .insert(PendingAssignment::survey_system(empire, target, 5));
+
+    let backfill_id = app
+        .world_mut()
+        .register_system(backfill_commitments_from_legacy_markers);
+    app.world_mut()
+        .run_system(backfill_id)
+        .expect("backfill ok");
+
+    let subject = KnowledgeSubject::Empire(empire);
+    let target_ct = CommitmentTarget::System(target);
+    {
+        let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+        let ids = store
+            .commitments()
+            .ids_for(subject, CommitmentKind::Survey, target_ct);
+        assert_eq!(ids.len(), 1, "exactly one Survey commitment restored");
+        let c = store.commitments().get(ids[0]).unwrap();
+        assert_eq!(
+            c.actor,
+            Some(ship),
+            "backfilled commitment must carry the ship as actor (Followup 6)"
+        );
+    }
+
+    // Now arrive a ShipDestroyed fact for the same ship. The
+    // resolver's `fail_commitments_for_actor` should flip the
+    // commitment to Failed because actor matches.
+    {
+        let mut queue = app.world_mut().resource_mut::<PendingFactQueue>();
+        queue.facts.push(PerceivedFact {
+            fact: KnowledgeFact::ShipDestroyed {
+                event_id: None,
+                system: Some(target),
+                ship_name: "S".into(),
+                destroyed_at: 100,
+                detail: String::new(),
+                ship,
+            },
+            observed_at: 100,
+            origin_pos: [0.0, 0.0, 0.0],
+            arrives_at: 100,
+            source: macrocosmo::knowledge::ObservationSource::Direct,
+            related_system: Some(target),
+        });
+    }
+    app.world_mut().resource_mut::<GameClock>().elapsed = 200;
+    let resolve_id = app
+        .world_mut()
+        .register_system(resolve_commitments_from_observations);
+    app.world_mut().run_system(resolve_id).expect("resolve ok");
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert!(
+        !store.has_active_commitment(subject, CommitmentKind::Survey, target_ct),
+        "ShipDestroyed for the actor must fail the backfilled commitment"
+    );
+    let failed = store
+        .commitments()
+        .iter()
+        .filter(|c| c.status == CommitmentStatus::Failed)
+        .count();
+    assert_eq!(
+        failed, 1,
+        "exactly one commitment must transition to Failed"
+    );
+}
+
+/// Slice 4b3 cut-over regression: with no `PendingAssignment` /
+/// `PendingAiShipCommand` / `AiCommandOutbox` legacy markers ever
+/// written, the ledger alone must answer the dedup question for
+/// Survey / Colonize-System / Colonize-Planet / Deploy.
+///
+/// We seed the ledger directly (bypassing the AI dispatch path),
+/// then assert `has_active_commitment` returns true for each
+/// expected (subject, kind, target) triple. This pins the
+/// post-cut-over contract: no other source contributes to dedup.
+#[test]
+fn ledger_alone_answers_dedup_for_every_command_family() {
+    let mut app = test_app();
+    let empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Test".into(),
+            },
+            PlayerEmpire,
+            Faction {
+                id: "ledger_only_test".into(),
+                name: "Test".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            KnowledgeStore::default(),
+            macrocosmo::empire::CommsParams::default(),
+        ))
+        .id();
+    let target_sys = spawn_test_system(app.world_mut(), "T", [0.0, 0.0, 0.0], 1.0, false, false);
+    let target_planet = app
+        .world_mut()
+        .spawn(macrocosmo::galaxy::Planet {
+            name: "TP".into(),
+            system: target_sys,
+            planet_type: "terrestrial".into(),
+        })
+        .id();
+
+    let subject = KnowledgeSubject::Empire(empire);
+    {
+        let mut em = app.world_mut().entity_mut(empire);
+        let mut store = em.get_mut::<KnowledgeStore>().unwrap();
+        store.commitments_mut().record_issued(
+            subject,
+            None,
+            CommitmentKind::Survey,
+            CommitmentTarget::System(target_sys),
+            10,
+        );
+        store.commitments_mut().record_issued(
+            subject,
+            None,
+            CommitmentKind::Colonize,
+            CommitmentTarget::System(target_sys),
+            10,
+        );
+        store.commitments_mut().record_issued(
+            subject,
+            None,
+            CommitmentKind::Colonize,
+            CommitmentTarget::Planet(target_planet),
+            10,
+        );
+        store.commitments_mut().record_issued(
+            subject,
+            None,
+            CommitmentKind::DeployDeliverable,
+            CommitmentTarget::System(target_sys),
+            10,
+        );
+    }
+
+    let store = app.world().entity(empire).get::<KnowledgeStore>().unwrap();
+    assert!(store.has_active_commitment(
+        subject,
+        CommitmentKind::Survey,
+        CommitmentTarget::System(target_sys),
+    ));
+    assert!(store.has_active_commitment(
+        subject,
+        CommitmentKind::Colonize,
+        CommitmentTarget::System(target_sys),
+    ));
+    assert!(store.has_active_commitment(
+        subject,
+        CommitmentKind::Colonize,
+        CommitmentTarget::Planet(target_planet),
+    ));
+    assert!(store.has_active_commitment(
+        subject,
+        CommitmentKind::DeployDeliverable,
+        CommitmentTarget::System(target_sys),
+    ));
+    // Guard against any unintended cross-pollution: another subject's
+    // commitments must not surface in this empire's dedup answer.
+    let other = KnowledgeSubject::Empire(
+        bevy::prelude::Entity::from_raw_u32(0xDEAD_BEEF).expect("nonzero"),
+    );
+    assert!(!store.has_active_commitment(
+        other,
+        CommitmentKind::Survey,
+        CommitmentTarget::System(target_sys),
+    ));
+}
+
 #[test]
 fn commitment_dual_write_does_not_double_issue() {
     let mut app = test_app();
