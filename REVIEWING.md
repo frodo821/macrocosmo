@@ -1,6 +1,6 @@
 # Re-review: Knowledge Redesign Slices 1-4
 
-Date: 2026-05-29
+Date: 2026-06-04
 
 Scope reviewed:
 
@@ -15,13 +15,8 @@ Scope reviewed:
 
 ## Findings
 
-No remaining blocking implementation gap was found beyond the already
-planned Slice 4b3 cut-over:
-
-- keep the legacy dedup union active for now
-- run an extended smoke with `AI dedup divergence` logging enabled
-- only then remove `outbox_*_per_empire`, `pending_assignments`, and
-  `pending_ai_ship_commands` scans from the authoritative dedup path
+No remaining blocking implementation gap was found in the completed
+Slices 1-4 path after the Slice 4b3 cut-over.
 
 ## Previously Reported Issues
 
@@ -35,11 +30,17 @@ Resolved:
 - `Colonize(Planet)` dispatch now writes both planet-keyed and system-keyed commitments.
 - `DeployDeliverable(System)` commitments are recorded before macro decomposition and resolved by `ColonyEstablished`.
 
+Completed after the original review:
+
+- Slice 4b3 legacy dedup cut-over completed; the authoritative dedup path now uses the commitment ledger.
+- Added a 1000-tick per-region NPC smoke that asserts no duplicate active commitments.
+- Commitment ledger persistence landed in `SavedKnowledgeStore::commitments`; `SAVE_VERSION` is now 21 and the minimal fixture was regenerated.
+- Fact arrival and `reconcile_ship_projections` now use the current faction / empire's own `CommsParams`.
+
 Still intentionally deferred:
 
-- Slice 4b3 legacy dedup cut-over, gated on a 1000-tick smoke with zero divergence.
-- `reconcile_ship_projections` keeps the pre-existing single-`CommsParams` shortcut; migrate it with the broader fact-arrival cleanup so projection and commitment resolution stay aligned.
-- Commitment persistence is still deferred to the planned persistence slice.
+- Slice 5: tighten the perception facade and remove remaining implicit realtime fallback ambiguity.
+- Slice 6+: ship belief materialization, merge skeleton, and later module split once semantic boundaries stabilize.
 
 ## Design Note
 
