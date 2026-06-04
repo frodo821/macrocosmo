@@ -7,8 +7,8 @@ pub mod unlocks;
 use bevy::prelude::*;
 use std::collections::HashSet;
 
-use crate::amount::Amt;
 use crate::modifier::ModifiedValue;
+use macrocosmo_core::amount::Amt;
 
 // Re-export everything for backward compatibility
 pub use effects::{
@@ -635,8 +635,8 @@ pub fn sync_authority_params_from_balance(
 #[cfg(test)]
 mod game_balance_tests {
     use super::*;
-    use crate::amount::SignedAmt;
     use crate::modifier::Modifier;
+    use macrocosmo_core::amount::SignedAmt;
 
     fn make_mult_modifier(id: &str, mult: SignedAmt) -> Modifier {
         Modifier {

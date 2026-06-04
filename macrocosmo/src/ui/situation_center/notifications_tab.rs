@@ -26,7 +26,7 @@
 //! (an `on("*@observed", fn)` wildcard subscriber) calling the
 //! `push_notification { event_id, severity, message, source }` Lua API.
 //! The Rust-side drain system (`drain_pending_esc_notifications` in
-//! `crate::scripting::esc_notifications`) parses those entries and
+//! `crate::interactions::esc_notifications`) parses those entries and
 //! calls [`EscNotificationQueue::push`].
 //!
 //! [`EscNotificationQueue::push`] is also reachable from Rust for tests
@@ -48,6 +48,7 @@ use std::sync::Mutex;
 
 use bevy::prelude::*;
 use bevy_egui::egui;
+use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
 use super::state::TabState;
 use super::tab::{SituationTab, TabBadge, TabMeta};
@@ -296,37 +297,172 @@ impl SituationTab for NotificationsTab {
             return;
         };
 
-        render_filter_toolbar(ui, state);
-        ui.separator();
-
-        if queue.items.is_empty() {
-            ui.label(egui::RichText::new("(no notifications)").weak());
-            return;
+        if let Some(engine) = world.get_resource::<crate::scripting::ScriptEngine>() {
+            match render_notifications_lua(ui, engine.lua(), queue, state) {
+                Ok(()) => return,
+                Err(err) => {
+                    ui.label(
+                        egui::RichText::new(format!("Lua notification UI failed: {err}")).weak(),
+                    );
+                    ui.separator();
+                }
+            }
         }
 
-        ui.horizontal(|ui| {
-            if ui.button("Ack all").clicked() {
-                enqueue_pending_ack(PendingAck::All);
-            }
-            ui.label(egui::RichText::new(format!("{} unacked", queue.total_unacked())).weak());
-        });
-        ui.separator();
-
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, true])
-            .max_height(360.0)
-            .show(ui, |ui| {
-                for notif in &queue.items {
-                    if !passes_filter(notif, state) {
-                        continue;
-                    }
-                    render_notification_row(ui, notif);
-                }
-            });
+        render_notifications_legacy(ui, queue, state);
     }
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+fn render_notifications_lua(
+    ui: &mut egui::Ui,
+    lua: &mlua::Lua,
+    queue: &EscNotificationQueue,
+    state: &mut TabState,
+) -> mlua::Result<()> {
+    let registry = parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get_by_tag("esc_tab", NotificationsTab::ID) else {
+        return Err(mlua::Error::RuntimeError(format!(
+            "Lua UI fragment tagged esc_tab='{}' is not registered",
+            NotificationsTab::ID
+        )));
+    };
+
+    let view = notification_view_table(lua, queue, state)?;
+    let node = fragment.inflate(lua, view)?;
+    let mut renderer = UiDslRenderer::default();
+    let output = renderer.render(ui, &node);
+    for command in output.clicked_commands {
+        apply_lua_notification_command(&command, state);
+    }
+    Ok(())
+}
+
+fn render_notifications_legacy(
+    ui: &mut egui::Ui,
+    queue: &EscNotificationQueue,
+    state: &mut TabState,
+) {
+    render_filter_toolbar(ui, state);
+    ui.separator();
+
+    if queue.items.is_empty() {
+        ui.label(egui::RichText::new("(no notifications)").weak());
+        return;
+    }
+
+    ui.horizontal(|ui| {
+        if ui.button("Ack all").clicked() {
+            enqueue_pending_ack(PendingAck::All);
+        }
+        ui.label(egui::RichText::new(format!("{} unacked", queue.total_unacked())).weak());
+    });
+    ui.separator();
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, true])
+        .max_height(360.0)
+        .show(ui, |ui| {
+            for notif in &queue.items {
+                if !passes_filter(notif, state) {
+                    continue;
+                }
+                render_notification_row(ui, notif);
+            }
+        });
+}
+
+fn notification_view_table(
+    lua: &mlua::Lua,
+    queue: &EscNotificationQueue,
+    state: &TabState,
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    view.set("unacked_count", queue.total_unacked())?;
+    view.set("hide_acked", state.filter == HIDE_ACKED_SENTINEL)?;
+    view.set(
+        "severity_filter",
+        state
+            .severity_floor
+            .map(severity_tag)
+            .unwrap_or("all")
+            .to_string(),
+    )?;
+
+    let notifications = lua.create_table()?;
+    let mut index = 1;
+    for notif in &queue.items {
+        if !passes_filter(notif, state) {
+            continue;
+        }
+        notifications.set(index, notification_to_lua(lua, notif)?)?;
+        index += 1;
+    }
+    view.set("notifications", notifications)?;
+    Ok(view)
+}
+
+fn notification_to_lua(lua: &mlua::Lua, notif: &Notification) -> mlua::Result<mlua::Table> {
+    let table = lua.create_table()?;
+    table.set("id", notif.id)?;
+    table.set("severity", severity_tag(notif.severity))?;
+    table.set("severity_label", severity_label(notif.severity))?;
+    table.set("message", notif.message.clone())?;
+    table.set("timestamp", notif.timestamp)?;
+    table.set("acked", notif.acked)?;
+    table.set("unacked_count", notif.unacked_count())?;
+    table.set("tree_len", notif.tree_len())?;
+
+    let children = lua.create_table()?;
+    for (index, child) in notif.children.iter().enumerate() {
+        children.set(index + 1, notification_to_lua(lua, child)?)?;
+    }
+    table.set("children", children)?;
+    Ok(table)
+}
+
+fn apply_lua_notification_command(command: &str, state: &mut TabState) -> bool {
+    match command {
+        "esc.notifications.ack_all" => {
+            enqueue_pending_ack(PendingAck::All);
+            true
+        }
+        "esc.notifications.filter.all" => {
+            state.severity_floor = None;
+            true
+        }
+        "esc.notifications.filter.info" => {
+            state.severity_floor = Some(Severity::Info);
+            true
+        }
+        "esc.notifications.filter.warn" => {
+            state.severity_floor = Some(Severity::Warn);
+            true
+        }
+        "esc.notifications.filter.critical" => {
+            state.severity_floor = Some(Severity::Critical);
+            true
+        }
+        "esc.notifications.hide_acked.toggle" => {
+            state.filter = if state.filter == HIDE_ACKED_SENTINEL {
+                String::new()
+            } else {
+                HIDE_ACKED_SENTINEL.into()
+            };
+            true
+        }
+        _ => {
+            if let Some(raw_id) = command.strip_prefix("esc.notifications.ack:")
+                && let Ok(id) = raw_id.parse::<NotificationId>()
+            {
+                enqueue_pending_ack(PendingAck::Single(id));
+                return true;
+            }
+            false
+        }
     }
 }
 
@@ -463,6 +599,14 @@ fn severity_label(severity: Severity) -> &'static str {
         Severity::Info => "INFO",
         Severity::Warn => "WARN",
         Severity::Critical => "CRIT",
+    }
+}
+
+fn severity_tag(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Info => "info",
+        Severity::Warn => "warn",
+        Severity::Critical => "critical",
     }
 }
 
@@ -675,6 +819,84 @@ mod tests {
     }
 
     #[test]
+    fn lua_command_router_updates_filters_and_enqueues_acks() {
+        let _guard = acquire_test_ack_serial();
+        let _ = drain_pending_acks_for_tests();
+
+        let mut state = TabState::default();
+        assert!(apply_lua_notification_command(
+            "esc.notifications.filter.warn",
+            &mut state
+        ));
+        assert_eq!(state.severity_floor, Some(Severity::Warn));
+
+        assert!(apply_lua_notification_command(
+            "esc.notifications.filter.all",
+            &mut state
+        ));
+        assert_eq!(state.severity_floor, None);
+
+        assert!(apply_lua_notification_command(
+            "esc.notifications.hide_acked.toggle",
+            &mut state
+        ));
+        assert_eq!(state.filter, HIDE_ACKED_SENTINEL);
+        assert!(apply_lua_notification_command(
+            "esc.notifications.hide_acked.toggle",
+            &mut state
+        ));
+        assert!(state.filter.is_empty());
+
+        assert!(apply_lua_notification_command(
+            "esc.notifications.ack:42",
+            &mut state
+        ));
+        assert!(apply_lua_notification_command(
+            "esc.notifications.ack_all",
+            &mut state
+        ));
+        assert_eq!(
+            drain_pending_acks_for_tests(),
+            vec![PendingAck::Single(42), PendingAck::All]
+        );
+        assert!(!apply_lua_notification_command(
+            "esc.notifications.unknown",
+            &mut state
+        ));
+    }
+
+    #[test]
+    fn lua_view_table_contains_filtered_notification_tree() {
+        let lua = mlua::Lua::new();
+        let mut queue = EscNotificationQueue::default();
+        let mut root = notif(Severity::Critical, false, "root");
+        root.children.push(notif(Severity::Info, true, "child"));
+        let root_id = match queue.push(root, None, None) {
+            PushOutcome::Pushed(id) => id,
+            _ => unreachable!(),
+        };
+        queue.push(notif(Severity::Info, true, "acked"), None, None);
+
+        let mut state = TabState::default();
+        state.filter = HIDE_ACKED_SENTINEL.into();
+
+        let view = notification_view_table(&lua, &queue, &state).expect("view table");
+        assert_eq!(view.get::<usize>("unacked_count").unwrap(), 1);
+        assert!(view.get::<bool>("hide_acked").unwrap());
+        assert_eq!(view.get::<String>("severity_filter").unwrap(), "all");
+
+        let notifications: mlua::Table = view.get("notifications").unwrap();
+        assert_eq!(notifications.len().unwrap(), 1);
+        let root_view: mlua::Table = notifications.get(1).unwrap();
+        assert_eq!(root_view.get::<NotificationId>("id").unwrap(), root_id);
+        assert_eq!(root_view.get::<String>("severity").unwrap(), "critical");
+        assert_eq!(root_view.get::<String>("severity_label").unwrap(), "CRIT");
+        assert_eq!(root_view.get::<usize>("unacked_count").unwrap(), 1);
+        let children: mlua::Table = root_view.get("children").unwrap();
+        assert_eq!(children.len().unwrap(), 1);
+    }
+
+    #[test]
     fn push_outcome_bumps_last_id() {
         let mut q = EscNotificationQueue::default();
         assert_eq!(q.last_id(), 0);
@@ -712,14 +934,14 @@ mod tests {
         world.insert_resource(queue);
         let mut system = bevy::ecs::system::IntoSystem::into_system(apply_pending_acks_system);
         system.initialize(&mut world);
-        system.run((), &mut world);
+        let _ = system.run((), &mut world);
 
         let q = world.resource::<EscNotificationQueue>();
         let acked_ids: Vec<_> = q.items.iter().filter(|n| n.acked).map(|n| n.id).collect();
         assert_eq!(acked_ids, vec![id1]);
 
         enqueue_pending_ack(PendingAck::All);
-        system.run((), &mut world);
+        let _ = system.run((), &mut world);
         let q = world.resource::<EscNotificationQueue>();
         assert_eq!(q.total_unacked(), 0);
     }

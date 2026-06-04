@@ -6,7 +6,6 @@
 //! deferred to Phase B/C and not exercised here.
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{Colony, LastProductionTick, ResourceStockpile};
 use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
@@ -17,6 +16,7 @@ use macrocosmo::persistence::{
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::scripting::game_rng::GameRng;
 use macrocosmo::time_system::{GameClock, GameSpeed};
+use macrocosmo_core::amount::Amt;
 use rand::Rng;
 
 /// Build a minimal headless world populated with a tiny galaxy, a colony, a

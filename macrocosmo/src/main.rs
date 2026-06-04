@@ -1,48 +1,10 @@
-mod ai;
-mod amount;
-mod casus_belli;
-mod choice;
-mod colony;
-mod communication;
-mod components;
-mod condition;
-mod deep_space;
-mod effect;
-mod empire;
-mod event_system;
-mod events;
-mod faction;
-mod galaxy;
-mod game_state;
-mod input;
-mod knowledge;
-mod modifier;
-mod negotiation;
-mod notifications;
-mod observer;
-mod persistence;
-mod physics;
-mod player;
-mod profiling;
-mod reflect_registration;
-mod region;
-#[cfg(feature = "remote")]
-mod remote;
-mod scripting;
-mod setup;
-mod ship;
-mod ship_design;
-mod species;
-mod technology;
-mod time_system;
-mod ui;
-mod visualization;
-
 use bevy::prelude::*;
 
-use ai::AiPlayerMode;
-use game_state::{LoadSaveRequest, NewGameParams};
-use observer::{CliArgs, ObserverMode, ObserverModeKind, ObserverPlugin, RngSeed};
+use macrocosmo::ai::AiPlayerMode;
+use macrocosmo::game_state::{LoadSaveRequest, NewGameParams};
+use macrocosmo::interactions::InteractionsPlugin;
+use macrocosmo::observer::{CliArgs, ObserverMode, ObserverModeKind, RngSeed};
+use macrocosmo::simulation::SimulationPlugin;
 
 fn main() {
     let cli = CliArgs::parse();
@@ -118,54 +80,7 @@ fn main() {
         }),
         ..default()
     }))
-    .add_plugins((
-        // #347: Keybinding registry must be inserted before any plugin
-        // that registers a keybind-driven system, so the registry is
-        // available when those systems first run.
-        input::KeybindingPlugin,
-        time_system::GameTimePlugin,
-        galaxy::GalaxyPlugin,
-        player::PlayerPlugin,
-        communication::CommunicationPlugin,
-        visualization::VisualizationPlugin,
-        knowledge::KnowledgePlugin,
-        ship::ShipPlugin,
-        colony::ColonyPlugin,
-        scripting::ScriptingPlugin,
-        technology::TechnologyPlugin,
-        event_system::EventSystemPlugin,
-        events::EventsPlugin,
-        species::SpeciesPlugin,
-        ship_design::ShipDesignPlugin,
-    ))
-    .add_plugins((
-        deep_space::DeepSpacePlugin,
-        setup::GameSetupPlugin,
-        notifications::NotificationsPlugin,
-        faction::FactionRelationsPlugin,
-        choice::ChoicesPlugin,
-        ai::AiPlugin,
-        casus_belli::CasusBelliPlugin,
-        ObserverPlugin,
-        // BRP type-registration: every Reflect Component / Resource
-        // is registered here so `world.query` returns full results
-        // when `--features remote` is enabled. See
-        // `src/reflect_registration.rs` for the details.
-        reflect_registration::ReflectRegistrationPlugin,
-    ))
-    .add_plugins(ui::UiPlugin);
-
-    #[cfg(feature = "remote")]
-    {
-        app.add_plugins(remote::remote_plugin());
-        app.add_plugins(bevy::remote::http::RemoteHttpPlugin::default());
-        app.init_resource::<remote::PendingInputReleases>();
-        app.init_resource::<remote::ScreenshotBuffer>();
-        app.init_resource::<ui::UiElementRegistry>();
-        app.add_systems(PreUpdate, remote::release_pending_inputs);
-        app.add_systems(PreUpdate, remote::clear_ui_element_registry);
-        info!("BRP remote server enabled on localhost:15702");
-    }
+    .add_plugins((SimulationPlugin, InteractionsPlugin));
 
     app.run();
 }

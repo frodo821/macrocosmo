@@ -20,9 +20,8 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::ai::assignments::{AssignmentKind, AssignmentTarget, PendingAssignment};
-use crate::ai::command_outbox::AiCommandOutbox;
-use crate::ai::convert::{from_ai_system, to_ai_faction};
+use crate::ai::assignments::PendingAssignment;
+use crate::ai::convert::to_ai_faction;
 use crate::ai::plugin::AiBusResource;
 use crate::ai::schema::ids::command as cmd_ids;
 use crate::knowledge::KnowledgeStore;
@@ -30,27 +29,32 @@ use crate::player::{AboardShip, Empire, EmpireRuler, Faction, PlayerEmpire, Rule
 use crate::technology::ResearchQueue;
 use crate::time_system::GameClock;
 
-/// #468 PR-1: bundle of dedup-related queries / resources used by
-/// `npc_decision_tick` to avoid double-emitting `survey_system` /
-/// `colonize_system` commands. Centralised in one `SystemParam` so the
-/// outer function stays under Bevy's 16-param limit even as more
-/// dedup sources land (PR-2/3 will add migrated-kind ship pipelines).
+/// Bundle of dedup-related queries used by `npc_decision_tick`.
+///
+/// Slice 4b3 of the knowledge redesign collapsed this to a single
+/// field: the per-empire dedup target sets are derived from the
+/// commitment ledger directly, and the only remaining marker-side
+/// scan is `pending_assignments` for the per-ship "is this ship
+/// already busy" filter. The fields removed by Slice 4b3 were:
+///
+/// * `outbox` (`AiCommandOutbox`) — colonize_system / survey_system /
+///   deploy_deliverable were never written to the outbox in the
+///   first place (they're dispatch_table kinds or eagerly
+///   decomposed), so the scan rarely fired and is no longer needed
+///   for the dedup union.
+/// * `pending_ai_ship_commands` — every dispatch_table strategy
+///   already records a commitment alongside the
+///   `PendingAiShipCommand` spawn, and the ledger has matching
+///   `DeployDeliverable` coverage for the decomposed primitives.
+/// * `planet_systems` — Slice 4b1 sibling-writes a `System` entry
+///   alongside the `Planet` entry at dispatch, so planet → system
+///   resolution at dedup time is no longer necessary.
 #[derive(SystemParam)]
 pub struct DedupParams<'w, 's> {
-    /// Per-faction in-flight assignment markers (handler-resolved path).
+    /// Per-faction in-flight assignment markers (used only for the
+    /// per-ship busyness filter; target-set construction is done off
+    /// the commitment ledger).
     pub pending_assignments: Query<'w, 's, (Entity, &'static PendingAssignment)>,
-    /// Light-speed outbox for kinds that still flow through it
-    /// (colonize_system + non-survey ship kinds in PR-1).
-    pub outbox: Res<'w, AiCommandOutbox>,
-    /// #468 PR-1: `survey_system` lives here (one entry per ship) for the
-    /// Ruler→ship courier window. PR-2/3 will expand coverage.
-    pub pending_ai_ship_commands:
-        Query<'w, 's, &'static crate::ai::command_consumer::PendingAiShipCommand>,
-    /// #468 PR-3: planet → system resolver, used by the
-    /// `AssignmentTarget::Planet` arm of the marker scan to fold
-    /// `colonize_planet` assignments into the per-empire
-    /// `pending_colonize_targets` set keyed on system.
-    pub planet_systems: Query<'w, 's, &'static crate::galaxy::Planet>,
 }
 
 /// Hotfix-3: bundle of queries / resources used to drive the
@@ -469,10 +473,10 @@ pub struct RegionShortInputs {
     /// `SystemBuildingQueue` buildings). Consumed by Rule 5b's
     /// resource gate (`ShortGameAdapter::can_afford_building`).
     /// Saturating subtract: clamps to zero when pending > stockpile.
-    pub current_minerals: crate::amount::Amt,
+    pub current_minerals: macrocosmo_core::amount::Amt,
     /// Hotfix-3 + #529 A migration: pending-adjusted sum of
     /// `ResourceStockpile.energy`. See [`Self::current_minerals`].
-    pub current_energy: crate::amount::Amt,
+    pub current_energy: macrocosmo_core::amount::Amt,
 }
 
 /// Rank candidate unsurveyed systems by "accessibility" — a raw-distance
@@ -772,123 +776,19 @@ pub fn npc_decision_tick(
     // that have already arrived; a command emitted on tick N with a
     // 30-hex light delay sits in `outbox.entries` until tick N+30,
     // and without this scan a `mid_cadence=2` `npc_decision_tick`
-    // would happily re-fire onto the same target every other tick
-    // for the entire delay window. The scan is a single pass over
-    // outbox entries (typically small — only commands currently in
-    // flight), so the cost is bounded and amortised across all
-    // empires in the loop below.
-    let survey_kind = cmd_ids::survey_system();
-    let colonize_kind = cmd_ids::colonize_system();
-    // #444 hotfix: also dedup `deploy_deliverable` per-empire so Rule 3.5
-    // doesn't re-emit onto the same frontier target every mid_cadence
-    // tick while the previous emit is still in flight (Ruler → ship
-    // courier window) or sitting in `AiCommandOutbox`.
-    let deploy_kind = cmd_ids::deploy_deliverable();
-    let mut outbox_survey_per_empire: std::collections::HashMap<
-        Entity,
-        std::collections::HashSet<Entity>,
-    > = std::collections::HashMap::new();
-    let mut outbox_colonize_per_empire: std::collections::HashMap<
-        Entity,
-        std::collections::HashSet<Entity>,
-    > = std::collections::HashMap::new();
-    let mut outbox_deploy_per_empire: std::collections::HashMap<
-        Entity,
-        std::collections::HashSet<Entity>,
-    > = std::collections::HashMap::new();
-    // The maps are mutated only inside the next block (single pass over
-    // outbox.entries); the empire loop below reads via shared `&` only.
-    if !dedup.outbox.entries.is_empty() {
-        // Build issuer FactionId → empire Entity once (faction_id
-        // encodes only `Entity::index()`, see `to_ai_faction`); then
-        // each entry is an O(1) hashmap lookup instead of an O(empires)
-        // scan.
-        let mut faction_to_empire: std::collections::HashMap<macrocosmo_ai::FactionId, Entity> =
-            std::collections::HashMap::new();
-        for (entity, _, _, _) in &npcs {
-            faction_to_empire.insert(to_ai_faction(entity), entity);
-        }
-        for entry in &dedup.outbox.entries {
-            let cmd = &entry.command;
-            let Some(&empire_entity) = faction_to_empire.get(&cmd.issuer) else {
-                continue;
-            };
-            let target_set = if cmd.kind.as_str() == survey_kind.as_str() {
-                Some(&mut outbox_survey_per_empire)
-            } else if cmd.kind.as_str() == colonize_kind.as_str() {
-                Some(&mut outbox_colonize_per_empire)
-            } else if cmd.kind.as_str() == deploy_kind.as_str() {
-                Some(&mut outbox_deploy_per_empire)
-            } else {
-                None
-            };
-            let Some(target_set) = target_set else {
-                continue;
-            };
-            if let Some(macrocosmo_ai::CommandValue::System(s)) = cmd.params.get("target_system") {
-                target_set
-                    .entry(empire_entity)
-                    .or_default()
-                    .insert(from_ai_system(*s));
-            }
-        }
-    }
-
-    // #468 PR-1/PR-2/PR-3: union in `PendingAiShipCommand` entries for
-    // the same dedup pass. With survey_system + colonize_system +
-    // colonize_planet off `AiCommandOutbox`, this is the only place
-    // the npc_decision tick can see in-flight survey / colonize during
-    // the Ruler→ship courier window.
-    //
-    // `reposition` / `blockade` / `attack_target` / `move_ruler` /
-    // `load_deliverable` / `unload_deliverable` holders also exist but
-    // they don't participate in a per-empire dedup map — movement /
-    // boarding / cargo-shuffling orders aren't "decisions" the AI
-    // remembers it already made, so we ignore them here (the
-    // marker-less dispatch path means there's no double-dispatch
-    // problem to dedup against in the first place).
-    //
-    // PR-3 folds `colonize_planet` into the same per-empire colonize
-    // dedup set as `colonize_system`: both kinds say "this empire is
-    // already trying to colonize that system" and a second emission
-    // is exactly the leak we want to suppress.
-    let colonize_planet_kind = cmd_ids::colonize_planet();
-    // #444 hotfix: track in-flight `load_deliverable` / `reposition` /
-    // `unload_deliverable` per empire so a sibling tick doesn't
-    // double-deploy onto the same frontier target while the courier
-    // chain is still resolving. The chain is the primitives that
-    // `deploy_deliverable` decomposes into; if any of them is
-    // in-flight, the empire is already committing a Core to that
-    // system. `build_deliverable` lives in `BuildQueue` not
-    // `PendingAiShipCommand`, so the dedup map relies on the outbox
-    // scan above + the `colonize_planet` arm here (the macro's
-    // tail) to cover that phase.
-    let load_kind = cmd_ids::load_deliverable();
-    let reposition_kind = cmd_ids::reposition();
-    let unload_kind = cmd_ids::unload_deliverable();
-    for pending in &dedup.pending_ai_ship_commands {
-        let kind_str = pending.kind.as_str();
-        if kind_str == survey_kind.as_str() {
-            outbox_survey_per_empire
-                .entry(pending.issuer_empire)
-                .or_default()
-                .insert(pending.target_system);
-        } else if kind_str == colonize_kind.as_str() || kind_str == colonize_planet_kind.as_str() {
-            outbox_colonize_per_empire
-                .entry(pending.issuer_empire)
-                .or_default()
-                .insert(pending.target_system);
-        } else if kind_str == deploy_kind.as_str()
-            || kind_str == load_kind.as_str()
-            || kind_str == reposition_kind.as_str()
-            || kind_str == unload_kind.as_str()
-        {
-            outbox_deploy_per_empire
-                .entry(pending.issuer_empire)
-                .or_default()
-                .insert(pending.target_system);
-        }
-    }
+    // Slice 4b3 of knowledge redesign — the per-empire dedup target
+    // sets are now derived entirely from the commitment ledger
+    // (`ledger_dedup_targets` below). The legacy `AiCommandOutbox` /
+    // `PendingAiShipCommand` scans that previously seeded
+    // `outbox_*_per_empire` HashMaps are gone — every AI command
+    // family that needs dedup (Survey / Colonize-System /
+    // Colonize-Planet / DeployDeliverable) now records a commitment
+    // at dispatch time (see `record_pa_commitment` and
+    // `record_deploy_commitment` in `ai/command_outbox.rs`). The
+    // ship-busyness filter (`pending_assigned_ships`) below still
+    // reads `PendingAssignment` because that's the most direct way
+    // to ask "is this specific ship already carrying a marker", and
+    // the markers are still emitted alongside the ledger writes.
 
     // #449 PR2b: per-MidAgent loop. We resolve each MidAgent →
     // Region → empire entity, then run the rule pipeline scoped to
@@ -936,17 +836,26 @@ pub fn npc_decision_tick(
         // we hold the agent by `&MidAgent` rather than `&mut`.
         let _ = mid_agent_entity;
 
-        // Round 9 PR #2 Step 4: pre-collect this faction's in-flight
-        // assignments so we can filter both ship and target candidates.
-        // `pending_survey_targets` excludes systems already being
-        // surveyed by one of our ships; `pending_assigned_ships`
-        // excludes ships already carrying a marker (defense in depth —
-        // by the time the handler runs, queue.is_empty() is also false,
-        // but the marker covers the same-tick race).
-        let mut pending_survey_targets: std::collections::HashSet<Entity> =
-            std::collections::HashSet::new();
-        let mut pending_colonize_targets: std::collections::HashSet<Entity> =
-            std::collections::HashSet::new();
+        // Slice 4b3 of knowledge redesign — dedup target sets are
+        // sourced directly from the commitment ledger. The legacy
+        // `outbox_*_per_empire` HashMaps + `pending_*_targets`
+        // construction from `PendingAssignment` / `PendingAiShipCommand`
+        // / `AiCommandOutbox` are gone; every command family that
+        // needs dedup writes a commitment at dispatch (or, for
+        // `deploy_deliverable`, at macro emission before
+        // decomposition). See `ai/command_outbox.rs::record_pa_commitment`
+        // and `record_deploy_commitment`.
+        let (pending_survey_targets, pending_colonize_targets, pending_deploy_targets) =
+            ledger_dedup_targets(knowledge, entity);
+
+        // Ship-busyness filter: a ship carrying a `PendingAssignment`
+        // is excluded from candidate ship picks even if its
+        // `CommandQueue` is empty. The marker stays in place between
+        // dispatch and the matching `KnowledgeFact` arrival so this
+        // is the AI's "I already gave you a job" memory at the
+        // per-ship grain. Kept on `PendingAssignment` for now —
+        // promoting to a ledger query would need an `actor` index
+        // on `CommitmentLedger`.
         let mut pending_assigned_ships: std::collections::HashSet<Entity> =
             std::collections::HashSet::new();
         for (ship_entity, pa) in &dedup.pending_assignments {
@@ -954,59 +863,6 @@ pub fn npc_decision_tick(
                 continue;
             }
             pending_assigned_ships.insert(ship_entity);
-            match pa.kind {
-                AssignmentKind::Survey => {
-                    if let AssignmentTarget::System(sys) = pa.target {
-                        pending_survey_targets.insert(sys);
-                    }
-                    // Survey markers never target planets; the
-                    // `Planet` arm is colonize-only by construction.
-                }
-                AssignmentKind::Colonize => {
-                    match pa.target {
-                        AssignmentTarget::System(sys) => {
-                            pending_colonize_targets.insert(sys);
-                        }
-                        // #468 PR-3: `colonize_planet` markers fold
-                        // into the same per-empire dedup set as
-                        // `colonize_system` after resolving the
-                        // planet's parent system. The two kinds are
-                        // semantically equivalent for "don't
-                        // double-dispatch a colony attempt to this
-                        // system" — `colonize_system` picks the
-                        // best planet at handler time;
-                        // `colonize_planet` names it explicitly. A
-                        // planet entity that no longer exists is
-                        // silently skipped (the ship will despawn
-                        // soon and Bevy clears the marker).
-                        AssignmentTarget::Planet(planet) => {
-                            if let Ok(p) = dedup.planet_systems.get(planet) {
-                                pending_colonize_targets.insert(p.system);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        // Round 11 Bug A: union in outbox-resident in-flight commands
-        // (handler hasn't inserted markers yet because the light-speed
-        // window hasn't elapsed). Covers both decision-tick paths the
-        // handler-side dedup misses.
-        if let Some(set) = outbox_survey_per_empire.get(&entity) {
-            pending_survey_targets.extend(set.iter().copied());
-        }
-        if let Some(set) = outbox_colonize_per_empire.get(&entity) {
-            pending_colonize_targets.extend(set.iter().copied());
-        }
-
-        // #444 hotfix: in-flight `deploy_deliverable` chain targets (the
-        // 4 primitives `deploy_deliverable` decomposes into +
-        // outbox-resident macros). Rule 3.5 reads this to suppress
-        // re-emission while a Core is already on the way.
-        let mut pending_deploy_targets: std::collections::HashSet<Entity> =
-            std::collections::HashSet::new();
-        if let Some(set) = outbox_deploy_per_empire.get(&entity) {
-            pending_deploy_targets.extend(set.iter().copied());
         }
 
         // Extract system intel. Hostile / colonizable signals still come
@@ -1415,8 +1271,8 @@ pub fn npc_decision_tick(
         // the per-region sum intact — each Mid sees only its own
         // region's stockpile, which is the correct soft gate for
         // per-region build decisions.
-        let mut current_minerals = crate::amount::Amt::ZERO;
-        let mut current_energy = crate::amount::Amt::ZERO;
+        let mut current_minerals = macrocosmo_core::amount::Amt::ZERO;
+        let mut current_energy = macrocosmo_core::amount::Amt::ZERO;
         for &sys in member_systems_slice {
             if let Ok(stockpile) = resource_gate.stockpiles.get(sys) {
                 current_minerals = current_minerals.add(stockpile.minerals);
@@ -1451,8 +1307,8 @@ pub fn npc_decision_tick(
         // simultaneously" because production tick spreads orders
         // over their build_time; the gate's job is "AI should stop
         // adding work to a queue whose tail will starve".
-        let mut pending_minerals = crate::amount::Amt::ZERO;
-        let mut pending_energy = crate::amount::Amt::ZERO;
+        let mut pending_minerals = macrocosmo_core::amount::Amt::ZERO;
+        let mut pending_energy = macrocosmo_core::amount::Amt::ZERO;
         for (queue, bldg_queue, colony, owner) in &resource_gate.build_queues {
             if owner.0 != entity {
                 continue;
@@ -1670,3 +1526,66 @@ pub fn npc_decision_tick(
         }
     }
 }
+
+/// Slice 4 of knowledge redesign — derive `(survey, colonize, deploy)`
+/// target sets from this empire's commitment ledger.
+///
+/// `(System(s), Survey)` → survey target set.
+/// `(System(s), Colonize)` → colonize target set.
+/// `(System(s), DeployDeliverable)` → deploy target set (Slice 4b2).
+///
+/// Slice 4b1: `colonize_planet` dispatches now sibling-write a
+/// system-keyed `Colonize(System)` entry alongside the planet-keyed
+/// one, so the ledger answers "is this system already being
+/// colonized?" without a planet → system resolver. The planet entry
+/// stays in the ledger for provenance / future per-planet dedup but
+/// is intentionally ignored here.
+///
+/// Slice 4b2: `deploy_deliverable` macros are recorded against
+/// `CommitmentKind::DeployDeliverable` at outbox emission (before
+/// eager decomposition) so the dedup union covers the in-flight
+/// Core deployment chain even after the macro decomposes.
+///
+/// Slice 4b3 (cut-over) will delete the legacy
+/// `pending_assignments` / `outbox_deploy_per_empire` scans once
+/// smoke shows no divergence.
+fn ledger_dedup_targets(
+    knowledge: &KnowledgeStore,
+    empire: Entity,
+) -> (
+    std::collections::HashSet<Entity>,
+    std::collections::HashSet<Entity>,
+    std::collections::HashSet<Entity>,
+) {
+    use crate::knowledge::{CommitmentKind, CommitmentStatus, CommitmentTarget, KnowledgeSubject};
+    let subject = KnowledgeSubject::Empire(empire);
+    let mut survey = std::collections::HashSet::new();
+    let mut colonize = std::collections::HashSet::new();
+    let mut deploy = std::collections::HashSet::new();
+    for c in knowledge.commitments().iter() {
+        if c.subject != subject || c.status != CommitmentStatus::Active {
+            continue;
+        }
+        match (c.kind, c.target) {
+            (CommitmentKind::Survey, CommitmentTarget::System(s)) => {
+                survey.insert(s);
+            }
+            (CommitmentKind::Colonize, CommitmentTarget::System(s)) => {
+                colonize.insert(s);
+            }
+            (CommitmentKind::DeployDeliverable, CommitmentTarget::System(s)) => {
+                deploy.insert(s);
+            }
+            // Planet-target colonize entries are sibling-written
+            // alongside a System entry (Slice 4b1) — ignoring them
+            // here avoids double-counting.
+            _ => {}
+        }
+    }
+    (survey, colonize, deploy)
+}
+
+// Slice 4b3: `log_dedup_divergence` deleted. The legacy union path
+// is gone; there is nothing to compare the ledger against. If a future
+// regression reintroduces a parallel dedup source, restore this helper
+// alongside the divergence audit.

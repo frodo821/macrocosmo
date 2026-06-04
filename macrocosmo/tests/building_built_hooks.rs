@@ -22,7 +22,6 @@ use common::{
     advance_time, find_planet, spawn_test_colony, spawn_test_system, spawn_test_system_with_planet,
     test_app,
 };
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
     BuildingId, BuildingOrder, BuildingQueue, Buildings, SystemBuildingQueue, SystemBuildings,
     UpgradeOrder,
@@ -31,6 +30,7 @@ use macrocosmo::event_system::{
     BUILDING_BUILT_EVENT, EventSystem, FiredEvent, LuaDefinedEventContext, LuaFunctionRef,
 };
 use macrocosmo::scripting::building_api::{BuildingDefinition, BuildingRegistry, CapabilityParams};
+use macrocosmo_core::amount::Amt;
 use std::collections::HashMap;
 
 // ============================================================================
@@ -376,8 +376,8 @@ fn test_on_upgraded_carries_previous_id() {
 // dispatch logic from the ECS-system plumbing that the event-firing tests
 // above already cover.
 
-use macrocosmo::condition::ScopedFlags;
 use macrocosmo::deep_space::StructureRegistry;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::scripting::lifecycle::dispatch_event_handlers;
 use macrocosmo::scripting::{ScriptEngine, register_building_built_hooks};

@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::ColonyJobRates;
 use crate::components::Position;
 use crate::events::GameEvent;
@@ -13,6 +12,7 @@ use crate::ship::{Ship, ShipState};
 use crate::ship_design::ShipDesignRegistry;
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::{
     BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption, LastProductionTick,

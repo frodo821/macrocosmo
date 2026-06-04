@@ -642,7 +642,7 @@ fn dispatch_on_trigger(lua: &mlua::Lua, event_id: &str, payload_table: &mlua::Ta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::condition::ScopedFlags;
+    use crate::modifier::ScopedModifications as ScopedFlags;
     use crate::player::PlayerEmpire;
     use crate::scripting::ScriptEngine;
     use crate::technology::GameFlags;

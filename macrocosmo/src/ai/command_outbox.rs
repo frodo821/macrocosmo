@@ -84,7 +84,8 @@ use bevy::prelude::*;
 
 use macrocosmo_ai::Command;
 
-use crate::ai::convert::{from_ai_entity, from_ai_system, to_ai_faction};
+use crate::ai::command_params::{TARGET_SYSTEM, optional_system, ship_list, target_system};
+use crate::ai::convert::{from_ai_entity, to_ai_faction};
 use crate::ai::schema::ids::command as cmd_ids;
 use crate::components::Position;
 use crate::empire::CommsParams;
@@ -283,12 +284,7 @@ pub fn destination_pos_from_target_system(
     cmd: &Command,
     star_positions: &Query<&Position, (With<StarSystem>, Without<crate::ship::Ship>)>,
 ) -> Option<[f64; 3]> {
-    use macrocosmo_ai::CommandValue;
-    let sys_ref = match cmd.params.get("target_system") {
-        Some(CommandValue::System(s)) => *s,
-        _ => return None,
-    };
-    let entity = from_ai_system(sys_ref);
+    let entity = optional_system(&cmd.params, TARGET_SYSTEM)?;
     star_positions.get(entity).ok().map(|p| p.as_array())
 }
 
@@ -360,7 +356,7 @@ pub fn build_pending_command(
 ///
 /// Convention used by the AI Short layer / consumer: ship-bearing commands
 /// pass their ship list as `ship_count` + `ship_0`, `ship_1`, ... (see
-/// `command_consumer::extract_ship_list`). For the dispatch-time
+/// `command_params::ship_list`). For the dispatch-time
 /// projection we only need the *first* ship — multi-ship commands write
 /// one projection per ship in a follow-up; the data model already keys on
 /// entity so this scales naturally.
@@ -378,11 +374,7 @@ pub fn extract_primary_ship(cmd: &Command) -> Option<Entity> {
 /// #475: Extract the `target_system` Entity from an AI command's params,
 /// if present. Returns `None` for spatial-less commands.
 pub fn extract_target_system(cmd: &Command) -> Option<Entity> {
-    use macrocosmo_ai::CommandValue;
-    match cmd.params.get("target_system")? {
-        CommandValue::System(s) => Some(from_ai_system(*s)),
-        _ => None,
-    }
+    target_system(&cmd.params)
 }
 
 /// #468 PR-3: Extract the `target_planet` Entity from a `colonize_planet`
@@ -444,7 +436,7 @@ fn select_move_ruler_transport(
     empire_entity: Entity,
     params: &mut DispatchParams,
 ) -> Option<Entity> {
-    use crate::ship::{CommandQueue, Owner, ShipState};
+    use crate::ship::{Owner, ShipState};
     let ruler_entity = params.empire_rulers.get(empire_entity).ok()?.0;
     let (stationed, aboard) = params.rulers.get(ruler_entity).ok()?;
     if aboard.is_some() {
@@ -843,6 +835,33 @@ pub fn dispatch_ai_pending_commands(
     // and the existing colonize-system flow continues to work. The
     // skip-list lives in `dispatch_table_primitive_kinds()` so it
     // stays in sync with the routing table below.
+    // Slice 4b2 — record a `DeployDeliverable` commitment for each
+    // `deploy_deliverable` macro BEFORE eager decomposition. The
+    // primitive chain (`build → load → reposition → unload`) loses
+    // the macro identity; without this pre-scan the dedup ledger
+    // can't answer "is this empire already deploying a Core to
+    // system S?" once decomposition has run. The companion entry in
+    // `ledger_dedup_targets`'s `deploy_targets` set unions in
+    // alongside the legacy `outbox_deploy_per_empire`.
+    let deploy_kind = cmd_ids::deploy_deliverable();
+    for cmd in &raw_drained {
+        if cmd.kind != deploy_kind {
+            continue;
+        }
+        let Some(empire_entity) = find_empire_for_faction_id(cmd.issuer, &params.empires) else {
+            continue;
+        };
+        let Some(target_system) = extract_target_system(cmd) else {
+            continue;
+        };
+        record_deploy_commitment(
+            &mut params.knowledge_stores,
+            empire_entity,
+            target_system,
+            now,
+        );
+    }
+
     let decomp_registry = crate::ai::decomposition_rules::build_default_registry();
     let drained = expand_macros_eagerly(raw_drained, &decomp_registry, now);
     if drained.is_empty() {
@@ -1048,7 +1067,7 @@ pub fn dispatch_ai_pending_commands(
 ///   `ship_<i>` params in the command (today: `move_ruler`, which is
 ///   emitted with just `target_system` and the dispatcher selects the
 ///   transport ship from the Ruler's current system). `None` falls back
-///   to `extract_ship_list`.
+///   to `command_params::ship_list`.
 ///
 /// For each ship that survives the resolution above:
 ///   * read the ship's `Position` (= dispatcher's *real* idea of where
@@ -1074,7 +1093,7 @@ fn dispatch_ship_command_per_ship<F>(
 ) where
     F: Fn(Entity, Entity, i64) -> crate::ai::assignments::PendingAssignment,
 {
-    use crate::ai::command_consumer::{PendingAiShipCommand, extract_ship_list};
+    use crate::ai::command_consumer::PendingAiShipCommand;
     use crate::physics::light_delay_ruler_to_ship;
 
     let kind_str = cmd.kind.as_str();
@@ -1100,7 +1119,7 @@ fn dispatch_ship_command_per_ship<F>(
     // current system) so the caller passes the resolved ship here.
     let ship_list: Vec<Entity> = match ship_entity_override {
         Some(e) => vec![e],
-        None => extract_ship_list(&cmd.params),
+        None => ship_list(&cmd.params),
     };
     if ship_list.is_empty() {
         debug!(
@@ -1189,9 +1208,25 @@ fn dispatch_ship_command_per_ship<F>(
                 arrives_at,
             });
             if let Some(ref factory) = assignment_factory {
-                commands_buf
-                    .entity(ship_entity)
-                    .insert(factory(empire_entity, target_system, now));
+                let pa = factory(empire_entity, target_system, now);
+                // Slice 2 dual-write: mirror the new marker into the
+                // issuer empire's commitment ledger. Spatial-less
+                // primitive: no projection ETA to record, only the
+                // snapshot's observation tick as the basis.
+                let basis = crate::knowledge::CommitmentBasis {
+                    basis_observed_at: snapshot.as_ref().map(|s| s.observed_at),
+                    expected_effect_at: None,
+                    expected_resolution_at: None,
+                };
+                record_pa_commitment(
+                    &mut params.knowledge_stores,
+                    empire_entity,
+                    ship_entity,
+                    &pa,
+                    target_system,
+                    basis,
+                );
+                commands_buf.entity(ship_entity).insert(pa);
             }
             continue;
         }
@@ -1208,6 +1243,12 @@ fn dispatch_ship_command_per_ship<F>(
             fallback_system,
             now,
         );
+        // Slice 1.5 review F3: snapshot the ETA fields before
+        // `projection` is moved into `update_projection` below; the
+        // ledger entry written further down needs them.
+        let projection_intended_takes_effect_at = projection.intended_takes_effect_at;
+        let projection_expected_arrival_at = projection.expected_arrival_at;
+        let projection_expected_return_at = projection.expected_return_at;
         if let Ok(mut store) = params.knowledge_stores.get_mut(empire_entity) {
             store.update_projection(projection);
         }
@@ -1242,9 +1283,127 @@ fn dispatch_ship_command_per_ship<F>(
             // planet directly, but in practice the factory closes
             // over the planet entity and ignores this arg (see the
             // call site in `dispatch_ai_pending_commands`).
-            commands_buf
-                .entity(ship_entity)
-                .insert(factory(empire_entity, target_system, now));
+            let pa = factory(empire_entity, target_system, now);
+            // Slice 2 dual-write: mirror the new marker into the
+            // issuer empire's commitment ledger. Slice 1.5 review F3:
+            // also capture the basis (snapshot.observed_at) and the
+            // projection's ETA fields so the ledger entry carries
+            // enough provenance for future "is this commitment based
+            // on stale belief" checks (epic #529 will consume this).
+            let basis = crate::knowledge::CommitmentBasis {
+                basis_observed_at: snapshot.as_ref().map(|s| s.observed_at),
+                expected_effect_at: projection_intended_takes_effect_at,
+                expected_resolution_at: projection_expected_return_at
+                    .or(projection_expected_arrival_at),
+            };
+            record_pa_commitment(
+                &mut params.knowledge_stores,
+                empire_entity,
+                ship_entity,
+                &pa,
+                target_system,
+                basis,
+            );
+            commands_buf.entity(ship_entity).insert(pa);
+        }
+    }
+}
+
+/// Slice 4b2 helper — record a `DeployDeliverable(System)` commitment
+/// on the issuer empire's ledger at the moment the macro is queued.
+/// Idempotent at `(subject, kind, target)`.
+///
+/// Actor is `None` because the macro doesn't bind to a specific ship
+/// yet — `build_deliverable` picks the host colony, `load_deliverable`
+/// picks the transport. Resolution comes from
+/// `ColonyEstablished(system=target_system)` arrival via
+/// `resolve_commitments_from_observations`.
+fn record_deploy_commitment(
+    knowledge_stores: &mut Query<&mut KnowledgeStore, With<Empire>>,
+    empire_entity: Entity,
+    target_system: Entity,
+    issued_at: i64,
+) {
+    use crate::knowledge::{CommitmentKind, CommitmentTarget, KnowledgeSubject};
+    let Ok(mut store) = knowledge_stores.get_mut(empire_entity) else {
+        return;
+    };
+    let subject = KnowledgeSubject::Empire(empire_entity);
+    let kind = CommitmentKind::DeployDeliverable;
+    let target = CommitmentTarget::System(target_system);
+    if !store.has_active_commitment(subject, kind, target) {
+        store
+            .commitments_mut()
+            .record_issued(subject, None, kind, target, issued_at);
+    }
+}
+
+/// Slice 2 helper — mirror a freshly-stamped `PendingAssignment` into the
+/// issuer empire's `CommitmentLedger`. Quietly no-ops if the issuer empire
+/// has no `KnowledgeStore` (test setups that bypass the empire bundle).
+///
+/// Slice 1.5 review F3 — `basis` captures the snapshot's `observed_at`
+/// plus the projection's ETA fields so the ledger entry carries
+/// epistemic provenance.
+///
+/// Slice 4b1 — when the assignment is `colonize_planet` (the marker
+/// carries an `AssignmentTarget::Planet`), the dispatch site also
+/// passes the parent `target_system` and we record a *second* sibling
+/// commitment under `CommitmentTarget::System(parent_system)`. Both
+/// entries point at the same ship actor and carry the same basis;
+/// the planet-keyed entry preserves provenance and the system-keyed
+/// entry lets the AI dedup answer "is this system already being
+/// colonized?" without going through the planet → system resolver.
+fn record_pa_commitment(
+    knowledge_stores: &mut Query<&mut KnowledgeStore, With<Empire>>,
+    empire_entity: Entity,
+    ship_entity: Entity,
+    pa: &crate::ai::assignments::PendingAssignment,
+    target_system: Entity,
+    basis: crate::knowledge::CommitmentBasis,
+) {
+    use crate::knowledge::{CommitmentKind, CommitmentTarget, KnowledgeSubject};
+    let Ok(mut store) = knowledge_stores.get_mut(empire_entity) else {
+        return;
+    };
+    let subject = KnowledgeSubject::Empire(empire_entity);
+    let kind = CommitmentKind::from(pa.kind);
+    let primary_target = CommitmentTarget::from(pa.target);
+    // Idempotent at the (subject, kind, target) level: if there's
+    // already an active commitment, don't double-issue. The legacy
+    // marker dedup path in `npc_decision.rs` already prevents this,
+    // but the guard means even a future test that calls
+    // `dispatch_ship_command_per_ship` twice for the same triple
+    // won't bloat the ledger.
+    if !store.has_active_commitment(subject, kind, primary_target) {
+        store.commitments_mut().record_issued_with_basis(
+            subject,
+            Some(ship_entity),
+            kind,
+            primary_target,
+            pa.since,
+            basis,
+        );
+    }
+    // Slice 4b1 sibling write for `colonize_planet` markers — record
+    // the system-keyed entry alongside the planet-keyed one. The
+    // sibling shares the actor/basis so observation resolution still
+    // works (both the planet's `ColonyEstablished` and a future
+    // system-level `Colonize`-resolution arm clear the right entry).
+    if matches!(
+        pa.target,
+        crate::ai::assignments::AssignmentTarget::Planet(_)
+    ) {
+        let system_target = CommitmentTarget::System(target_system);
+        if !store.has_active_commitment(subject, kind, system_target) {
+            store.commitments_mut().record_issued_with_basis(
+                subject,
+                Some(ship_entity),
+                kind,
+                system_target,
+                pa.since,
+                basis,
+            );
         }
     }
 }

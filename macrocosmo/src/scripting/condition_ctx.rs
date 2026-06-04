@@ -46,7 +46,8 @@ impl mlua::UserData for ScopeHandle {
 /// Provides scoped access to condition builders:
 /// ```lua
 /// prerequisites = function(ctx)
-///     return all(ctx.empire:has_tech("x"), ctx.system:has_building("y"))
+///     local cond = require("macrocosmo.condition")
+///     return cond.all(ctx.empire:has_tech("x"), ctx.system:has_building("y"))
 /// end
 /// ```
 ///

@@ -1,7 +1,6 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::components::Position;
 use macrocosmo::galaxy::{Planet, Sovereignty, StarSystem, SystemAttributes};
@@ -9,6 +8,7 @@ use macrocosmo::modifier::ModifiedValue;
 use macrocosmo::player::*;
 use macrocosmo::ship::*;
 use macrocosmo::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use common::spawn_test_system;
 

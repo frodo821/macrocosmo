@@ -1,8 +1,10 @@
 use bevy::prelude::Entity;
 use bevy_egui::egui;
+use macrocosmo_ui_dsl::{UiDslRenderer, lua::parse_ui_fragment_definitions};
 
-use crate::amount::{Amt, SignedAmt};
+use crate::scripting::ScriptEngine;
 use crate::time_system::{GameClock, GameSpeed};
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use super::DiplomacyPanelOpen;
 use super::ResearchPanelOpen;
@@ -25,6 +27,70 @@ pub struct ObserverBarState<'a> {
 
 #[allow(clippy::too_many_arguments)]
 pub fn draw_top_bar(
+    ctx: &egui::Context,
+    clock: &GameClock,
+    speed: &mut GameSpeed,
+    total_minerals: Amt,
+    total_energy: Amt,
+    total_food: Amt,
+    total_authority: Amt,
+    net_food: SignedAmt,
+    net_energy: SignedAmt,
+    net_minerals: SignedAmt,
+    net_authority: SignedAmt,
+    research_open: &mut ResearchPanelOpen,
+    diplomacy_open: &mut DiplomacyPanelOpen,
+    designer_state: &mut ShipDesignerState,
+    observer: Option<ObserverBarState<'_>>,
+    ui_registry: Option<&mut UiElementRegistry>,
+    engine: Option<&ScriptEngine>,
+) {
+    if let Some(engine) = engine
+        && draw_top_bar_lua(
+            ctx,
+            engine,
+            clock,
+            speed,
+            total_minerals,
+            total_energy,
+            total_food,
+            total_authority,
+            net_food,
+            net_energy,
+            net_minerals,
+            net_authority,
+            research_open,
+            diplomacy_open,
+            designer_state,
+            observer.as_ref(),
+        )
+        .is_ok()
+    {
+        return;
+    }
+
+    draw_top_bar_legacy(
+        ctx,
+        clock,
+        speed,
+        total_minerals,
+        total_energy,
+        total_food,
+        total_authority,
+        net_food,
+        net_energy,
+        net_minerals,
+        net_authority,
+        research_open,
+        diplomacy_open,
+        designer_state,
+        observer,
+        ui_registry,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_top_bar_legacy(
     ctx: &egui::Context,
     clock: &GameClock,
     speed: &mut GameSpeed,
@@ -195,4 +261,157 @@ pub fn draw_top_bar(
             }
         });
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_top_bar_lua(
+    ctx: &egui::Context,
+    engine: &ScriptEngine,
+    clock: &GameClock,
+    speed: &mut GameSpeed,
+    total_minerals: Amt,
+    total_energy: Amt,
+    total_food: Amt,
+    total_authority: Amt,
+    net_food: SignedAmt,
+    net_energy: SignedAmt,
+    net_minerals: SignedAmt,
+    net_authority: SignedAmt,
+    research_open: &mut ResearchPanelOpen,
+    diplomacy_open: &mut DiplomacyPanelOpen,
+    designer_state: &mut ShipDesignerState,
+    observer: Option<&ObserverBarState<'_>>,
+) -> mlua::Result<()> {
+    let lua = engine.lua();
+    let registry = parse_ui_fragment_definitions(lua)?;
+    let Some(fragment) = registry.get("core.ui.top_bar") else {
+        return Err(mlua::Error::RuntimeError(
+            "Lua UI fragment 'core.ui.top_bar' is not registered".into(),
+        ));
+    };
+
+    let view = top_bar_view_table(
+        lua,
+        clock,
+        speed,
+        total_minerals,
+        total_energy,
+        total_food,
+        total_authority,
+        net_food,
+        net_energy,
+        net_minerals,
+        net_authority,
+        research_open,
+        diplomacy_open,
+        designer_state,
+        observer,
+    )?;
+    let node = fragment.inflate(lua, view)?;
+    let mut clicked_commands = Vec::new();
+
+    egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
+        let mut renderer = UiDslRenderer::default();
+        clicked_commands = renderer.render(ui, &node).clicked_commands;
+    });
+
+    for command in clicked_commands {
+        apply_top_bar_command(
+            &command,
+            speed,
+            research_open,
+            diplomacy_open,
+            designer_state,
+        );
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn top_bar_view_table(
+    lua: &mlua::Lua,
+    clock: &GameClock,
+    speed: &GameSpeed,
+    total_minerals: Amt,
+    total_energy: Amt,
+    total_food: Amt,
+    total_authority: Amt,
+    net_food: SignedAmt,
+    net_energy: SignedAmt,
+    net_minerals: SignedAmt,
+    net_authority: SignedAmt,
+    research_open: &ResearchPanelOpen,
+    diplomacy_open: &DiplomacyPanelOpen,
+    designer_state: &ShipDesignerState,
+    observer: Option<&ObserverBarState<'_>>,
+) -> mlua::Result<mlua::Table> {
+    let view = lua.create_table()?;
+    view.set(
+        "date",
+        format!(
+            "Year {} Month {} Hexadies {}",
+            clock.year(),
+            clock.month(),
+            clock.hexadies()
+        ),
+    )?;
+    view.set(
+        "speed",
+        if speed.hexadies_per_second <= 0.0 {
+            "PAUSED".to_string()
+        } else {
+            format!("x{:.0} hd/s", speed.hexadies_per_second)
+        },
+    )?;
+    view.set("research_open", research_open.0)?;
+    view.set("diplomacy_open", diplomacy_open.0)?;
+    view.set("ship_designer_open", designer_state.open)?;
+
+    let resources = lua.create_table()?;
+    for (index, (label, stockpile, net)) in [
+        ("F", total_food, net_food),
+        ("E", total_energy, net_energy),
+        ("M", total_minerals, net_minerals),
+        ("A", total_authority, net_authority),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let resource = lua.create_table()?;
+        resource.set("label", label)?;
+        resource.set("stockpile", stockpile.display_compact())?;
+        resource.set("net", net.display_compact())?;
+        resources.set(index + 1, resource)?;
+    }
+    view.set("resources", resources)?;
+
+    if let Some(observer) = observer {
+        view.set("observer_enabled", observer.enabled)?;
+        view.set("observer_read_only", observer.read_only)?;
+    } else {
+        view.set("observer_enabled", false)?;
+        view.set("observer_read_only", false)?;
+    }
+
+    Ok(view)
+}
+
+fn apply_top_bar_command(
+    command: &str,
+    speed: &mut GameSpeed,
+    research_open: &mut ResearchPanelOpen,
+    diplomacy_open: &mut DiplomacyPanelOpen,
+    designer_state: &mut ShipDesignerState,
+) {
+    match command {
+        "time.pause" => speed.hexadies_per_second = 0.0,
+        "time.play" => speed.hexadies_per_second = 1.0,
+        "time.fast" => {
+            speed.hexadies_per_second = (speed.hexadies_per_second * 2.0).max(1.0).min(16.0);
+        }
+        "ui.toggle.research" => research_open.0 = !research_open.0,
+        "ui.toggle.diplomacy" => diplomacy_open.0 = !diplomacy_open.0,
+        "ui.toggle.ship_designer" => designer_state.open = !designer_state.open,
+        _ => {}
+    }
 }

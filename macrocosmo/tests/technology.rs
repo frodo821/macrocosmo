@@ -1,7 +1,7 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::condition::ScopedFlags;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::technology;
 
 use common::{advance_time, empire_entity, test_app};
@@ -23,7 +23,7 @@ fn test_start_research_sets_queue() {
 
 #[test]
 fn test_block_research_stops_progress() {
-    use macrocosmo::amount::Amt;
+    use macrocosmo_core::amount::Amt;
     use technology::{
         LastResearchTick, ResearchPool, ResearchQueue, TechCost, TechId, TechTree, Technology,
     };
@@ -136,8 +136,8 @@ fn test_global_params_on_empire_entity() {
 /// Integration test: research a tech -> on_researched fires -> GameFlags + GlobalParams updated
 #[test]
 fn test_on_researched_fires_and_applies_effects() {
-    use macrocosmo::amount::Amt;
     use macrocosmo::scripting::ScriptEngine;
+    use macrocosmo_core::amount::Amt;
     use technology::{
         GameFlags, GlobalParams, RecentlyResearched, ResearchPool, ResearchQueue, TechCost,
         TechEffectsLog, TechId, TechTree, Technology,
@@ -266,9 +266,9 @@ fn test_on_researched_fires_and_applies_effects() {
 fn spawn_second_empire(world: &mut World, name: &str) -> Entity {
     use macrocosmo::colony::{AuthorityParams, ConstructionParams};
     use macrocosmo::communication::CommandLog;
-    use macrocosmo::condition::ScopedFlags;
     use macrocosmo::empire::CommsParams;
     use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
+    use macrocosmo::modifier::ScopedModifications as ScopedFlags;
     use macrocosmo::player::{Empire, Faction};
     use technology::{
         EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
@@ -324,9 +324,9 @@ fn install_research_pipeline(app: &mut App) {
 #[test]
 fn test_pending_research_credits_owner_only() {
     use common::{spawn_test_colony, spawn_test_system_with_planet};
-    use macrocosmo::amount::Amt;
     use macrocosmo::faction::FactionOwner;
     use macrocosmo::galaxy::HomeSystem;
+    use macrocosmo_core::amount::Amt;
     use technology::ResearchPool;
 
     let mut app = test_app();
@@ -401,10 +401,10 @@ fn test_pending_research_credits_owner_only() {
 #[test]
 fn test_pending_research_observer_mode_npc_keeps_researching() {
     use common::{spawn_test_colony, spawn_test_system_with_planet};
-    use macrocosmo::amount::Amt;
     use macrocosmo::faction::FactionOwner;
     use macrocosmo::galaxy::HomeSystem;
     use macrocosmo::player::{Player, PlayerEmpire};
+    use macrocosmo_core::amount::Amt;
     use technology::ResearchPool;
 
     let mut app = test_app();
@@ -458,10 +458,10 @@ fn test_pending_research_observer_mode_npc_keeps_researching() {
 #[test]
 fn test_pending_research_delay_uses_owner_capital() {
     use common::{spawn_test_colony, spawn_test_system_with_planet};
-    use macrocosmo::amount::Amt;
     use macrocosmo::faction::FactionOwner;
     use macrocosmo::galaxy::HomeSystem;
     use macrocosmo::time_system::GameClock;
+    use macrocosmo_core::amount::Amt;
     use technology::PendingResearch;
 
     let mut app = test_app();

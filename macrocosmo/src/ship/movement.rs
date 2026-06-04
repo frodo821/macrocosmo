@@ -308,7 +308,7 @@ impl PortParams {
 
     /// Create PortParams from the pre-computed `SystemModifiers` on a star system.
     pub fn from_system_modifiers(sys_mods: &crate::galaxy::SystemModifiers) -> Self {
-        use crate::amount::Amt;
+        use macrocosmo_core::amount::Amt;
         if sys_mods.port_repair.value().final_value() > Amt::ZERO {
             PortParams {
                 has_port: true,

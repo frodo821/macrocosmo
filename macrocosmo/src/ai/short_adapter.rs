@@ -125,10 +125,10 @@ pub struct BevyShortAgentAdapter<'a> {
     /// empire's owned systems. Consumed by
     /// [`ShortGameAdapter::can_afford_building`] in Rule 5b. Zero
     /// when the empire has no owned systems (defensive).
-    pub current_minerals: crate::amount::Amt,
+    pub current_minerals: macrocosmo_core::amount::Amt,
     /// Hotfix-3: sum of `ResourceStockpile.energy`. See
     /// [`Self::current_minerals`].
-    pub current_energy: crate::amount::Amt,
+    pub current_energy: macrocosmo_core::amount::Amt,
     /// Hotfix-3: building registry borrow. `None` only in test
     /// setups that never load the Lua registry; an unknown
     /// `building_id` returns `true` from the gate so a typo does

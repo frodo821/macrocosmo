@@ -45,7 +45,6 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::building_queue::{BuildKind, BuildOrder, BuildQueue};
 use macrocosmo::colony::{
     Buildings, Colony, FoodConsumption, MaintenanceCost, Production, ProductionFocus,
@@ -55,6 +54,7 @@ use macrocosmo::components::Position;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::SystemModifiers;
 use macrocosmo::modifier::{ModifiedValue, Modifier};
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use common::{advance_time, find_planet, spawn_test_empire, spawn_test_system, test_app};
 

@@ -58,7 +58,7 @@ pub fn tick_ship_repair(
     sys_mods_q: Query<&crate::galaxy::SystemModifiers>,
     balance: Res<crate::technology::GameBalance>,
 ) {
-    use crate::amount::Amt;
+    use macrocosmo_core::amount::Amt;
     let delta = clock.elapsed - last_tick.0;
     if delta <= 0 {
         return;

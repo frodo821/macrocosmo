@@ -11,10 +11,10 @@ use common::{
     advance_time, empire_entity, full_test_app, spawn_mock_core_ship, spawn_test_colony,
     spawn_test_system,
 };
-use macrocosmo::amount::Amt;
 use macrocosmo::faction::{FactionOwner, system_owner};
 use macrocosmo::galaxy::{AtSystem, Sovereignty};
 use macrocosmo::ship::{CoreShip, Owner};
+use macrocosmo_core::amount::Amt;
 
 /// With no Core ship stationed in a system, `system_owner` returns None.
 #[test]

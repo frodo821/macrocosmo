@@ -3,7 +3,7 @@
 //!
 //! This is the **AI**-side condition parser. Do not confuse it with
 //! [`crate::scripting::condition_parser`], which targets the
-//! game-side `crate::condition::Condition` tree (different variants,
+//! game-side `macrocosmo_core::condition::Condition` tree (different variants,
 //! scoped flags, etc.). The two parsers are intentionally kept separate
 //! because the trees are structurally distinct.
 //!

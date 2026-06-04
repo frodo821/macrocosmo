@@ -630,9 +630,14 @@ fn ship_pos_observer_mode_uses_realtime_fallback() {
 
     // Player-mode (= projection): should anchor at home (= the lagging
     // belief — what the player sees).
-    let player_view =
-        ship_view(ship, &ship_comp, &state, Some(&snapshot_knowledge(&app, empire)), Some(empire))
-            .expect("player view");
+    let player_view = ship_view(
+        ship,
+        &ship_comp,
+        &state,
+        Some(&snapshot_knowledge(&app, empire)),
+        Some(empire),
+    )
+    .expect("player view");
     assert_eq!(
         player_view.system,
         Some(home),

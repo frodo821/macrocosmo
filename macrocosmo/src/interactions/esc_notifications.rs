@@ -54,8 +54,8 @@
 use bevy::prelude::*;
 use mlua::prelude::*;
 
-use super::ScriptEngine;
 use crate::knowledge::{EventId, NotifiedEventIds};
+use crate::scripting::ScriptEngine;
 use crate::time_system::GameClock;
 use crate::ui::situation_center::{
     EscNotificationQueue, Notification, NotificationSource, PushOutcome, Severity,
@@ -425,7 +425,8 @@ mod tests {
         // Mirror the globals setup normally done by `init_scripting`
         // so `_pending_esc_notifications` exists on the Lua side.
         let lua = engine.lua();
-        super::super::globals::setup_globals(lua, &scripts_dir_for_tests()).expect("setup_globals");
+        crate::scripting::globals::setup_globals(lua, &scripts_dir_for_tests())
+            .expect("setup_globals");
         world.insert_resource(engine);
         world
     }
@@ -433,7 +434,7 @@ mod tests {
     fn run_drain(world: &mut World) {
         let mut sys = bevy::ecs::system::IntoSystem::into_system(drain_pending_esc_notifications);
         sys.initialize(world);
-        sys.run((), world);
+        let _ = sys.run((), world);
     }
 
     fn call_push_notification(world: &World, body: &str) {

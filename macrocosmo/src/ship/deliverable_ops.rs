@@ -11,11 +11,11 @@
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::deep_space::{
     ConstructionPlatform, DeepSpaceStructure, LifetimeCost, ResourceCost, Scrapyard,
     StructureRegistry,
 };
+use macrocosmo_core::amount::Amt;
 
 /// Maximum position delta (in light-years) for a ship to be considered
 /// "co-located" with a deep-space structure or deploy coordinate.

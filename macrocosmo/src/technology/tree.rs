@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use bevy::ecs::reflect::{ReflectComponent, ReflectResource};
 use bevy::reflect::Reflect;
 
-use crate::amount::Amt;
+use macrocosmo_core::amount::Amt;
 
 /// Unique identifier for a technology.
 #[derive(Clone, PartialEq, Eq, Hash, Debug, bevy::reflect::Reflect)]

@@ -3,7 +3,6 @@ use std::borrow::Cow;
 use bevy::prelude::*;
 use mlua::prelude::*;
 
-use crate::amount::Amt;
 use crate::components::Position;
 use crate::event_system::{BUILDING_LOST_EVENT, EventContext};
 use crate::events::{GameEvent, GameEventKind};
@@ -12,6 +11,7 @@ use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::scripting::building_api::BuildingId;
 use crate::ship::{CargoItem, Owner, Ship, ShipState, spawn_ship};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::{Colony, DeliverableStockpile, LastProductionTick, ResourceStockpile};
 
@@ -434,7 +434,7 @@ pub fn tick_build_queue(
         let sm = sys_mods_q.get(sys).ok();
         let parallel_slots_amt = sm
             .map(|m| m.shipyard_build_parallel_slots.value().final_value())
-            .unwrap_or(crate::amount::Amt::ZERO);
+            .unwrap_or(macrocosmo_core::amount::Amt::ZERO);
         // `whole()` truncates fractional slots — a half-built shipyard
         // shouldn't grant partial parallelism. With integer `base_add` from
         // the Lua modifier this matches shipyard count exactly.

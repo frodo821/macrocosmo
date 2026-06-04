@@ -230,7 +230,7 @@ pub struct MainPanelDeliverableRes<'w, 's> {
         's,
         (
             &'static crate::technology::GameFlags,
-            &'static crate::condition::ScopedFlags,
+            &'static crate::modifier::ScopedModifications,
         ),
         With<crate::player::Empire>,
     >,
@@ -251,6 +251,7 @@ pub struct MainPanelRegistries<'w> {
     pub hull_registry: Res<'w, HullRegistry>,
     pub module_registry: Res<'w, ModuleRegistry>,
     pub design_registry: Res<'w, ShipDesignRegistry>,
+    pub script_engine: Option<Res<'w, crate::scripting::ScriptEngine>>,
     /// #252: Job registry — consumed by the colony panel Pop management tab.
     pub job_registry: Res<'w, JobRegistry>,
 }

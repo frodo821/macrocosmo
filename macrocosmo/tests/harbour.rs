@@ -2,11 +2,11 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::modifier::{CachedValue, ScopedModifiers};
 use macrocosmo::ship::harbour::AppliedDockedModifiers;
 use macrocosmo::ship::*;
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, spawn_test_system, test_app};
 

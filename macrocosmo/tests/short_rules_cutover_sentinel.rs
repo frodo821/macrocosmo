@@ -18,7 +18,6 @@ use bevy::prelude::*;
 use macrocosmo::ai::AiPlayerMode;
 use macrocosmo::ai::command_outbox::AiCommandOutbox;
 use macrocosmo::ai::schema::ids::command as cmd_ids;
-use macrocosmo::amount::Amt;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::knowledge::{
     KnowledgeStore, ObservationSource, SystemKnowledge, SystemSnapshot, SystemVisibilityMap,
@@ -26,6 +25,7 @@ use macrocosmo::knowledge::{
 };
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{Owner, Ship};
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, spawn_mock_core_ship, spawn_test_colony, spawn_test_ruler, spawn_test_ship,

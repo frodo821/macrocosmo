@@ -799,11 +799,11 @@ fn resolve_dispatcher_pos(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
     use crate::ship::command_events::CommandEventsPlugin;
     use crate::ship::{ShipHitpoints, ShipModifiers, ShipStats};
     use bevy::MinimalPlugins;
     use bevy::ecs::message::Messages;
+    use macrocosmo_core::amount::Amt;
 
     fn dummy_home_port(world: &mut World) -> Entity {
         // Spawn a harmless placeholder entity just so `Ship.home_port`

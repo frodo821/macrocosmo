@@ -10,15 +10,15 @@
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::{
     BuildKind, BuildOrder, BuildQueue, BuildingOrder, BuildingQueue, Buildings, Colony,
     DemolitionOrder, SystemBuildingQueue, SystemBuildings, UpgradeOrder,
 };
 use crate::communication::{BuildingKind, BuildingScope, ColonyCommand, RemoteCommand};
-use crate::condition::EvalContext;
 use crate::scripting::building_api::{BuildingDefinition, BuildingId, BuildingRegistry};
 use crate::ship_design::ShipDesignRegistry;
+use macrocosmo_core::amount::Amt;
+use macrocosmo_core::condition::EvalContext;
 
 pub type ApplyColoniesQuery<'w, 's> = Query<
     'w,

@@ -8,7 +8,7 @@
 //! `ReadWrite` setter surface that event callbacks already use.
 
 use bevy::prelude::*;
-use macrocosmo::condition::ScopedFlags;
+use macrocosmo::modifier::ScopedModifications as ScopedFlags;
 use macrocosmo::player::{Empire, PlayerEmpire};
 use macrocosmo::scripting::ScriptEngine;
 use macrocosmo::scripting::lifecycle::{
@@ -101,7 +101,7 @@ fn test_on_game_start_handler_pushes_empire_modifier_live() {
     // The value slot accumulated the add modifier.
     let final_value = em.population_growth.final_value();
     assert!(
-        final_value > macrocosmo::amount::Amt::ZERO,
+        final_value > macrocosmo_core::amount::Amt::ZERO,
         "population_growth modifier should be live post-hook (got {final_value:?})"
     );
 }

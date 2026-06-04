@@ -52,7 +52,7 @@ fn run_helper(app: &mut App, ship: Entity, new_state: ShipState, expected_delay:
                 ),
                 Without<macrocosmo::colony::SlotAssignment>,
             >|
-             -> bool {
+                  -> bool {
                 apply_local_ship_command(ship, new_state.clone(), expected_delay, &mut q)
             },
         )
@@ -62,22 +62,8 @@ fn run_helper(app: &mut App, ship: Entity, new_state: ShipState, expected_delay:
 #[test]
 fn apply_local_ship_command_writes_state_when_delay_zero() {
     let mut app = test_app();
-    let system_a = spawn_test_system(
-        app.world_mut(),
-        "Alpha",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
-    let system_b = spawn_test_system(
-        app.world_mut(),
-        "Beta",
-        [1.0, 0.0, 0.0],
-        1.0,
-        true,
-        false,
-    );
+    let system_a = spawn_test_system(app.world_mut(), "Alpha", [0.0, 0.0, 0.0], 1.0, true, true);
+    let system_b = spawn_test_system(app.world_mut(), "Beta", [1.0, 0.0, 0.0], 1.0, true, false);
     let ship = spawn_test_ship(
         app.world_mut(),
         "Scout",
@@ -118,22 +104,8 @@ fn apply_local_ship_command_panics_on_nonzero_delay() {
     // the invariant so any future regression that routes a remote
     // command through the local path is caught at CI time.
     let mut app = test_app();
-    let system_a = spawn_test_system(
-        app.world_mut(),
-        "Alpha",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
-    let system_b = spawn_test_system(
-        app.world_mut(),
-        "Beta",
-        [10.0, 0.0, 0.0],
-        1.0,
-        true,
-        false,
-    );
+    let system_a = spawn_test_system(app.world_mut(), "Alpha", [0.0, 0.0, 0.0], 1.0, true, true);
+    let system_b = spawn_test_system(app.world_mut(), "Beta", [10.0, 0.0, 0.0], 1.0, true, false);
     let ship = spawn_test_ship(
         app.world_mut(),
         "Scout",
@@ -159,14 +131,7 @@ fn apply_local_ship_command_returns_false_for_unknown_entity() {
     // Despawn mid-frame edge case: helper reports `false` so the
     // caller in `context_menu` knows not to clear `SelectedShip`.
     let mut app = test_app();
-    let system_a = spawn_test_system(
-        app.world_mut(),
-        "Alpha",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let system_a = spawn_test_system(app.world_mut(), "Alpha", [0.0, 0.0, 0.0], 1.0, true, true);
     let ship = spawn_test_ship(
         app.world_mut(),
         "Scout",
@@ -177,12 +142,7 @@ fn apply_local_ship_command_returns_false_for_unknown_entity() {
     // Despawn the ship before the helper runs.
     app.world_mut().entity_mut(ship).despawn();
 
-    let ok = run_helper(
-        &mut app,
-        ship,
-        ShipState::InSystem { system: system_a },
-        0,
-    );
+    let ok = run_helper(&mut app, ship, ShipState::InSystem { system: system_a }, 0);
     assert!(!ok, "helper should report failure for missing entity");
 }
 
@@ -201,14 +161,7 @@ fn pending_ship_command_path_does_not_mutate_state() {
     // contract that `PendingShipCommand` is a queue entry, not an
     // immediate state write.
     let mut app = test_app();
-    let home_sys = spawn_test_system(
-        app.world_mut(),
-        "Home",
-        [0.0, 0.0, 0.0],
-        1.0,
-        true,
-        true,
-    );
+    let home_sys = spawn_test_system(app.world_mut(), "Home", [0.0, 0.0, 0.0], 1.0, true, true);
     let target_sys = spawn_test_system(
         app.world_mut(),
         "Target",
@@ -230,9 +183,7 @@ fn pending_ship_command_path_does_not_mutate_state() {
     let arrives_at = 600; // approx 10 ly light delay
     app.world_mut().spawn(PendingShipCommand {
         ship,
-        command: ShipCommand::Survey {
-            target: target_sys,
-        },
+        command: ShipCommand::Survey { target: target_sys },
         arrives_at,
     });
 

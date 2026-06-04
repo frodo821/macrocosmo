@@ -5,7 +5,6 @@ pub mod condition_ctx;
 pub mod condition_parser;
 pub mod effect_scope;
 pub mod engine;
-pub mod esc_notifications;
 pub mod event_api;
 pub mod faction_api;
 pub mod galaxy_api;
@@ -27,6 +26,7 @@ pub mod region_api;
 pub mod ship_design_api;
 pub mod species_api;
 pub mod structure_api;
+pub mod ui_dsl_api;
 pub mod victory_api;
 
 // Re-exports for backward compatibility
@@ -164,22 +164,6 @@ impl Plugin for ScriptingPlugin {
                 knowledge_dispatch::dispatch_knowledge_observed
                     .after(crate::time_system::advance_game_time)
                     .after(crate::notifications::auto_notify_from_events),
-            )
-            // #345 ESC-2: drain the `_pending_esc_notifications` Lua
-            // accumulator populated by `push_notification { ... }`
-            // calls (typically from `scripts/notifications/default_bridge.lua`
-            // inside the `*@observed` subscriber chain). Ordered
-            // `.after(dispatch_knowledge_observed)` so subscribers
-            // that fire this tick land in `EscNotificationQueue`
-            // within the same frame. Also `.before(sweep_notified_event_ids)`
-            // so the dedup map still holds `try_notify` state when we
-            // read it.
-            .add_systems(
-                Update,
-                esc_notifications::drain_pending_esc_notifications
-                    .after(crate::time_system::advance_game_time)
-                    .after(knowledge_dispatch::dispatch_knowledge_observed)
-                    .before(crate::knowledge::sweep_notified_event_ids),
             );
     }
 }
@@ -990,16 +974,25 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        // String form (backward compatible)
-        let cond_str: mlua::Table = lua.load(r#"return has_tech("my_tech")"#).eval().unwrap();
+        // String form
+        let cond_str: mlua::Table = lua
+            .load(
+                r#"
+                local cond = require("macrocosmo.condition")
+                return cond.has_tech("my_tech")
+            "#,
+            )
+            .eval()
+            .unwrap();
         assert_eq!(cond_str.get::<String>("id").unwrap(), "my_tech");
 
         // Reference form
         let cond_ref: mlua::Table = lua
             .load(
                 r#"
+                local cond = require("macrocosmo.condition")
                 local t = define_tech { id = "ref_tech", name = "Ref" }
-                return has_tech(t)
+                return cond.has_tech(t)
             "#,
             )
             .eval()

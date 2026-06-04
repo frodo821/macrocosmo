@@ -3,13 +3,13 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::events::{EventLog, GameEventKind};
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
 use macrocosmo::notifications::{NotificationPriority, NotificationQueue};
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::ship::*;
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, test_app_with_event_log};
 

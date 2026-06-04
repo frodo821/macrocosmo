@@ -1,4 +1,4 @@
-use crate::amount::Amt;
+use macrocosmo_core::amount::Amt;
 
 use super::tree::{TechBranchDefinition, TechCost, TechId, TechTree, Technology};
 

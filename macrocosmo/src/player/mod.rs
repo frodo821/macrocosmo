@@ -4,14 +4,12 @@ use bevy::prelude::*;
 
 use crate::colony::{AuthorityParams, ConstructionParams};
 use crate::communication::CommandLog;
-use crate::components::Position;
-use crate::condition::ScopedFlags;
 use crate::empire::CommsParams;
 use crate::galaxy::StarSystem;
 use crate::game_state::GameState;
-use crate::knowledge::{KnowledgeStore, PendingFactQueue, SystemVisibilityMap};
-use crate::physics;
-use crate::ship::{Ship, ShipState};
+use crate::knowledge::{KnowledgeNode, KnowledgeStore, PendingFactQueue, SystemVisibilityMap};
+use crate::modifier::ScopedModifications as ScopedFlags;
+use crate::ship::ShipState;
 use crate::technology::{
     EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
     ResearchPool, ResearchQueue, TechTree,
@@ -44,49 +42,56 @@ impl Plugin for PlayerPlugin {
         .add_systems(
             Update,
             sync_ruler_viewer_system.after(update_ruler_location),
-        )
-        .add_systems(Update, log_player_info.run_if(not_in_observer_mode));
+        );
     }
 }
 
 /// Spawn the player's empire entity with all empire-level components.
 /// This must run before any system that queries for PlayerEmpire.
 pub fn spawn_player_empire(mut commands: Commands) {
-    commands.spawn((
-        (
-            Empire {
-                name: "Human Federation".into(),
-            },
-            PlayerEmpire,
-            Faction::new("humanity_empire", "Terran Federation"),
-            TechTree::default(),
-            ResearchQueue::default(),
-            ResearchPool::default(),
-            RecentlyResearched::default(),
-            AuthorityParams::default(),
-            ConstructionParams::default(),
-        ),
-        (
-            EmpireModifiers::default(),
-            GameFlags::default(),
-            GlobalParams::default(),
-            KnowledgeStore::default(),
-            SystemVisibilityMap::default(),
-            CommandLog::default(),
-            ScopedFlags::default(),
-            PendingColonyTechModifiers::default(),
-            CommsParams::default(),
-            // Round 9 PR #1 Step 2: per-empire fact queue. Callsites
-            // migrate from the legacy `Resource<PendingFactQueue>` to
-            // per-faction routing in Step 3.
-            PendingFactQueue::default(),
-            // #464: Per-empire faction discovery (was global resource).
-            crate::faction::KnownFactions::default(),
-            // #449 PR2a: empire-wide strategic memory (migrated out of
-            // the engine-agnostic `OrchestratorState.long_state`).
-            crate::region::EmpireLongTermState::default(),
-        ),
-    ));
+    let entity = commands
+        .spawn((
+            (
+                Empire {
+                    name: "Human Federation".into(),
+                },
+                PlayerEmpire,
+                Faction::new("humanity_empire", "Terran Federation"),
+                TechTree::default(),
+                ResearchQueue::default(),
+                ResearchPool::default(),
+                RecentlyResearched::default(),
+                AuthorityParams::default(),
+                ConstructionParams::default(),
+            ),
+            (
+                EmpireModifiers::default(),
+                GameFlags::default(),
+                GlobalParams::default(),
+                KnowledgeStore::default(),
+                SystemVisibilityMap::default(),
+                CommandLog::default(),
+                ScopedFlags::default(),
+                PendingColonyTechModifiers::default(),
+                CommsParams::default(),
+                // Round 9 PR #1 Step 2: per-empire fact queue. Callsites
+                // migrate from the legacy `Resource<PendingFactQueue>` to
+                // per-faction routing in Step 3.
+                PendingFactQueue::default(),
+                // #464: Per-empire faction discovery (was global resource).
+                crate::faction::KnownFactions::default(),
+                // #449 PR2a: empire-wide strategic memory (migrated out of
+                // the engine-agnostic `OrchestratorState.long_state`).
+                crate::region::EmpireLongTermState::default(),
+            ),
+        ))
+        .id();
+    // Knowledge redesign Slice 1: tag the empire as a knowledge holder.
+    // `KnowledgeStore` storage is unchanged; this just makes "who owns
+    // knowledge" first-class for later slices.
+    commands
+        .entity(entity)
+        .insert(KnowledgeNode::empire(entity));
     info!("Player empire entity spawned");
 }
 
@@ -232,52 +237,6 @@ pub fn spawn_player(
 
     spawn_ruler_for_empire(&mut commands, empire_entity, entity, "Player".into(), true);
     info!("Player Ruler starts at home system: {}", system_name);
-}
-
-pub fn log_player_info(
-    keys: Res<ButtonInput<KeyCode>>,
-    keybindings: Option<Res<crate::input::KeybindingRegistry>>,
-    player_q: Query<&StationedAt, With<Player>>,
-    systems: Query<(&StarSystem, &Position)>,
-    all_systems: Query<(Entity, &StarSystem, &Position)>,
-) {
-    let pressed = match keybindings.as_deref() {
-        Some(kb) => kb.is_just_pressed(crate::input::actions::DEBUG_LOG_PLAYER_INFO, &keys),
-        None => keys.just_pressed(KeyCode::KeyI),
-    };
-    if !pressed {
-        return;
-    }
-
-    if let Ok(stationed) = player_q.single() {
-        if let Ok((current, current_pos)) = systems.get(stationed.system) {
-            info!("=== Player Location: {} ===", current.name);
-            info!(
-                "Position: ({:.1}, {:.1}, {:.1}) ly",
-                current_pos.x, current_pos.y, current_pos.z
-            );
-
-            info!("--- Nearby Systems ---");
-            let mut nearby: Vec<(String, f64, bool)> = Vec::new();
-            for (_entity, sys, sys_pos) in &all_systems {
-                if sys.name == current.name {
-                    continue;
-                }
-                let dist = physics::distance_ly(current_pos, sys_pos);
-                nearby.push((sys.name.clone(), dist, sys.surveyed));
-            }
-            nearby.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
-
-            for (name, dist, surveyed) in nearby.iter().take(10) {
-                let survey_mark = if *surveyed { "+" } else { "?" };
-                let delay_sd = physics::light_delay_hexadies(*dist);
-                info!(
-                    "  [{}] {} - {:.1} ly (light delay: {} sd / {:.1} yr)",
-                    survey_mark, name, dist, delay_sd, dist
-                );
-            }
-        }
-    }
 }
 
 /// Sync `EmpireViewerSystem` on ALL empires that have a Ruler to match the

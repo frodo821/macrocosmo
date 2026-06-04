@@ -2,13 +2,13 @@ use std::collections::HashSet;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::{Colony, Production, ProductionFocus};
 use crate::components::Position;
 use crate::faction::FactionOwner;
 use crate::galaxy::{HomeSystem, StarSystem};
 use crate::physics;
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::tree::{TechId, TechTree};
 

@@ -328,9 +328,9 @@ fn ai_ranks_home_closer_target_as_tiebreak() {
 
 #[test]
 fn ai_builds_shipyard_when_core_present_and_no_shipyard() {
-    use macrocosmo::amount::Amt;
     use macrocosmo::colony::SystemBuildingQueue;
     use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
+    use macrocosmo_core::amount::Amt;
 
     let mut app = test_app();
     app.insert_resource(AiPlayerMode(true));
@@ -410,9 +410,9 @@ fn ai_builds_shipyard_when_core_present_and_no_shipyard() {
 
 #[test]
 fn ai_skips_system_building_without_core() {
-    use macrocosmo::amount::Amt;
     use macrocosmo::colony::SystemBuildingQueue;
     use macrocosmo::knowledge::{KnowledgeStore, SystemVisibilityMap};
+    use macrocosmo_core::amount::Amt;
 
     let mut app = test_app();
     app.insert_resource(AiPlayerMode(true));

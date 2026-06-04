@@ -1,10 +1,10 @@
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::galaxy::{Planet, StarSystem};
 use crate::modifier::ModifiedValue;
 use crate::species::{ColonyPopulation, SpeciesRegistry};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::{Colony, LastProductionTick, Production, ResourceStockpile};
 

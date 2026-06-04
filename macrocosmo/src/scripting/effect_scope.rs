@@ -1,4 +1,4 @@
-use crate::effect::DescriptiveEffect;
+use macrocosmo_core::effect::{DescriptiveEffect, UiFragmentPresentationRequest};
 use mlua::prelude::*;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -104,6 +104,32 @@ impl mlua::UserData for EffectScope {
                 Ok(desc)
             },
         );
+
+        // scope:show_ui_fragment { context = {...}, labels_all = {...}, labels_any = {...}, host = "...", mode = "..." }
+        methods.add_method("show_ui_fragment", |lua, this, opts: LuaTable| {
+            let request = parse_ui_fragment_presentation_request(&opts)?;
+
+            this.accumulator
+                .lock()
+                .unwrap()
+                .effects
+                .push(DescriptiveEffect::PresentUiFragment {
+                    request: request.clone(),
+                });
+
+            let desc = lua.create_table()?;
+            desc.set("_effect_type", "present_ui_fragment")?;
+            desc.set("context", opts.get::<Option<LuaTable>>("context")?)?;
+            desc.set("labels_all", opts.get::<Option<LuaTable>>("labels_all")?)?;
+            desc.set("labels_any", opts.get::<Option<LuaTable>>("labels_any")?)?;
+            if let Some(host) = request.preferred_host {
+                desc.set("host", host)?;
+            }
+            if let Some(mode) = request.mode {
+                desc.set("mode", mode)?;
+            }
+            Ok(desc)
+        });
     }
 }
 
@@ -204,6 +230,9 @@ fn parse_single_effect(table: &LuaTable, effect_type: &str) -> Result<Descriptiv
             }
             Ok(DescriptiveEffect::FireEvent { event_id, payload })
         }
+        "present_ui_fragment" => Ok(DescriptiveEffect::PresentUiFragment {
+            request: parse_ui_fragment_presentation_request(table)?,
+        }),
         "hidden" => {
             let label: String = table.get("label")?;
             let inner_table: LuaTable = table.get("inner")?;
@@ -216,6 +245,60 @@ fn parse_single_effect(table: &LuaTable, effect_type: &str) -> Result<Descriptiv
         }
         _ => Err(LuaError::RuntimeError(format!(
             "Unknown effect type: {effect_type}"
+        ))),
+    }
+}
+
+fn parse_ui_fragment_presentation_request(
+    table: &LuaTable,
+) -> Result<UiFragmentPresentationRequest, LuaError> {
+    let context = match table.get::<Option<LuaTable>>("context")? {
+        Some(t) => parse_string_map(&t)?,
+        None => HashMap::new(),
+    };
+    let labels_all = match table.get::<Option<LuaTable>>("labels_all")? {
+        Some(t) => parse_string_sequence(&t)?,
+        None => Vec::new(),
+    };
+    let labels_any = match table.get::<Option<LuaTable>>("labels_any")? {
+        Some(t) => parse_string_sequence(&t)?,
+        None => Vec::new(),
+    };
+    let preferred_host = table.get::<Option<String>>("host")?;
+    let mode = table.get::<Option<String>>("mode")?;
+
+    Ok(UiFragmentPresentationRequest {
+        context,
+        labels_all,
+        labels_any,
+        preferred_host,
+        mode,
+    })
+}
+
+fn parse_string_sequence(table: &LuaTable) -> Result<Vec<String>, LuaError> {
+    table.sequence_values::<String>().collect()
+}
+
+fn parse_string_map(table: &LuaTable) -> Result<HashMap<String, String>, LuaError> {
+    let mut out = HashMap::new();
+    for pair in table.pairs::<String, LuaValue>() {
+        let (key, value) = pair?;
+        out.insert(key, lua_value_to_descriptor_string(value)?);
+    }
+    Ok(out)
+}
+
+fn lua_value_to_descriptor_string(value: LuaValue) -> Result<String, LuaError> {
+    match value {
+        LuaValue::String(s) => Ok(s.to_string_lossy().to_string()),
+        LuaValue::Integer(i) => Ok(i.to_string()),
+        LuaValue::Number(n) => Ok(n.to_string()),
+        LuaValue::Boolean(b) => Ok(b.to_string()),
+        LuaValue::Nil => Ok(String::new()),
+        other => Err(LuaError::RuntimeError(format!(
+            "show_ui_fragment context values must be string/number/boolean/nil, got {}",
+            other.type_name()
         ))),
     }
 }
@@ -393,16 +476,12 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
 
-        let fire_event_fn = create_fire_event_descriptor(lua).unwrap();
-        lua.globals()
-            .set("effect_fire_event", fire_event_fn)
-            .unwrap();
-
         let result: LuaValue = lua
             .load(
                 r#"
+                local effect = require("macrocosmo.effect")
                 return {
-                    effect_fire_event("first_contact", { species = "alien" }),
+                    effect.fire_event("first_contact", { species = "alien" }),
                 }
                 "#,
             )
@@ -426,14 +505,13 @@ mod tests {
         let engine = ScriptEngine::new().unwrap();
         let lua = engine.lua();
         lua.globals().set("scope", scope.clone()).unwrap();
-        let hide_fn = create_hide_function(lua).unwrap();
-        lua.globals().set("hide", hide_fn).unwrap();
 
         let result: LuaValue = lua
             .load(
                 r#"
+                local effect = require("macrocosmo.effect")
                 return {
-                    hide("Something mysterious...", scope:set_flag("secret", true)),
+                    effect.hide("Something mysterious...", scope:set_flag("secret", true)),
                 }
                 "#,
             )
@@ -448,6 +526,43 @@ mod tests {
                 assert!(matches!(**inner, DescriptiveEffect::SetFlag { .. }));
             }
             _ => panic!("Expected Hidden"),
+        }
+    }
+
+    #[test]
+    fn test_show_ui_fragment_descriptor() {
+        let scope = EffectScope::new();
+        let engine = ScriptEngine::new().unwrap();
+        let lua = engine.lua();
+        lua.globals().set("scope", scope.clone()).unwrap();
+
+        let result: LuaValue = lua
+            .load(
+                r#"
+                return {
+                    scope:show_ui_fragment {
+                        context = { colony = 42, system = "7" },
+                        labels_all = { "colony", "summary" },
+                        host = "modal",
+                        mode = "blocking_choice",
+                    },
+                }
+                "#,
+            )
+            .eval()
+            .unwrap();
+
+        let effects = parse_effects(result).unwrap();
+        assert_eq!(effects.len(), 1);
+        match &effects[0] {
+            DescriptiveEffect::PresentUiFragment { request } => {
+                assert_eq!(request.context.get("colony"), Some(&"42".to_string()));
+                assert_eq!(request.context.get("system"), Some(&"7".to_string()));
+                assert_eq!(request.labels_all, vec!["colony", "summary"]);
+                assert_eq!(request.preferred_host.as_deref(), Some("modal"));
+                assert_eq!(request.mode.as_deref(), Some("blocking_choice"));
+            }
+            _ => panic!("Expected PresentUiFragment"),
         }
     }
 

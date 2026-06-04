@@ -37,13 +37,13 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionRelations, FactionView, HostileFactions, RelationState};
 use macrocosmo::galaxy::HostileHitpoints;
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::ship::*;
 use macrocosmo::ship_design::{ModuleDefinition, ModuleRegistry, WeaponStats};
+use macrocosmo_core::amount::Amt;
 
 use macrocosmo::ai::AiBusResource;
 use macrocosmo::ai::convert::to_ai_faction;

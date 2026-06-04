@@ -1,5 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
+use macrocosmo_ui_dsl::lua::{UiFacetQuery, parse_ui_fragment_definitions};
 
 use crate::colony::{Colony, SlotAssignment};
 use crate::components::Position;
@@ -243,6 +244,80 @@ pub struct ContextMenuActions {
     pub zero_delay_dispatches: Vec<(Entity, crate::ship::ShipCommand)>,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct ContextMenuFragmentCommands {
+    move_to: bool,
+    survey: bool,
+    colonize: bool,
+}
+
+impl ContextMenuFragmentCommands {
+    const fn all_legacy() -> Self {
+        Self {
+            move_to: true,
+            survey: true,
+            colonize: true,
+        }
+    }
+}
+
+fn discover_context_menu_fragment_commands(
+    engine: Option<&crate::scripting::ScriptEngine>,
+    design_registry: &ShipDesignRegistry,
+    design_id: &str,
+) -> Option<ContextMenuFragmentCommands> {
+    let engine = engine?;
+    let registry = parse_ui_fragment_definitions(engine.lua()).ok()?;
+    let mut commands = ContextMenuFragmentCommands {
+        move_to: false,
+        survey: false,
+        colonize: false,
+    };
+
+    let mut class_facets = Vec::new();
+    if design_registry.can_survey(design_id) {
+        class_facets.push("surveyor");
+    }
+    if design_registry.can_colonize(design_id) {
+        class_facets.push("colonizer");
+    }
+
+    let mut queries = vec![context_menu_query(None)];
+    queries.extend(
+        class_facets
+            .into_iter()
+            .map(|class| context_menu_query(Some(class))),
+    );
+
+    for query in queries {
+        for fragment in registry.context_menu_fragments(&query) {
+            match fragment.meta.tags.get("command").map(String::as_str) {
+                Some("ship.move") => commands.move_to = true,
+                Some("ship.survey") => commands.survey = true,
+                Some("ship.colonize") => commands.colonize = true,
+                _ => {}
+            }
+        }
+    }
+
+    Some(commands)
+}
+
+fn context_menu_query(ship_class: Option<&str>) -> UiFacetQuery {
+    let mut facets = vec![
+        ("part_of".to_string(), "context_menu".to_string()),
+        ("target".to_string(), "entity:system".to_string()),
+        ("ctx:selected".to_string(), "entity:ship".to_string()),
+    ];
+    if let Some(ship_class) = ship_class {
+        facets.push((
+            "ctx:selected:ship:class".to_string(),
+            ship_class.to_string(),
+        ));
+    }
+    UiFacetQuery::new(facets)
+}
+
 /// Draws the RTS-style context menu when a ship is selected and a star is clicked.
 /// #76: Commands are delayed by light-speed distance from player to ship.
 #[allow(clippy::too_many_arguments)]
@@ -292,6 +367,7 @@ pub fn draw_context_menu(
     // viewing — `PlayerEmpire` in normal play, observed empire in
     // observer mode. Resolved at the call site (`ui/mod.rs`).
     viewing_empire: Option<Entity>,
+    engine: Option<&crate::scripting::ScriptEngine>,
 ) -> ContextMenuActions {
     let mut ctx_actions = ContextMenuActions {
         dock_at: None,
@@ -469,6 +545,12 @@ pub fn draw_context_menu(
         && target_surveyed
         && !target_has_hostile
         && target_has_own_core;
+    let fragment_commands =
+        discover_context_menu_fragment_commands(engine, design_registry, &design_id)
+            .unwrap_or_else(ContextMenuFragmentCommands::all_legacy);
+    let can_move = can_move && fragment_commands.move_to;
+    let can_survey = can_survey && fragment_commands.survey;
+    let can_colonize = can_colonize && fragment_commands.colonize;
 
     let mut command: Option<ShipState> = None;
     let mut queued_command: Option<QueuedCommand> = None;

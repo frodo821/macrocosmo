@@ -25,13 +25,15 @@ use macrocosmo::components::Position;
 use macrocosmo::empire::CommsParams;
 use macrocosmo::knowledge::{
     KnowledgeFact, KnowledgeStore, ObservationSource, PendingFactQueue, PerceivedFact,
-    RelayNetwork, ShipProjection, ShipSnapshot, ShipSnapshotState, SystemVisibilityMap,
-    SystemVisibilityTier, reconcile_ship_projections,
+    RelayNetwork, RelaySnapshot, ShipProjection, ShipSnapshot, ShipSnapshotState,
+    SystemVisibilityMap, SystemVisibilityTier, reconcile_ship_projections,
 };
+use macrocosmo::modifier::Modifier;
 use macrocosmo::physics::light_delay_hexadies;
 use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{Owner, Ship};
 use macrocosmo::time_system::GameClock;
+use macrocosmo_core::amount::SignedAmt;
 
 use common::{spawn_test_ruler, spawn_test_ship, spawn_test_system, test_app};
 
@@ -496,6 +498,122 @@ fn reconcile_per_empire_isolation() {
         pb.expected_arrival_at.is_some(),
         "empire B's expected_arrival_at must remain (no reconciliation occurred)"
     );
+}
+
+#[test]
+fn reconcile_uses_each_empires_comms_params() {
+    let mut app = test_app();
+    let s = setup_scenario(&mut app, 100.0);
+    app.world_mut().resource_mut::<RelayNetwork>().relays = vec![
+        RelaySnapshot {
+            position: [0.0, 0.0, 0.0],
+            range_ly: 1.0,
+            paired: true,
+        },
+        RelaySnapshot {
+            position: [100.0, 0.0, 0.0],
+            range_ly: 1.0,
+            paired: true,
+        },
+    ];
+
+    let fast_home = spawn_test_system(
+        app.world_mut(),
+        "FastHome",
+        [0.0, 0.0, 0.0],
+        1.0,
+        true,
+        true,
+    );
+    let mut fast_comms = CommsParams::default();
+    fast_comms.empire_relay_inv_latency.push_modifier(Modifier {
+        id: "test:fast_relay".into(),
+        label: "Fast relay".into(),
+        base_add: SignedAmt::from_f64(10.0),
+        multiplier: SignedAmt::ZERO,
+        add: SignedAmt::ZERO,
+        expires_at: None,
+        on_expire_event: None,
+    });
+    let fast_empire = app
+        .world_mut()
+        .spawn((
+            Empire {
+                name: "Fast".into(),
+            },
+            Faction {
+                id: "reconcile_fast".into(),
+                name: "Fast".into(),
+                can_diplomacy: false,
+                allowed_diplomatic_options: Default::default(),
+            },
+            SystemVisibilityMap::default(),
+            KnowledgeStore::default(),
+            fast_comms,
+        ))
+        .id();
+    spawn_test_ruler(app.world_mut(), fast_empire, fast_home);
+
+    seed_projection(
+        &mut app,
+        s.empire,
+        s.ship,
+        Some(ShipSnapshotState::InTransitSubLight),
+        Some(s.frontier),
+        s.home,
+        50,
+    );
+    seed_projection(
+        &mut app,
+        fast_empire,
+        s.ship,
+        Some(ShipSnapshotState::InTransitSubLight),
+        Some(s.frontier),
+        fast_home,
+        50,
+    );
+
+    push_fact(
+        &mut app,
+        KnowledgeFact::ShipArrived {
+            event_id: None,
+            system: Some(s.frontier),
+            name: "Scout-1".into(),
+            detail: "Arrived".into(),
+            ship: s.ship,
+        },
+        [100.0, 0.0, 0.0],
+        100,
+    );
+
+    // Default comms: relay hop 100 ly => 600 hd. Fast comms (+10
+    // inv_latency): same hop => 300 hd. Tick between them.
+    app.world_mut().resource_mut::<GameClock>().elapsed = 550;
+    run_reconciler(&mut app);
+
+    let slow_store = app
+        .world()
+        .entity(s.empire)
+        .get::<KnowledgeStore>()
+        .unwrap();
+    let slow_projection = slow_store.get_projection(s.ship).unwrap();
+    assert_eq!(
+        slow_projection.intended_state,
+        Some(ShipSnapshotState::InTransitSubLight),
+        "default-comms empire must not reconcile before its relay arrival"
+    );
+
+    let fast_store = app
+        .world()
+        .entity(fast_empire)
+        .get::<KnowledgeStore>()
+        .unwrap();
+    let fast_projection = fast_store.get_projection(s.ship).unwrap();
+    assert_eq!(
+        fast_projection.intended_state, None,
+        "fast-comms empire must reconcile once its own relay arrival has elapsed"
+    );
+    assert_eq!(fast_projection.projected_system, Some(s.frontier));
 }
 
 // ===========================================================================

@@ -6,7 +6,6 @@ mod common;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::*;
 use common::{advance_time, empire_entity, full_test_app, spawn_test_system_with_planet};
-use macrocosmo::amount::Amt;
 use macrocosmo::components::Position;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::AtSystem;
@@ -16,6 +15,7 @@ use macrocosmo::ship::core_deliverable::CoreShip;
 use macrocosmo::ship::handlers::handle_colonize_requested;
 use macrocosmo::ship::{CommandQueue, Owner, Ship, ShipHitpoints, ShipState};
 use macrocosmo::ship_design::ShipDesignRegistry;
+use macrocosmo_core::amount::Amt;
 
 /// Helper: insert the infrastructure_core_v1 design into the ShipDesignRegistry.
 fn insert_core_design(app: &mut App) {

@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, FoodConsumption, MaintenanceCost, Production,
     ProductionFocus, ResourceCapacity, ResourceStockpile, SlotAssignment, SystemBuildingQueue,
@@ -8,11 +7,11 @@ use crate::colony::{
 };
 use crate::communication::CommandLog;
 use crate::components::Position;
-use crate::condition::ScopedFlags;
 use crate::galaxy::{Planet, StarSystem, SystemAttributes};
 use crate::game_state::{GameState, GameStatePlugin, LoadSaveRequest};
-use crate::knowledge::KnowledgeStore;
+use crate::knowledge::{KnowledgeNode, KnowledgeStore};
 use crate::modifier::ModifiedValue;
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::observer::{in_observer_mode, not_in_observer_mode};
 use crate::player::{Empire, Faction, PlayerEmpire};
 use crate::scripting::ScriptEngine;
@@ -28,6 +27,7 @@ use crate::technology::{
     EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
     ResearchPool, ResearchQueue, TechTree,
 };
+use macrocosmo_core::amount::Amt;
 
 pub struct GameSetupPlugin;
 
@@ -356,7 +356,7 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
         }
         // If a bare Faction entity already exists (without Empire), upgrade
         // it to an Empire by inserting the bundle. Otherwise spawn fresh.
-        if let Some(entity) = existing_by_id.get(&snap.id) {
+        let empire_entity = if let Some(entity) = existing_by_id.get(&snap.id) {
             // Leave passive factions alone — they're added by
             // FactionRelationsPlugin and shouldn't be promoted to full
             // empires. `is_passive` is a preset field from the faction type.
@@ -376,16 +376,26 @@ pub fn run_all_factions_on_game_start(world: &mut World) {
                 "Setup: upgraded existing Faction '{}' to full Empire",
                 snap.id
             );
+            *entity
         } else {
-            world.spawn(empire_bundle(
-                snap.name.clone(),
-                snap.id.clone(),
-                snap.name.clone(),
-                snap.can_diplomacy,
-                snap.allowed_diplomatic_options.clone(),
-            ));
+            let e = world
+                .spawn(empire_bundle(
+                    snap.name.clone(),
+                    snap.id.clone(),
+                    snap.name.clone(),
+                    snap.can_diplomacy,
+                    snap.allowed_diplomatic_options.clone(),
+                ))
+                .id();
             info!("Setup: spawned NPC Empire for faction '{}'", snap.id);
-        }
+            e
+        };
+        // Knowledge redesign Slice 1: tag the empire as a knowledge holder.
+        // Storage still lives on `KnowledgeStore`; this just makes subject
+        // identity first-class for later slices.
+        world
+            .entity_mut(empire_entity)
+            .insert(KnowledgeNode::empire(empire_entity));
 
         if snap.has_on_game_start {
             run_on_game_start_for_faction(world, &snap.id);
@@ -1253,16 +1263,15 @@ pub fn apply_game_start_actions(world: &mut World, faction_id: &str, actions: Ga
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
     use crate::colony::{
         BuildQueue, BuildingQueue, Colony, FoodConsumption, MaintenanceCost, Production,
         ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
     };
     use crate::components::Position;
-    use crate::condition::ScopedFlags;
     use crate::galaxy::{Anomalies, Sovereignty, SystemAttributes, SystemModifiers};
     use crate::knowledge::KnowledgeStore;
     use crate::modifier::ModifiedValue;
+    use crate::modifier::ScopedModifications as ScopedFlags;
     use crate::player::Empire;
     use crate::ship::{Ship, ShipState};
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
@@ -1270,6 +1279,7 @@ mod tests {
         EmpireModifiers, GameFlags, GlobalParams, PendingColonyTechModifiers, RecentlyResearched,
         ResearchPool, ResearchQueue, TechKnowledge, TechTree,
     };
+    use macrocosmo_core::amount::Amt;
 
     fn setup_world() -> (World, Entity, Entity) {
         let mut world = World::new();

@@ -1,7 +1,6 @@
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, FoodConsumption, MaintenanceCost,
     Production, ProductionFocus, ResourceCapacity, ResourceStockpile, SystemBuildingQueue,
@@ -13,6 +12,7 @@ use crate::galaxy::{AtSystem, Hostile, StarSystem, SystemAttributes};
 use crate::knowledge::{FactSysParam, FactionVantageQueries, KnowledgeFact};
 use crate::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
 use crate::time_system::GameClock;
+use macrocosmo_core::amount::Amt;
 
 use super::{Ship, ShipState};
 
@@ -430,7 +430,7 @@ pub fn process_refitting(
 /// building + job modifiers. Kept because planet attributes (mineral_richness
 /// etc.) are a likely input for a future attribute-scaled modifier system.
 #[allow(dead_code)]
-pub fn resource_production_rate(level: f64) -> crate::amount::Amt {
+pub fn resource_production_rate(level: f64) -> macrocosmo_core::amount::Amt {
     if level <= 0.0 {
         Amt::ZERO
     } else {

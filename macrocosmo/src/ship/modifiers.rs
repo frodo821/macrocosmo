@@ -1,8 +1,8 @@
 use bevy::prelude::*;
 
-use crate::amount::SignedAmt;
 use crate::modifier::{Modifier, ParsedModifier, ScopedModifiers};
 use crate::ship_design::{HullRegistry, ModuleRegistry};
+use macrocosmo_core::amount::SignedAmt;
 
 use super::{HarbourModifiers, Ship, ShipModifiers};
 

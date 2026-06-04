@@ -18,7 +18,6 @@ mod common;
 
 use bevy::prelude::*;
 use common::fixture::{fixtures_dir, load_fixture};
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{Colony, LastProductionTick, ResourceStockpile};
 use macrocosmo::components::Position;
 use macrocosmo::faction::{FactionOwner, FactionRelations, FactionView, RelationState};
@@ -27,6 +26,7 @@ use macrocosmo::persistence::save::save_game_to_writer;
 use macrocosmo::player::{Faction, PlayerEmpire};
 use macrocosmo::scripting::game_rng::GameRng;
 use macrocosmo::time_system::{GameClock, GameSpeed};
+use macrocosmo_core::amount::Amt;
 
 /// The path (relative to `tests/fixtures/`) of the canonical minimal save.
 const MINIMAL_GAME_FIXTURE: &str = "minimal_game.bin";

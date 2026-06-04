@@ -424,16 +424,18 @@ fn two_region_empire_round_trips_cross_region_refs() {
 /// projections, epic #473). #483 bumps 18 → 19 to add `ship_bits` to the
 /// four ship-keyed `SavedKnowledgeFact` variants so in-flight
 /// `PendingFactQueue` entries reconcile against `ShipProjection` post-load.
+/// Knowledge redesign Slice 8 bumps 20 → 21 to persist
+/// `SavedKnowledgeStore::commitments`, making the commitment ledger
+/// authoritative across save/load.
 /// The strict-reject policy in `load.rs` continues to refuse decoding any
 /// prior version so the fixture-regen workflow stays the only path forward.
 #[test]
 fn save_version_strictly_rejects_previous_version() {
     assert_eq!(
-        SAVE_VERSION, 20,
-        "#491 (D-H-4) bumps SAVE_VERSION 19 → 20 (split \
-         ShipSnapshotState::InTransit into InTransitSubLight / \
-         InTransitFTL — postcard's positional enum tag encoding makes \
-         this a breaking change)"
+        SAVE_VERSION, 21,
+        "Knowledge redesign Slice 8 bumps SAVE_VERSION 20 → 21 \
+         (persist SavedKnowledgeStore::commitments — postcard's \
+         positional struct encoding makes this a breaking change)"
     );
 
     // #494: byte-fixture hoisted to `tests/common/wire_format.rs` so

@@ -1,9 +1,9 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::*;
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, find_planet, spawn_test_system, test_app};
 

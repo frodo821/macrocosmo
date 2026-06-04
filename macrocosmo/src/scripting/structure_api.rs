@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
-use crate::amount::Amt;
 use crate::deep_space::{
     CapabilityParams, DeliverableMetadata, ResourceCost, StructureDefinition, UpgradeEdge,
 };
 use crate::scripting::condition_parser::parse_prerequisites_field;
 use crate::scripting::helpers::extract_id_from_lua_value;
+use macrocosmo_core::amount::Amt;
 
 /// Parse structure + deliverable definitions from the Lua globals.
 ///
@@ -248,8 +248,8 @@ fn parse_upgrade_from(table: &mlua::Table) -> Result<Option<UpgradeEdge>, mlua::
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
     use crate::scripting::ScriptEngine;
+    use macrocosmo_core::condition::{AtomKind, Condition, ConditionAtom, ConditionScope};
 
     #[test]
     fn test_parse_structure_definitions() {
@@ -258,6 +258,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_structure {
                 id = "sensor_buoy",
                 name = "Sensor Buoy",
@@ -281,7 +282,7 @@ mod tests {
                     ftl_interdiction = { range = 5.0 },
                 },
                 energy_drain = 1000,
-                prerequisites = has_tech("ftl_interdiction_tech"),
+                prerequisites = cond.has_tech("ftl_interdiction_tech"),
             }
             "#,
         )
@@ -330,6 +331,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_structure {
                 id = "basic",
                 name = "Basic Structure",
@@ -359,12 +361,13 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_structure {
                 id = "advanced",
                 name = "Advanced Structure",
-                prerequisites = all(
-                    has_tech("tech_a"),
-                    any(has_modifier("mod_b"), has_building("bldg_c"))
+                prerequisites = cond.all(
+                    cond.has_tech("tech_a"),
+                    cond.any(cond.has_modifier("mod_b"), cond.has_building("bldg_c"))
                 ),
             }
             "#,
@@ -393,11 +396,12 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_structure {
                 id = "scoped_station",
                 name = "Scoped Station",
                 prerequisites = function(ctx)
-                    return all(
+                    return cond.all(
                         ctx.empire:has_tech("advanced_sensors"),
                         ctx.system:has_building("shipyard")
                     )
@@ -471,6 +475,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_deliverable {
                 id = "sensor_buoy",
                 name = "Sensor Buoy",
@@ -507,6 +512,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_structure {
                 id = "debris_wreck",
                 name = "Debris Wreck",
@@ -532,6 +538,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_deliverable {
                 id = "defense_platform_kit",
                 name = "Defense Platform Kit",
@@ -573,6 +580,7 @@ mod tests {
 
         lua.load(
             r#"
+            local cond = require("macrocosmo.condition")
             define_deliverable {
                 id = "new_structure",
                 name = "New Structure",

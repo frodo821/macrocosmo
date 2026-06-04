@@ -15,7 +15,7 @@
 use bevy::prelude::*;
 
 use super::{Owner, ReportMode};
-use crate::amount::Amt;
+use macrocosmo_core::amount::Amt;
 
 // ---------------------------------------------------------------------------
 // CommandId + allocator

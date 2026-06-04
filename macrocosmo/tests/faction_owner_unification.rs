@@ -7,7 +7,6 @@
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
     Buildings, ColonizationOrder, ColonizationQueue, Colony, LastProductionTick, Production,
     ResourceStockpile, SystemBuildings,
@@ -26,6 +25,7 @@ use macrocosmo::player::{Empire, Faction, PlayerEmpire};
 use macrocosmo::ship::{Owner, Ship, ShipState, spawn_ship};
 use macrocosmo::ship_design::ShipDesignRegistry;
 use macrocosmo::time_system::{GameClock, GameSpeed};
+use macrocosmo_core::amount::Amt;
 use std::collections::HashMap;
 
 mod common;

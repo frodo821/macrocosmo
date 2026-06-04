@@ -1,11 +1,11 @@
 mod common;
 
 use bevy::prelude::*;
-use macrocosmo::amount::{Amt, SignedAmt};
 use macrocosmo::colony::*;
 use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
 use macrocosmo::events::{EventLog, GameEventKind};
 use macrocosmo::modifier::ModifiedValue;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 use macrocosmo::modifier::Modifier;
 
@@ -134,8 +134,8 @@ fn test_periodic_event_fires() {
 
 #[test]
 fn test_tick_timed_effects_cleans_all_components() {
-    use macrocosmo::amount::SignedAmt;
     use macrocosmo::modifier::Modifier;
+    use macrocosmo_core::amount::SignedAmt;
 
     let mut app = test_app();
 
@@ -254,9 +254,9 @@ fn test_tick_timed_effects_cleans_all_components() {
 
 #[test]
 fn test_on_expire_event_fires_named_event() {
-    use macrocosmo::amount::SignedAmt;
     use macrocosmo::event_system::{EventDefinition, EventSystem, EventTrigger};
     use macrocosmo::modifier::Modifier;
+    use macrocosmo_core::amount::SignedAmt;
 
     let mut app = test_app();
 

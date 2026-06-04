@@ -8,7 +8,6 @@
 
 mod common;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
     BuildingOrder, DEFAULT_SYSTEM_BUILDING_SLOTS, DemolitionOrder, ResourceStockpile,
     SystemBuildingQueue, SystemBuildings,
@@ -18,6 +17,7 @@ use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::StarSystem;
 use macrocosmo::scripting::building_api::BuildingId;
 use macrocosmo::ship::{Ship, ShipState};
+use macrocosmo_core::amount::Amt;
 
 use common::{advance_time, test_app};
 

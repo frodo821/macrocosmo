@@ -1,7 +1,6 @@
 use bevy::prelude::*;
 use bevy_egui::egui;
 
-use crate::amount::{Amt, SignedAmt};
 use crate::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, ConstructionParams,
     FoodConsumption, MaintenanceCost, Production, ResourceStockpile, SlotAssignment,
@@ -15,6 +14,7 @@ use crate::scripting::building_api::{BuildingId, BuildingRegistry};
 use crate::ship::{Cargo, Ship, ShipHitpoints, ShipState, SurveyData};
 use crate::species::{ColonyJobs, ColonyPopulation, JobRegistry, JobSlot};
 use crate::ui::ColonyPanelTab;
+use macrocosmo_core::amount::{Amt, SignedAmt};
 
 /// Draws colony detail for a specific planet. Called within a ScrollArea.
 ///
@@ -1068,9 +1068,9 @@ fn draw_pop_management_tab(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::SignedAmt;
     use crate::modifier::{ModifiedValue, Modifier};
     use crate::species::{JobDefinition, JobSlot};
+    use macrocosmo_core::amount::SignedAmt;
 
     fn make_bucket(base_add_f64: f64) -> ModifiedValue {
         let mut mv = ModifiedValue::default();

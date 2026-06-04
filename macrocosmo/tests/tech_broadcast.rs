@@ -13,7 +13,6 @@ mod common;
 
 use bevy::prelude::*;
 
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, FoodConsumption, MaintenanceCost,
     Production, ProductionFocus, ResourceCapacity, ResourceStockpile,
@@ -27,6 +26,7 @@ use macrocosmo::technology::{
     EmpireModifiers, RecentlyResearched, TechCost, TechEffectsLog, TechId, TechTree, Technology,
     apply_tech_effects, sync_tech_colony_modifiers,
 };
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, empire_entity, find_planet, spawn_test_system, spawn_test_system_with_planet,

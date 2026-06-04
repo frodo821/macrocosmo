@@ -826,7 +826,7 @@ pub fn draw_galaxy_overlay(
         // Local system ports (real-time, via SystemModifiers)
         if sys_mods_q
             .get(player_system)
-            .map(|m| m.port_repair.value().final_value() > crate::amount::Amt::ZERO)
+            .map(|m| m.port_repair.value().final_value() > macrocosmo_core::amount::Amt::ZERO)
             .unwrap_or(false)
         {
             port_system_entities.push(player_system);

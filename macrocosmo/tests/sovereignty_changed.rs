@@ -8,13 +8,13 @@ use common::{
     advance_time, empire_entity, full_test_app, spawn_mock_core_ship, spawn_test_colony,
     spawn_test_system,
 };
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::authority::{SOVEREIGNTY_CHANGED_EVENT, SovereigntyChangeReason};
 use macrocosmo::event_system::EventSystem;
 use macrocosmo::faction::FactionOwner;
 use macrocosmo::galaxy::Sovereignty;
 use macrocosmo::player::{Empire, Faction};
 use macrocosmo::ship::{Owner, Ship, ShipState};
+use macrocosmo_core::amount::Amt;
 
 /// Helper: spawn a second faction entity (non-player) for conquest tests.
 fn spawn_rival_faction(world: &mut World) -> Entity {

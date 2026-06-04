@@ -62,7 +62,6 @@ use bevy::prelude::*;
 use macrocosmo::ai::core::{Command, CommandValue, ObjectiveId};
 use macrocosmo::ai::schema::ids::command as cmd_ids;
 use macrocosmo::ai::short_agent::{ShortAgent, ShortScope};
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{BuildKind, BuildQueue};
 use macrocosmo::empire::CommsParams;
 use macrocosmo::galaxy::HomeSystem;
@@ -72,6 +71,7 @@ use macrocosmo::ship::command_events::{
     ColonizeRequested, DeployDeliverableRequested, LoadDeliverableRequested, MoveRequested,
 };
 use macrocosmo::ship::{Cargo, CargoItem, Owner, Ship};
+use macrocosmo_core::amount::Amt;
 
 use common::{
     advance_time, spawn_mock_core_ship, spawn_test_ruler, spawn_test_ship,

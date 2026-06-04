@@ -49,10 +49,10 @@ pub use survey::*;
 
 use bevy::prelude::*;
 
-use crate::amount::Amt;
 use crate::components::Position;
 use crate::modifier::{CachedValue, ScopedModifiers};
 use crate::ship_design::ShipDesignRegistry;
+use macrocosmo_core::amount::Amt;
 
 // --- #34: Command queue ---
 

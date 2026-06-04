@@ -17,7 +17,6 @@ use bevy::prelude::*;
 
 use macrocosmo::ai::short_agent::{ShortAgent, ShortScope};
 use macrocosmo::ai::{MidAgent, core::MidTermState};
-use macrocosmo::amount::Amt;
 use macrocosmo::colony::{
     BuildQueue, BuildingQueue, Buildings, Colony, ColonyJobRates, FoodConsumption, MaintenanceCost,
     Production, ProductionFocus,
@@ -31,6 +30,7 @@ use macrocosmo::player::{Empire, Faction};
 use macrocosmo::region::{Region, RegionMembership, RegionRegistry, spawn_initial_region};
 use macrocosmo::ship::{Owner, Ship};
 use macrocosmo::species::{ColonyJobs, ColonyPopulation, ColonySpecies};
+use macrocosmo_core::amount::Amt;
 
 use common::{spawn_test_ship, spawn_test_system_with_planet, test_app};
 

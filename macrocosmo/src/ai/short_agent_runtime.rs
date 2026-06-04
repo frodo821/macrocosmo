@@ -614,7 +614,10 @@ pub fn run_short_agents(
         // "we don't know what they have").
         let (current_minerals, current_energy) = inputs
             .map(|i| (i.current_minerals, i.current_energy))
-            .unwrap_or((crate::amount::Amt::ZERO, crate::amount::Amt::ZERO));
+            .unwrap_or((
+                macrocosmo_core::amount::Amt::ZERO,
+                macrocosmo_core::amount::Amt::ZERO,
+            ));
         let adapter = BevyShortAgentAdapter {
             empire,
             scope: agent.scope,

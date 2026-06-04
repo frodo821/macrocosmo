@@ -49,6 +49,7 @@
 ### 情報 (read side)
 
 - **`KnowledgeStore`** が全遠隔系情報の single source of truth。UI/visualization は遠隔系を KnowledgeStore 経由で読む (直接 ECS 参照禁止)。
+- NOTE 2026-05-29: 上記は現行実装の歴史的契約。今後は `docs/knowledge-redesign.md` に従い、`KnowledgeStore` を empire 固定の single source of truth ではなく、各 subject の observation / commitment / belief を持つ subject-local `KnowledgeState` として再設計する。simulation ground truth と knowledge state は別物。
 - **`PerceivedInfo<T> { value, last_updated, source }`** + `ObservationSource { Direct, Relay, Scout, Stale }`、`STALE_THRESHOLD_HEXADIES = 600`。
 - **Scout > Relay 優先度**: `KnowledgeStore::update` 内で incoming/existing 両側で対称ルール。
 - **Relay endpoint model**: `origin → nearest_relay (光速) → relay 網 FTL → nearest_relay_to_player (光速) → player`。`FTL_RELAY_MULTIPLIER = 10`、`floor(light_delay / multiplier)`。

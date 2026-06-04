@@ -33,13 +33,13 @@
 
 use bevy::prelude::*;
 
+use macrocosmo::interactions::esc_notifications::drain_pending_esc_notifications;
 use macrocosmo::knowledge::{
     CombatVictor, EventId, KnowledgeFact, NotifiedEventIds, ObservationSource, PendingFactQueue,
     PerceivedFact, RelayNetwork,
 };
 use macrocosmo::notifications::NotificationQueue;
 use macrocosmo::player::PlayerEmpire;
-use macrocosmo::scripting::esc_notifications::drain_pending_esc_notifications;
 use macrocosmo::scripting::knowledge_dispatch::dispatch_knowledge_observed;
 use macrocosmo::scripting::knowledge_registry::{
     KnowledgeSubscriptionRegistry, load_knowledge_subscriptions,
@@ -106,7 +106,7 @@ fn make_integration_app() -> App {
     app.init_resource::<KnowledgeSubscriptionRegistry>();
     let mut sys = bevy::ecs::system::IntoSystem::into_system(load_knowledge_subscriptions);
     sys.initialize(app.world_mut());
-    sys.run((), app.world_mut());
+    let _ = sys.run((), app.world_mut());
 
     // Hook the two drain systems we need. `dispatch_knowledge_observed`
     // fires the wildcard subscriber, which calls `push_notification`;

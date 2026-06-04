@@ -34,7 +34,6 @@ use crate::colony::{
 };
 use crate::communication::{CommandLog, PendingCommand};
 use crate::components::{MovementState, Position};
-use crate::condition::ScopedFlags;
 use crate::deep_space::{
     ConstructionPlatform, DeepSpaceStructure, FTLCommRelay, LifetimeCost, Scrapyard,
     StructureHitpoints,
@@ -49,6 +48,7 @@ use crate::galaxy::{
     HostileStats, Planet, PortFacility, Sovereignty, StarSystem, SystemAttributes,
 };
 use crate::knowledge::{DestroyedShipRegistry, KnowledgeStore, PendingFactQueue};
+use crate::modifier::ScopedModifications as ScopedFlags;
 use crate::notifications::NotificationQueue;
 use crate::player::{AboardShip, Empire, Faction, Player, PlayerEmpire, StationedAt};
 use crate::region::{EmpireLongTermState, Region, RegionMembership, RegionRegistry};
@@ -152,7 +152,12 @@ use super::savebag::*;
 /// enum tag encoding makes this a breaking change; SAVE_VERSION bumps
 /// 19 → 20 and the fixture is regenerated. v19 saves are strictly
 /// rejected at load.
-pub const SAVE_VERSION: u32 = 20;
+/// Knowledge redesign Slice 8: added `SavedKnowledgeStore::commitments`
+/// so the authoritative commitment ledger survives save/load. The new
+/// field uses `#[serde(default)]`, but postcard's positional struct
+/// encoding still requires a version bump (20 → 21). v20 saves are
+/// strictly rejected at load.
+pub const SAVE_VERSION: u32 = 21;
 
 /// Script content fingerprint. On load, a mismatch is warn-logged but loading
 /// proceeds. Bump the minor to signal breaking Lua-registry changes to players.

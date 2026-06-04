@@ -104,8 +104,8 @@ pub fn register_all_types(app: &mut App) {
     // crate::components
     app.register_type::<crate::components::MovementState>();
     app.register_type::<crate::components::Position>();
-    // crate::condition
-    app.register_type::<crate::condition::ScopedFlags>();
+    // macrocosmo_core::condition
+    app.register_type::<crate::modifier::ScopedModifications>();
     // crate::deep_space
     app.register_type::<crate::deep_space::ConstructionPlatform>();
     app.register_type::<crate::deep_space::DeepSpaceStructure>();
@@ -163,6 +163,10 @@ pub fn register_all_types(app: &mut App) {
     app.register_type::<crate::knowledge::KnowledgeStore>();
     app.register_type::<crate::knowledge::SystemVisibilityMap>();
     app.register_type::<crate::knowledge::TrackedShipSystem>();
+    // Knowledge redesign Slice 1 / 1.5 — subject identity component.
+    app.register_type::<crate::knowledge::KnowledgeNode>();
+    app.register_type::<crate::knowledge::KnowledgeSubject>();
+    app.register_type::<crate::knowledge::KnowledgeScope>();
     // crate::knowledge::facts
     app.register_type::<crate::knowledge::facts::NextEventId>();
     app.register_type::<crate::knowledge::facts::NotifiedEventIds>();

@@ -233,7 +233,6 @@ pub fn prune_empty_fleets(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::amount::Amt;
     use crate::components::Position;
     use crate::ship::{
         Cargo, CommandQueue, Owner, RulesOfEngagement, ShipHitpoints, ShipModifiers, ShipState,
@@ -242,6 +241,7 @@ mod tests {
     use crate::ship_design::{ShipDesignDefinition, ShipDesignRegistry};
     use bevy::ecs::system::RunSystemOnce;
     use bevy::ecs::world::World;
+    use macrocosmo_core::amount::Amt;
 
     fn test_design_registry() -> ShipDesignRegistry {
         let mut registry = ShipDesignRegistry::default();
